@@ -3,6 +3,7 @@ module github.com/LingByte/LingVoice
 go 1.26.2
 
 require (
+	github.com/nicksnyder/go-i18n/v2 v2.6.1
 	github.com/LingByte/lingstorage-sdk-go v0.0.0-20260113030255-ff9d0501909c
 	github.com/abema/go-mp4 v1.5.0
 	github.com/gin-contrib/sessions v1.1.0

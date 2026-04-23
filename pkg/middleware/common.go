@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/gin-contrib/sessions"
@@ -52,6 +53,13 @@ func CorsMiddleware() gin.HandlerFunc {
 				c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 			}
 		}
+	}
+}
+
+func PoweredBy() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Ling-Voice-Version", config.GlobalConfig.Server.Version)
+		c.Next()
 	}
 }
 

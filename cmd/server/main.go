@@ -8,7 +8,7 @@ import (
 	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
-	middleware "github.com/LingByte/LingVoice/pkg/middlewares"
+	"github.com/LingByte/LingVoice/pkg/middleware"
 	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -49,10 +49,6 @@ func main() {
 	// 2. Set Environment Variables
 	if *mode != "" {
 		os.Setenv("MODE", *mode)
-	}
-	// 3. Load Global Configuration
-	if err := config.Load(); err != nil {
-		panic("config load failed: " + err.Error())
 	}
 
 	// 4. Load Log Configuration

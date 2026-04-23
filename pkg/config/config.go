@@ -15,6 +15,13 @@ import (
 	"github.com/LingByte/lingstorage-sdk-go"
 )
 
+func init() {
+	// 3. Load Global Configuration
+	if err := Load(); err != nil {
+		panic("config load failed: " + err.Error())
+	}
+}
+
 // Config main configuration structure
 type Config struct {
 	MachineID  int64            `env:"MACHINE_ID"`
@@ -33,6 +40,7 @@ type ServerConfig struct {
 	URL         string `env:"SERVER_URL"`
 	Logo        string `env:"SERVER_LOGO"`
 	TermsURL    string `env:"SERVER_TERMS_URL"`
+	Version     string `env:"SERVER_VERSION"`
 	Addr        string `env:"ADDR"`
 	Mode        string `env:"MODE"`
 	DocsPrefix  string `env:"DOCS_PREFIX"`
@@ -141,6 +149,7 @@ func Load() error {
 			Desc:        getStringOrDefault("SERVER_DESC", ""),
 			URL:         getStringOrDefault("SERVER_URL", ""),
 			Logo:        getStringOrDefault("SERVER_LOGO", ""),
+			Version:     getStringOrDefault("SERVER_VERSION", "v0.0.0"),
 			TermsURL:    getStringOrDefault("SERVER_TERMS_URL", ""),
 			Addr:        getStringOrDefault("ADDR", ":7070"),
 			Mode:        getStringOrDefault("MODE", "development"),

@@ -49,6 +49,15 @@ func RandString(n int) string {
 	return randRunes(n, letterRunes)
 }
 
+func GetTimestamp() int64 {
+	return time.Now().Unix()
+}
+
+func GetTimeString() string {
+	now := time.Now().UTC()
+	return fmt.Sprintf("%s%d", now.Format("20060102150405"), now.UnixNano()%1e9)
+}
+
 func SafeCall(f func() error, failHandle func(error)) error {
 	defer func() {
 		if err := recover(); err != nil {
