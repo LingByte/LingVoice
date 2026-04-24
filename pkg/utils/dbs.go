@@ -63,16 +63,12 @@ func ConfigureConnectionPool(db *gorm.DB) {
 		log.Printf("Failed to get database instance: %v", err)
 		return
 	}
-
 	// Set maximum idle connections
 	sqlDB.SetMaxIdleConns(10)
-
 	// Set maximum open connections
 	sqlDB.SetMaxOpenConns(100)
-
 	// Set connection maximum lifetime
 	sqlDB.SetConnMaxLifetime(time.Hour)
-
 	// Set connection maximum idle time
 	sqlDB.SetConnMaxIdleTime(30 * time.Minute)
 }

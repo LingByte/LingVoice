@@ -83,3 +83,8 @@ const AUTHORIZATION_PREFIX = "Bearer "
 const CREDENTIAL_API_KEY = "X-API-KEY"
 const CREDENTIAL_API_SECRET = "X-API-SECRET"
 const SigInitSystemConfig = "system.init"
+const (
+	DatabaseTypeMySQL      = "mysql"
+	DatabaseTypeSQLite     = "sqlite"
+	DatabaseTypePostgreSQL = "postgres"
+)
