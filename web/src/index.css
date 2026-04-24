@@ -264,6 +264,21 @@ body {
   background: var(--color-bg-1);
 }
 
+/* 主侧栏收起：Logo、展开、菜单图标共用 32px 轴线（水平居中对齐） */
+.sidebar-frame-brand--collapsed {
+  gap: 8px;
+  padding: 10px 0;
+}
+
+.sidebar-collapsed-icon-rail {
+  display: flex;
+  height: 32px;
+  width: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
 /* 主框架：侧栏菜单更紧凑 */
 .sidebar-frame-menu.arco-menu .arco-menu-inner {
   padding: 4px 0;
@@ -279,6 +294,144 @@ body {
 
 .sidebar-frame-menu.arco-menu .arco-menu-item-inner {
   padding: 0 8px;
+}
+
+/* 收起主导航：与品牌区同一 32px 槽位（不再使用 Sider 内 Menu 的 collapse 模式） */
+.sidebar-collapsed-nav {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 收起态品牌区：Arco 按钮内图标去边距，避免视觉不居中 */
+.sidebar-frame-brand--collapsed .arco-btn-icon {
+  margin-inline: 0 !important;
+}
+
+/* 聊天页：模型选择器胶囊 */
+.chat-model-select.arco-select .arco-select-view {
+  min-height: 32px;
+  border-radius: 9999px;
+  border-color: var(--color-border-2);
+  background: var(--color-fill-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.chat-model-select.arco-select .arco-select-view:hover {
+  background: var(--color-fill-3);
+}
+
+/* 聊天消息：左右布局 + 入场动画 */
+.chat-msg-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  animation: chat-msg-enter 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.chat-msg-row--assistant {
+  flex-direction: row;
+  justify-content: flex-start;
+}
+
+.chat-msg-row--user {
+  flex-direction: row;
+  justify-content: flex-end;
+}
+
+.chat-msg-bubble:hover {
+  box-shadow: 0 4px 14px -6px rgba(0, 0, 0, 0.12);
+}
+
+.chat-msg-avatar--assistant {
+  background: rgb(var(--primary-2)) !important;
+  border: 1px solid var(--color-border-2);
+}
+
+.chat-msg-avatar--user {
+  border: 1px solid var(--color-border-2);
+}
+
+@keyframes chat-msg-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-msg-scroll {
+  scroll-behavior: smooth;
+}
+
+/* 会话列表：最后一行无底边框 */
+.chat-session-line:last-child {
+  border-bottom-color: transparent;
+}
+
+/* 会话栏中缝拉手：竖条 hover 出现，贴分割线、垂直居中 */
+.chat-sider-edge-tab {
+  position: absolute;
+  top: 50%;
+  z-index: 31;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 52px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: #9ca0a6;
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.chat-sider-edge-tab--collapse {
+  right: 0;
+  transform: translate(50%, -50%);
+  border-left: none;
+  border-radius: 0 10px 10px 0;
+}
+
+.chat-sider-edge-tab--expand {
+  left: 0;
+  transform: translate(-50%, -50%);
+  border-right: none;
+  border-radius: 10px 0 0 10px;
+}
+
+.chat-sider-edge-tab:hover {
+  filter: brightness(1.08);
+}
+
+body[arco-theme='dark'] .chat-sider-edge-tab {
+  background: #5c5f66;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+/* 登录页：暗色主题下压低高光，与全局暗色协调 */
+body[arco-theme='dark'] .login-page__bg::after {
+  background: linear-gradient(
+    180deg,
+    rgba(18, 18, 20, 0.72) 0%,
+    rgba(22, 22, 26, 0.78) 50%,
+    rgba(16, 16, 18, 0.74) 100%
+  );
+}
+
+body[arco-theme='dark'] .login-page__card {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(30, 30, 34, 0.92);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 24px 64px -24px rgba(0, 0, 0, 0.55),
+    0 8px 24px -12px rgba(0, 0, 0, 0.35);
 }
 
 /* 个人中心左侧导航 */

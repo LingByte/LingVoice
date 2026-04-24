@@ -1,11 +1,11 @@
-import { Avatar, Dropdown, Menu, Typography } from '@arco-design/web-react'
-import { Database, Key, LogOut, Settings, User } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { Avatar, Button, Dropdown, Menu, Space, Tooltip } from '@arco-design/web-react'
+import { Database, Key, LogOut, Moon, Settings, Sun, User } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { useColorModeStore } from '@/stores/colorMode'
 import { useUiStore } from '@/stores/ui'
 import { cn } from '@/lib/cn'
 import { SIDEBAR_WIDTH } from '@/constants/layout'
-
-const { Text } = Typography
 
 /** 占位展示名，接入登录态后替换 */
 const DISPLAY_NAME = 'wechat-o5Lj…'
@@ -16,13 +16,38 @@ function menuIcon(Icon: typeof User) {
   )
 }
 
+/** 收起侧栏：下拉与主导航一致，仅图标 + 右侧 Tooltip 文案 */
+function iconOnlyNavBtn(
+  label: string,
+  icon: ReactNode,
+  onClick: () => void,
+  opts?: { danger?: boolean },
+) {
+  return (
+    <Tooltip content={label} position="right" mini>
+      <Button
+        type="text"
+        size="mini"
+        className={cn(
+          '!flex !h-8 !w-8 !min-w-8 !items-center !justify-center !p-0',
+          opts?.danger && '!text-[rgb(var(--danger-6))]',
+        )}
+        aria-label={label}
+        icon={icon}
+        onClick={onClick}
+      />
+    </Tooltip>
+  )
+}
+
 export function SidebarUserBar() {
   const navigate = useNavigate()
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
-  /** 与展开侧栏同宽，收起时侧栏变窄仍用该宽度保证菜单可读 */
+  const mode = useColorModeStore((s) => s.mode)
+  const toggleMode = useColorModeStore((s) => s.toggleMode)
   const menuWidth = SIDEBAR_WIDTH
 
-  const droplist = (
+  const droplistExpanded = (
     <div
       className="sidebar-user-droplist-wrap"
       style={{ width: menuWidth, boxSizing: 'border-box' }}
@@ -69,45 +94,114 @@ export function SidebarUserBar() {
     </div>
   )
 
+  const collapsedNavItems: {
+    label: string
+    icon: ReactNode
+    onClick: () => void
+    danger?: boolean
+  }[] = [
+    { label: '个人中心', icon: menuIcon(User), onClick: () => navigate('/profile') },
+    { label: '密钥与凭证', icon: menuIcon(Key), onClick: () => navigate('/credential') },
+    { label: '配额管理', icon: menuIcon(Database), onClick: () => navigate('/quotas') },
+    {
+      label: '退出登录',
+      icon: <LogOut size={16} strokeWidth={1.75} className="text-[rgb(var(--danger-6))]" />,
+      onClick: () => navigate('/login'),
+      danger: true,
+    },
+  ]
+
+  const droplistCollapsed = (
+    <div
+      className="sidebar-user-droplist-icon-only box-border rounded-lg border border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-1 shadow-md"
+      style={{ width: 40, boxSizing: 'border-box' }}
+    >
+      <Space direction="vertical" size={4} className="!w-full !items-center">
+        {collapsedNavItems.map((row) => (
+          <span key={row.label} className="flex justify-center">
+            {iconOnlyNavBtn(row.label, row.icon, row.onClick, { danger: row.danger })}
+          </span>
+        ))}
+      </Space>
+    </div>
+  )
+
+  const themeBtn = (
+    <Button
+      type="text"
+      size="mini"
+      className="!h-7 !min-w-7 !shrink-0 !px-0"
+      aria-label={mode === 'dark' ? '切换为亮色' : '切换为暗色'}
+      icon={
+        mode === 'dark' ? (
+          <Sun size={15} strokeWidth={1.75} className="text-[var(--color-text-2)]" />
+        ) : (
+          <Moon size={15} strokeWidth={1.75} className="text-[var(--color-text-2)]" />
+        )
+      }
+      onClick={(e) => {
+        e.stopPropagation()
+        toggleMode()
+      }}
+    />
+  )
+
+  const settingsBtn = (
+    <Button
+      type="text"
+      size="mini"
+      className="!h-7 !min-w-7 !shrink-0 !px-0"
+      aria-label="设置"
+      icon={<Settings size={15} strokeWidth={1.75} className="text-[var(--color-text-2)]" />}
+      onClick={() => navigate('/settings')}
+    />
+  )
+
+  const triggerClass = cn(
+    'flex cursor-pointer items-center rounded-md outline-none transition-colors',
+    'border-none bg-transparent text-[var(--color-text-2)] hover:bg-[var(--color-fill-2)] hover:text-[var(--color-text-1)]',
+    collapsed ? 'justify-center p-0' : 'min-w-0 w-full gap-2 px-0.5 py-0.5',
+  )
+
   return (
-    <div className="sidebar-user shrink-0 border-t border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-1.5 py-1.5">
-      <Dropdown droplist={droplist} trigger="click" position="top">
-        <div
-          role="button"
-          tabIndex={0}
-          className={cn(
-            'sidebar-user__trigger group flex w-full cursor-pointer items-center gap-1.5 rounded-md px-0.5 py-0.5 outline-none transition-colors',
-            'text-[var(--color-text-2)] hover:bg-[var(--color-fill-2)] hover:text-[var(--color-text-1)]',
-            collapsed && 'justify-center',
-          )}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault()
-              e.currentTarget.click()
-            }
-          }}
-        >
-          <Avatar size={28} shape="circle" className="shrink-0">
-            <img src="/logo.png" alt="" className="h-full w-full object-cover" />
-          </Avatar>
-          {!collapsed && (
-            <>
-              <Text
-                ellipsis
-                className="min-w-0 flex-1 text-left text-[12px] font-medium text-[var(--color-text-1)]"
-              >
-                {DISPLAY_NAME}
-              </Text>
-              <span
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--color-fill-2)] text-[var(--color-text-2)] transition-colors group-hover:bg-[var(--color-fill-3)] group-hover:text-[var(--color-text-1)]"
-                aria-hidden
-              >
-                <Settings size={15} strokeWidth={1.75} />
-              </span>
-            </>
-          )}
+    <div className="sidebar-user shrink-0 border-t border-[var(--color-border-2)] bg-[var(--color-bg-2)]">
+      {collapsed ? (
+        <div className="flex w-full flex-col items-center py-1.5">
+          <Dropdown
+            droplist={droplistCollapsed}
+            trigger="click"
+            position="tr"
+            triggerProps={{ className: 'flex w-full justify-center' }}
+          >
+            <button type="button" className={triggerClass} aria-label="账户菜单">
+              <div className="sidebar-collapsed-icon-rail">
+                <Avatar size={24} shape="circle" className="shrink-0">
+                  <img src="/logo.png" alt="" className="h-full w-full object-cover" />
+                </Avatar>
+              </div>
+            </button>
+          </Dropdown>
         </div>
-      </Dropdown>
+      ) : (
+        <div className="flex min-h-[40px] items-center gap-1 px-1.5 py-1.5">
+          <div className="min-w-0 flex-1 self-stretch">
+            <Dropdown droplist={droplistExpanded} trigger="click" position="top">
+              <button type="button" className={triggerClass} aria-label="账户菜单">
+                <Avatar size={28} shape="circle" className="shrink-0">
+                  <img src="/logo.png" alt="" className="h-full w-full object-cover" />
+                </Avatar>
+                <span className="min-w-0 flex-1 truncate text-left text-[12px] font-medium leading-normal text-[var(--color-text-1)]">
+                  {DISPLAY_NAME}
+                </span>
+              </button>
+            </Dropdown>
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5 self-center">
+            {themeBtn}
+            {settingsBtn}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

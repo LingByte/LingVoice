@@ -4,6 +4,7 @@ import { ConfigProvider } from '@arco-design/web-react'
 import zhCN from '@arco-design/web-react/es/locale/zh-CN'
 import '@arco-design/web-react/dist/css/arco.css'
 import './index.css'
+import '@/stores/colorMode'
 import App from '@/App.tsx'
 
 createRoot(document.getElementById('root')!).render(
