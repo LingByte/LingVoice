@@ -14,6 +14,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.1
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/go-webauthn/webauthn v0.17.0
+	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/csrf v1.7.3
 	github.com/grafana/pyroscope-go v1.2.8
@@ -33,6 +34,7 @@ require (
 	github.com/tcolgate/mp3 v0.0.0-20170426193717-e79c5a46d300
 	github.com/yapingcat/gomedia v0.0.0-20240906162731-17feea57090c
 	go.uber.org/zap v1.27.1
+	golang.org/x/image v0.23.0
 	golang.org/x/sys v0.43.0
 	golang.org/x/text v0.36.0
 	gopkg.in/yaml.v3 v3.0.1
