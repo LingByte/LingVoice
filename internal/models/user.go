@@ -425,8 +425,6 @@ func VerifyEncryptedPassword(encryptedPassword, storedPasswordHash string) bool 
 			now, timestamp, now-timestamp))
 		return false
 	}
-
-	// 验证 passwordHash 与存储的密码哈希匹配
 	storedHash := strings.TrimPrefix(storedPasswordHash, "sha256$")
 
 	if passwordHash != storedHash {
@@ -434,8 +432,6 @@ func VerifyEncryptedPassword(encryptedPassword, storedPasswordHash string) bool 
 			storedHash, passwordHash))
 		return false
 	}
-
-	// 验证加密哈希：SHA256(原始密码的SHA256 + salt + timestamp)
 	originalTimestamp, _ := strconv.ParseInt(timestampStr, 10, 64)
 	hashInput := fmt.Sprintf("%s%s%d", passwordHash, salt, originalTimestamp)
 	hashVal := sha256.Sum256([]byte(hashInput))
