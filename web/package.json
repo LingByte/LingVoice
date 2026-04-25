@@ -12,6 +12,9 @@
   },
   "dependencies": {
     "@arco-design/web-react": "^2.66.8",
+    "@codemirror/lang-html": "^6.4.11",
+    "@uiw/codemirror-theme-vscode": "^4.25.9",
+    "@uiw/react-codemirror": "^4.25.9",
     "axios": "^1.7.9",
     "clsx": "^2.0.0",
     "lucide-react": "^0.294.0",

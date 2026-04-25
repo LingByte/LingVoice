@@ -2,10 +2,24 @@ import { useState } from 'react'
 import { Button, Card, Typography } from '@arco-design/web-react'
 import { LogOut, User } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { logoutSession } from '@/api/auth'
 import { cn } from '@/lib/cn'
 import { useAuthStore } from '@/stores/authStore'
 
 const { Title, Text } = Typography
+
+function fmtTime(iso?: string): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString()
+}
+
+function roleLabel(role: string): string {
+  const r = (role || '').toLowerCase()
+  if (r === 'superadmin') return '超级管理员'
+  if (r === 'admin') return '管理员'
+  return '用户'
+}
 
 type NavKey = 'profile' | 'logout'
 
@@ -24,13 +38,21 @@ const NAV_LOGOUT: { key: 'logout'; label: string; icon: typeof LogOut } = {
 export function ProfilePage() {
   const navigate = useNavigate()
   const clearUser = useAuthStore((s) => s.clearUser)
+  const authUser = useAuthStore((s) => s.user)
   const [activeKey, setActiveKey] = useState<NavKey>('profile')
   const LogoutIcon = NAV_LOGOUT.icon
 
   const handleNav = (key: NavKey) => {
     if (key === 'logout') {
-      clearUser()
-      navigate('/login', { replace: true })
+      void (async () => {
+        try {
+          await logoutSession()
+        } catch {
+          /* ignore */
+        }
+        clearUser()
+        navigate('/login', { replace: true })
+      })()
       return
     }
     setActiveKey(key)
@@ -80,7 +102,73 @@ export function ProfilePage() {
           <div className="space-y-3 text-[13px]">
             <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
               <Text type="secondary">账号 ID</Text>
-              <Text>—</Text>
+              <Text>{authUser?.id ?? '—'}</Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">邮箱</Text>
+              <Text className="max-w-[60%] truncate text-right">
+                {authUser?.email ?? '—'}
+              </Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">显示名</Text>
+              <Text className="max-w-[60%] truncate text-right">
+                {authUser?.displayName ?? '—'}
+              </Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">姓名</Text>
+              <Text className="max-w-[60%] truncate text-right">
+                {[authUser?.firstName, authUser?.lastName].filter(Boolean).join(' ') || '—'}
+              </Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">角色</Text>
+              <Text>{authUser ? roleLabel(authUser.role) : '—'}</Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">状态</Text>
+              <Text>{authUser?.status ?? '—'}</Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">来源</Text>
+              <Text>{authUser?.source ?? '—'}</Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">语言 / 时区</Text>
+              <Text className="max-w-[55%] truncate text-right">
+                {[authUser?.locale, authUser?.timezone].filter(Boolean).join(' · ') || '—'}
+              </Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">资料完整度</Text>
+              <Text>{authUser != null ? `${authUser.profileComplete}%` : '—'}</Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">验证</Text>
+              <Text>
+                {authUser == null
+                  ? '—'
+                  : `邮箱${authUser.emailVerified ? '已' : '未'}验证 · 手机${
+                      authUser.phoneVerified ? '已' : '未'
+                    }验证`}
+              </Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">登录次数</Text>
+              <Text>{authUser?.loginCount ?? '—'}</Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">注册时间</Text>
+              <Text className="max-w-[55%] text-right text-[12px]">
+                {fmtTime(authUser?.createdAt)}
+              </Text>
+            </div>
+            <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
+              <Text type="secondary">上次登录</Text>
+              <Text className="max-w-[55%] text-right text-[12px]">
+                {fmtTime(authUser?.lastLogin)}
+              </Text>
             </div>
             <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2">
               <Text type="secondary">密码</Text>

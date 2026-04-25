@@ -1,5 +1,5 @@
 import { Button, Layout, Menu, Tooltip } from '@arco-design/web-react'
-import { MessageSquare, PanelLeft, PanelLeftClose } from 'lucide-react'
+import { LayoutTemplate, MessageSquare, PanelLeft, PanelLeftClose, RadioTower, ScrollText } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useColorModeStore } from '@/stores/colorMode'
 import { useUiStore } from '@/stores/ui'
@@ -14,7 +14,28 @@ const menu = [
     label: '聊天',
     icon: <MessageSquare size={16} strokeWidth={1.85} />,
   },
+  {
+    key: '/notify/channels',
+    label: '通知渠道',
+    icon: <RadioTower size={16} strokeWidth={1.85} />,
+  },
+  {
+    key: '/notify/mail-templates',
+    label: '邮件模版',
+    icon: <LayoutTemplate size={16} strokeWidth={1.85} />,
+  },
+  {
+    key: '/notify/mail-logs',
+    label: '邮件日志',
+    icon: <ScrollText size={16} strokeWidth={1.85} />,
+  },
 ] as const
+
+function menuPathSelected(pathname: string, itemKey: string): boolean {
+  if (itemKey === '/notify/channels') return pathname.startsWith('/notify/channels')
+  if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
+  return pathname === itemKey
+}
 
 /**
  * 收起态不用 Arco Menu：Menu 在 Layout.Sider 内会自动进入 arco-menu-collapse（48px 宽、
@@ -88,7 +109,7 @@ export function AppSidebar() {
               aria-label="主导航"
             >
               {menu.map((item) => {
-                const selected = location.pathname === item.key
+                const selected = menuPathSelected(location.pathname, item.key)
                 return (
                   <Tooltip key={item.key} content={item.label} position="right" mini>
                     <Button
@@ -106,7 +127,10 @@ export function AppSidebar() {
             </nav>
           ) : (
             <Menu
-              selectedKeys={[location.pathname]}
+              selectedKeys={(() => {
+                const hit = menu.find((item) => menuPathSelected(location.pathname, item.key))
+                return hit ? [hit.key] : []
+              })()}
               onClickMenuItem={(key) => navigate(key)}
               className="sidebar-frame-menu border-none"
             >

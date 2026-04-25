@@ -224,6 +224,24 @@ body {
   background: rgba(139, 106, 232, 0.06);
 }
 
+.login-page--center-msg .login-page__spin-wrap {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-page__tabs.arco-tabs .arco-tabs-header-title {
+  font-size: 14px;
+}
+
+.login-page__links--mt {
+  margin-top: 0.75rem;
+}
+
 .login-page__foot {
   margin-top: 1rem;
   text-align: center;
@@ -378,11 +396,16 @@ body {
   position: absolute;
   top: 50%;
   z-index: 31;
+  box-sizing: border-box;
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 52px;
+  /* 横向加宽：与 14/22 相比一眼能看出区别 */
+  width: 32px;
+  min-width: 32px;
+  max-width: 32px;
+  height: 60px;
   margin: 0;
   padding: 0;
   border: 1px solid rgba(0, 0, 0, 0.1);
@@ -390,20 +413,22 @@ body {
   color: #fff;
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  appearance: none;
 }
 
+/* 负向偏移：整体探出分割线，主区/侧栏内都更易看见 */
 .chat-sider-edge-tab--collapse {
-  right: 0;
-  transform: translate(50%, -50%);
+  right: -10px;
+  transform: translateY(-50%);
   border-left: none;
-  border-radius: 0 10px 10px 0;
+  border-radius: 0 14px 14px 0;
 }
 
 .chat-sider-edge-tab--expand {
-  left: 0;
-  transform: translate(-50%, -50%);
+  left: -10px;
+  transform: translateY(-50%);
   border-right: none;
-  border-radius: 10px 0 0 10px;
+  border-radius: 14px 0 0 14px;
 }
 
 .chat-sider-edge-tab:hover {

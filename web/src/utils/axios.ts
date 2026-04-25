@@ -4,7 +4,7 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from 'axios'
 import { getApiBaseURL } from '@/config/apiConfig'
-import { useAuthStore } from '@/stores/authStore'
+import { AUTH_ACCESS_TOKEN_KEY, useAuthStore } from '@/stores/authStore'
 
 const axiosInstance: AxiosInstance = axios.create({
   baseURL: getApiBaseURL(),
@@ -15,12 +15,13 @@ const axiosInstance: AxiosInstance = axios.create({
   withCredentials: true,
 })
 
+// 每个请求带上 access JWT：登录/注册后 `persistAuthSession` 写入 store + localStorage，此处与后端 `CurrentUser` 解析的 Header 一致（默认 Authorization）。
 axiosInstance.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     let token: string | null = useAuthStore.getState().token
     if (!token) {
       try {
-        token = localStorage.getItem('auth_token')
+        token = localStorage.getItem(AUTH_ACCESS_TOKEN_KEY)
       } catch {
         token = null
       }
@@ -65,9 +66,14 @@ axiosInstance.interceptors.response.use(
     if (error.response) {
       const status = error.response.status as number
       switch (status) {
-        case 401:
-          useAuthStore.getState().clearUser()
+        case 401: {
+          // 未登录接口若被网关返回 HTTP 401，不应误清刚写入的本地会话（业务态以 body.code 为准）。
+          const url = String((error.config as { url?: string })?.url ?? '')
+          if (!/\/api\/auth\/me\b/.test(url)) {
+            useAuthStore.getState().clearUser()
+          }
           break
+        }
         default:
           break
       }

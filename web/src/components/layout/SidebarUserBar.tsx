@@ -2,13 +2,19 @@ import type { ReactNode } from 'react'
 import { Avatar, Button, Dropdown, Menu, Space, Tooltip } from '@arco-design/web-react'
 import { Database, Key, LogOut, Moon, Settings, Sun, User } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { logoutSession } from '@/api/auth'
+import { useAuthStore } from '@/stores/authStore'
 import { useColorModeStore } from '@/stores/colorMode'
 import { useUiStore } from '@/stores/ui'
 import { cn } from '@/lib/cn'
 import { SIDEBAR_WIDTH } from '@/constants/layout'
 
-/** 占位展示名，接入登录态后替换 */
-const DISPLAY_NAME = 'wechat-o5Lj…'
+function roleLabel(role: string): string {
+  const r = (role || '').toLowerCase()
+  if (r === 'superadmin') return '超级管理员'
+  if (r === 'admin') return '管理员'
+  return '用户'
+}
 
 function menuIcon(Icon: typeof User) {
   return (
@@ -42,7 +48,30 @@ function iconOnlyNavBtn(
 
 export function SidebarUserBar() {
   const navigate = useNavigate()
+  const authUser = useAuthStore((s) => s.user)
+  const displayName =
+    (authUser?.displayName && String(authUser.displayName).trim()) ||
+    authUser?.email ||
+    '未登录'
+  const emailInitial = (authUser?.email?.[0] ?? '?').toUpperCase()
+  const accountTitleHint =
+    authUser != null
+      ? `${authUser.email} · ${roleLabel(authUser.role)}${authUser.status ? ` · ${authUser.status}` : ''}`
+      : undefined
+  const clearUser = useAuthStore((s) => s.clearUser)
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
+
+  const doLogout = () => {
+    void (async () => {
+      try {
+        await logoutSession()
+      } catch {
+        /* still clear local session */
+      }
+      clearUser()
+      navigate('/login', { replace: true })
+    })()
+  }
   const mode = useColorModeStore((s) => s.mode)
   const toggleMode = useColorModeStore((s) => s.toggleMode)
   const menuWidth = SIDEBAR_WIDTH
@@ -59,7 +88,7 @@ export function SidebarUserBar() {
           if (key === 'profile') navigate('/profile')
           else if (key === 'credential') navigate('/credential')
           else if (key === 'quotas') navigate('/quotas')
-          else if (key === 'logout') navigate('/login')
+          else if (key === 'logout') doLogout()
         }}
       >
         <Menu.Item key="profile">
@@ -106,7 +135,7 @@ export function SidebarUserBar() {
     {
       label: '退出登录',
       icon: <LogOut size={16} strokeWidth={1.75} className="text-[rgb(var(--danger-6))]" />,
-      onClick: () => navigate('/login'),
+      onClick: doLogout,
       danger: true,
     },
   ]
@@ -173,10 +202,23 @@ export function SidebarUserBar() {
             position="tr"
             triggerProps={{ className: 'flex w-full justify-center' }}
           >
-            <button type="button" className={triggerClass} aria-label="账户菜单">
+            <button
+              type="button"
+              className={triggerClass}
+              aria-label="账户菜单"
+              title={accountTitleHint}
+            >
               <div className="sidebar-collapsed-icon-rail">
-                <Avatar size={24} shape="circle" className="shrink-0">
-                  <img src="/logo.png" alt="" className="h-full w-full object-cover" />
+                <Avatar
+                  size={24}
+                  shape="circle"
+                  className="shrink-0 !bg-[var(--color-primary-light-2)] !text-[var(--color-primary-6)]"
+                >
+                  {authUser?.avatar ? (
+                    <img src={authUser.avatar} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <span className="text-[10px] font-semibold">{emailInitial}</span>
+                  )}
                 </Avatar>
               </div>
             </button>
@@ -186,13 +228,34 @@ export function SidebarUserBar() {
         <div className="flex min-h-[40px] items-center gap-1 px-1.5 py-1.5">
           <div className="min-w-0 flex-1 self-stretch">
             <Dropdown droplist={droplistExpanded} trigger="click" position="top">
-              <button type="button" className={triggerClass} aria-label="账户菜单">
-                <Avatar size={28} shape="circle" className="shrink-0">
-                  <img src="/logo.png" alt="" className="h-full w-full object-cover" />
+              <button
+                type="button"
+                className={triggerClass}
+                aria-label="账户菜单"
+                title={accountTitleHint}
+              >
+                <Avatar
+                  size={28}
+                  shape="circle"
+                  className="shrink-0 !bg-[var(--color-primary-light-2)] !text-[var(--color-primary-6)]"
+                >
+                  {authUser?.avatar ? (
+                    <img src={authUser.avatar} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <span className="text-[11px] font-semibold">{emailInitial}</span>
+                  )}
                 </Avatar>
-                <span className="min-w-0 flex-1 truncate text-left text-[12px] font-medium leading-normal text-[var(--color-text-1)]">
-                  {DISPLAY_NAME}
-                </span>
+                <div className="min-w-0 flex-1 text-left leading-tight">
+                  <div className="truncate text-[12px] font-medium text-[var(--color-text-1)]">
+                    {displayName}
+                  </div>
+                  {authUser ? (
+                    <div className="truncate text-[11px] text-[var(--color-text-3)]">
+                      {roleLabel(authUser.role)}
+                      {authUser.status ? ` · ${authUser.status}` : ''}
+                    </div>
+                  ) : null}
+                </div>
               </button>
             </Dropdown>
           </div>

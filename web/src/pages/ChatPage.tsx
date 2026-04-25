@@ -181,7 +181,7 @@ export function ChatPage() {
         collapsible={false}
         width={sessionPanelOpen ? 272 : 0}
         style={{
-          overflow: 'hidden',
+          overflow: sessionPanelOpen ? 'visible' : 'hidden',
           transition: 'width 0.22s cubic-bezier(0.34, 0.69, 0.1, 1)',
           borderRight: sessionPanelOpen ? '1px solid var(--color-border-2)' : 'none',
           background: 'var(--color-bg-1)',
@@ -291,7 +291,8 @@ export function ChatPage() {
 
           {/* 贴中缝竖条：hover 显示半圆拉手（收起） */}
           <div
-            className="group/chat-collapse-edge pointer-events-auto absolute inset-y-0 right-0 z-30 w-4 bg-transparent"
+            className="group/chat-collapse-edge pointer-events-auto absolute inset-y-0 z-30 w-14 bg-transparent"
+            style={{ right: -12, top: 0, bottom: 0 }}
             aria-hidden
           >
             <button
@@ -300,7 +301,7 @@ export function ChatPage() {
               aria-label="收起会话列表"
               onClick={() => setSessionPanelOpen(false)}
             >
-              <ChevronLeft size={14} strokeWidth={2.25} className="text-white" aria-hidden />
+              <ChevronLeft size={18} strokeWidth={2.25} className="text-white" aria-hidden />
             </button>
           </div>
         </div>
@@ -310,7 +311,8 @@ export function ChatPage() {
         {/* 会话栏收起后：主区左缘窄条 hover 才出现展开 */}
         {!sessionPanelOpen && (
           <div
-            className="group/chat-expand-edge pointer-events-auto absolute left-0 top-0 z-40 h-full w-4 bg-transparent"
+            className="group/chat-expand-edge pointer-events-auto absolute z-40 h-full w-14 bg-transparent"
+            style={{ left: -12, top: 0 }}
             aria-hidden
           >
             <button
@@ -319,7 +321,7 @@ export function ChatPage() {
               aria-label="展开会话列表"
               onClick={() => setSessionPanelOpen(true)}
             >
-              <ChevronRight size={14} strokeWidth={2.25} className="text-white" aria-hidden />
+              <ChevronRight size={18} strokeWidth={2.25} className="text-white" aria-hidden />
             </button>
           </div>
         )}
@@ -346,9 +348,6 @@ export function ChatPage() {
                     <Title heading={4} className="!m-0">
                       LingVoice
                     </Title>
-                    <Paragraph type="secondary" className="!m-0 !text-[13px]">
-                      输入问题开始对话，内容由 AI 生成
-                    </Paragraph>
                   </Space>
                 }
               />

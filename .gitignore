@@ -43,6 +43,8 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+web/.npm-cache/
+.gocache/
 dist
 dist-ssr
 *.local

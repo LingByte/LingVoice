@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/logger"
@@ -45,6 +46,8 @@ type ServerConfig struct {
 	Mode        string `env:"MODE"`
 	DocsPrefix  string `env:"DOCS_PREFIX"`
 	APIPrefix   string `env:"API_PREFIX"`
+	// WebAppURL is the browser origin for the SPA (e.g. http://localhost:5173). Used in magic-link emails; falls back to URL when empty.
+	WebAppURL   string `env:"WEB_APP_URL"`
 	SSLEnabled  bool   `env:"SSL_ENABLED"`
 	SSLCertFile string `env:"SSL_CERT_FILE"`
 	SSLKeyFile  string `env:"SSL_KEY_FILE"`
@@ -62,12 +65,26 @@ type AuthConfig struct {
 	SessionSecret    string `env:"SESSION_SECRET"`
 	SecretExpireDays string `env:"SESSION_EXPIRE_DAYS"`
 	APISecretKey     string `env:"API_SECRET_KEY"`
+	// JWTSecret signs access tokens; empty means use APISecretKey (see JWTSigningKey).
+	JWTSecret string `env:"JWT_SECRET"`
+	// JWTExpireHours access token lifetime in hours (default 168 = 7d).
+	JWTExpireHours int `env:"JWT_EXPIRE_HOURS"`
+	// JWTRefreshSecret signs refresh tokens; empty falls back to JWTSigningKey() (see RefreshJWTSigningKey).
+	JWTRefreshSecret string `env:"JWT_REFRESH_SECRET"`
+	// JWTRefreshExpireHours refresh token lifetime (default 720 = 30d).
+	JWTRefreshExpireHours int `env:"JWT_REFRESH_EXPIRE_HOURS"`
 }
 
 // ServicesConfig services configuration
 type ServicesConfig struct {
-	LLM     LLMConfig     `mapstructure:"llm"`
-	Storage StorageConfig `mapstructure:"storage"`
+	LLM         LLMConfig         `mapstructure:"llm"`
+	Storage     StorageConfig     `mapstructure:"storage"`
+	Translation TranslationConfig `mapstructure:"translation"`
+}
+
+// TranslationConfig optional third-party translation (MyMemory).
+type TranslationConfig struct {
+	MyMemoryEmail string `mapstructure:"mymemory_email"` // optional; higher free quota when set
 }
 
 // LLMConfig LLM service configuration
@@ -155,6 +172,7 @@ func Load() error {
 			Mode:        getStringOrDefault("MODE", "development"),
 			DocsPrefix:  getStringOrDefault("DOCS_PREFIX", "/api/docs"),
 			APIPrefix:   getStringOrDefault("API_PREFIX", "/api"),
+			WebAppURL:   getStringOrDefault("WEB_APP_URL", ""),
 			SSLEnabled:  getBoolOrDefault("SSL_ENABLED", false),
 			SSLCertFile: getStringOrDefault("SSL_CERT_FILE", ""),
 			SSLKeyFile:  getStringOrDefault("SSL_KEY_FILE", ""),
@@ -176,6 +194,10 @@ func Load() error {
 			SessionSecret:    getStringOrDefault("SESSION_SECRET", generateDefaultSessionSecret()),
 			SecretExpireDays: getStringOrDefault("SESSION_EXPIRE_DAYS", "7"),
 			APISecretKey:     getStringOrDefault("API_SECRET_KEY", generateDefaultSessionSecret()),
+			JWTSecret:             getStringOrDefault("JWT_SECRET", ""),
+			JWTExpireHours:        getIntOrDefault("JWT_EXPIRE_HOURS", 24),
+			JWTRefreshSecret:      getStringOrDefault("JWT_REFRESH_SECRET", ""),
+			JWTRefreshExpireHours: getIntOrDefault("JWT_REFRESH_EXPIRE_HOURS", 720),
 		},
 		Services: ServicesConfig{
 			LLM: LLMConfig{
@@ -188,6 +210,9 @@ func Load() error {
 				APIKey:    getStringOrDefault("LINGSTORAGE_API_KEY", ""),
 				APISecret: getStringOrDefault("LINGSTORAGE_API_SECRET", ""),
 				Bucket:    getStringOrDefault("LINGSTORAGE_BUCKET", "default"),
+			},
+			Translation: TranslationConfig{
+				MyMemoryEmail: getStringOrDefault("MYMEMORY_EMAIL", ""),
 			},
 		},
 		Middleware: loadMiddlewareConfig(),
@@ -377,3 +402,52 @@ func loadMiddlewareConfig() MiddlewareConfig {
 		EnableOperationLog:   getBoolOrDefault("ENABLE_OPERATION_LOG", defaultConfig.EnableOperationLog),
 	}
 }
+
+// JWTSigningKey returns JWT_SECRET when set; otherwise API_SECRET_KEY.
+func (a *AuthConfig) JWTSigningKey() string {
+	if a == nil {
+		return ""
+	}
+	s := strings.TrimSpace(a.JWTSecret)
+	if s != "" {
+		return s
+	}
+	return a.APISecretKey
+}
+
+// AccessTokenTTL returns a positive duration for access JWT lifetime.
+func (a *AuthConfig) AccessTokenTTL() time.Duration {
+	if a == nil {
+		return 24 * time.Hour
+	}
+	h := a.JWTExpireHours
+	if h <= 0 {
+		h = 24
+	}
+	return time.Duration(h) * time.Hour
+}
+
+// RefreshJWTSigningKey prefers JWT_REFRESH_SECRET; otherwise JWTSigningKey().
+func (a *AuthConfig) RefreshJWTSigningKey() string {
+	if a == nil {
+		return ""
+	}
+	s := strings.TrimSpace(a.JWTRefreshSecret)
+	if s != "" {
+		return s
+	}
+	return a.JWTSigningKey()
+}
+
+// RefreshTokenTTL returns refresh JWT lifetime.
+func (a *AuthConfig) RefreshTokenTTL() time.Duration {
+	if a == nil {
+		return 720 * time.Hour
+	}
+	h := a.JWTRefreshExpireHours
+	if h <= 0 {
+		h = 720
+	}
+	return time.Duration(h) * time.Hour
+}
+

@@ -2,21 +2,25 @@ package main
 
 import (
 	"flag"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
 	"github.com/LingByte/LingVoice/cmd/bootstrap"
 	"github.com/LingByte/LingVoice/internal/handlers"
+	"github.com/LingByte/LingVoice/internal/migrations"
+	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/internal/listeners"
 	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/middleware"
+	"github.com/LingByte/LingVoice/pkg/notification"
 	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
-	"log"
-	"net/http"
-	"os"
-	"time"
 )
 
 // Copyright (c) 2026 LingByte
@@ -70,12 +74,24 @@ func main() {
 		InitSQLPath: *initSQL,
 		AutoMigrate: *init,
 		SeedNonProd: *seed,
+		MigrateModels: func() []any {
+			return []any{
+				utils.Config{},
+				notification.MailLog{},
+				models.MailTemplate{},
+				models.InternalNotification{},
+				models.NotificationChannel{},
+				models.User{},
+			}
+		},
 	})
 
 	if err != nil {
 		logger.Error("database setup failed", zap.Error(err))
 		return
 	}
+	listeners.InitApplicationListeners(db, zap.L())
+	migrations.DropMailTemplateSubjectTplColumn(db)
 
 	// 8. Load Base Configs
 	var addr = config.GlobalConfig.Server.Addr
