@@ -82,10 +82,14 @@ func NewMailerMulti(channels []MailConfig, opts ...MailerOption) (*Mailer, error
 	for _, fn := range opts {
 		fn(&o)
 	}
-	return &Mailer{
+	m := &Mailer{
 		channels: slots,
 		retry:    o.retry.normalized(),
-	}, nil
+	}
+	if o.mailLogUserID != nil {
+		m.userID = *o.mailLogUserID
+	}
+	return m, nil
 }
 
 // NewMailerWithDB attaches GORM for mail_logs and sets user id for created rows.
@@ -104,7 +108,8 @@ func NewMailerMultiWithDB(channels []MailConfig, db *gorm.DB, userID uint, opts 
 	return m, nil
 }
 
-// NewMailerWithIP attaches GORM and client IP for anonymous-context logging (user_id 0).
+// NewMailerWithIP attaches GORM and client IP for mail_logs.ip_address.
+// 默认 mail_logs.user_id 为 0；需要关联用户时请传 WithMailLogUserID。
 func NewMailerWithIP(cfg MailConfig, db *gorm.DB, ip string, opts ...MailerOption) (*Mailer, error) {
 	return NewMailerMultiWithIP([]MailConfig{cfg}, db, ip, opts...)
 }

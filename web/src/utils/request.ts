@@ -1,5 +1,6 @@
 import type { InternalAxiosRequestConfig, AxiosResponse } from 'axios'
 import axiosInstance from '@/utils/axios'
+import { redirectUnauthorizedToHome } from '@/utils/authSession'
 
 export interface ApiResponse<T = unknown> {
   code: number
@@ -16,7 +17,12 @@ export async function request<T = unknown>(
       url,
       ...options,
     })
-    return response.data
+    const data = response.data
+    if (data && typeof data === 'object' && data.code === 401) {
+      redirectUnauthorizedToHome()
+      throw { code: 401, msg: data.msg || '暂未登录', data: null }
+    }
+    return data
   } catch (error: unknown) {
     const err = error as {
       response?: { data?: unknown; status?: number }

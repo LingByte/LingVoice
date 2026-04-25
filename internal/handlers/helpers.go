@@ -57,6 +57,18 @@ func parseInt64Param(c *gin.Context, name string) (int64, bool) {
 	return n, true
 }
 
+func parseIntParam(c *gin.Context, name string) (int, bool) {
+	s := strings.TrimSpace(c.Param(name))
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 func parseQueryInt(c *gin.Context, name string, def int) int {
 	s := strings.TrimSpace(c.Query(name))
 	if s == "" {

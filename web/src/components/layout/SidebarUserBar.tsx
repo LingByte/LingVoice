@@ -87,7 +87,6 @@ export function SidebarUserBar() {
         onClickMenuItem={(key) => {
           if (key === 'profile') navigate('/profile')
           else if (key === 'credential') navigate('/credential')
-          else if (key === 'quotas') navigate('/quotas')
           else if (key === 'logout') doLogout()
         }}
       >
@@ -101,12 +100,6 @@ export function SidebarUserBar() {
           <span className="inline-flex items-center gap-2">
             {menuIcon(Key)}
             密钥与凭证
-          </span>
-        </Menu.Item>
-        <Menu.Item key="quotas">
-          <span className="inline-flex items-center gap-2">
-            {menuIcon(Database)}
-            配额管理
           </span>
         </Menu.Item>
         <Menu.Item key="logout">
@@ -131,7 +124,6 @@ export function SidebarUserBar() {
   }[] = [
     { label: '个人中心', icon: menuIcon(User), onClick: () => navigate('/profile') },
     { label: '密钥与凭证', icon: menuIcon(Key), onClick: () => navigate('/credential') },
-    { label: '配额管理', icon: menuIcon(Database), onClick: () => navigate('/quotas') },
     {
       label: '退出登录',
       icon: <LogOut size={16} strokeWidth={1.75} className="text-[rgb(var(--danger-6))]" />,

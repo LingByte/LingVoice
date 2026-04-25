@@ -1,5 +1,13 @@
 import { Button, Layout, Menu, Tooltip } from '@arco-design/web-react'
-import { LayoutTemplate, MessageSquare, PanelLeft, PanelLeftClose, RadioTower, ScrollText } from 'lucide-react'
+import {
+  Braces,
+  LayoutTemplate,
+  MessageSquare,
+  PanelLeft,
+  PanelLeftClose,
+  RadioTower,
+  ScrollText,
+} from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useColorModeStore } from '@/stores/colorMode'
 import { useUiStore } from '@/stores/ui'
@@ -29,11 +37,17 @@ const menu = [
     label: '邮件日志',
     icon: <ScrollText size={16} strokeWidth={1.85} />,
   },
+  {
+    key: '/debug/openapi',
+    label: 'OpenAPI 调试',
+    icon: <Braces size={16} strokeWidth={1.85} />,
+  },
 ] as const
 
 function menuPathSelected(pathname: string, itemKey: string): boolean {
   if (itemKey === '/notify/channels') return pathname.startsWith('/notify/channels')
   if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
+  if (itemKey === '/debug/openapi') return pathname === '/debug/openapi'
   return pathname === itemKey
 }
 

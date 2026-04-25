@@ -25,6 +25,8 @@ func (h *Handlers) Register(engine *gin.Engine) {
 
 	api := engine.Group("/api")
 
+	h.registerOpenAPIRoutes(api)
+
 	nc := api.Group("/notification-channels")
 	{
 		nc.GET("", h.listNotificationChannels)
@@ -52,6 +54,17 @@ func (h *Handlers) Register(engine *gin.Engine) {
 		ml.GET("/:id", h.getMailLog)
 		ml.PUT("/:id", h.updateMailLog)
 		ml.DELETE("/:id", h.deleteMailLog)
+	}
+
+	cr := api.Group("/credentials")
+	cr.Use(models.AuthRequired)
+	{
+		cr.GET("", h.listCredentials)
+		cr.GET("/groups", h.listCredentialGroups)
+		cr.POST("", h.createCredential)
+		cr.GET("/:id", h.getCredential)
+		cr.PUT("/:id", h.updateCredential)
+		cr.DELETE("/:id", h.deleteCredential)
 	}
 
 	in := api.Group("/internal-notifications")

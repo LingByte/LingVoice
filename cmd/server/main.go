@@ -81,6 +81,10 @@ func main() {
 				models.MailTemplate{},
 				models.InternalNotification{},
 				models.NotificationChannel{},
+				models.LLMChannel{},
+				models.ASRChannel{},
+				models.TTSChannel{},
+				models.Credential{},
 				models.User{},
 			}
 		},

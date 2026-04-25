@@ -5,6 +5,7 @@ import axios, {
 } from 'axios'
 import { getApiBaseURL } from '@/config/apiConfig'
 import { AUTH_ACCESS_TOKEN_KEY, useAuthStore } from '@/stores/authStore'
+import { redirectUnauthorizedToHome } from '@/utils/authSession'
 
 const axiosInstance: AxiosInstance = axios.create({
   baseURL: getApiBaseURL(),
@@ -57,7 +58,14 @@ axiosInstance.interceptors.request.use(
 )
 
 axiosInstance.interceptors.response.use(
-  (response: AxiosResponse) => response,
+  (response: AxiosResponse) => {
+    const d = response.data as { code?: number; msg?: string } | undefined
+    if (d && typeof d === 'object' && d.code === 401) {
+      redirectUnauthorizedToHome()
+      return Promise.reject(Object.assign(new Error(d.msg || '暂未登录'), { code: 401 }))
+    }
+    return response
+  },
   (error) => {
     if (import.meta.env.DEV) {
       console.error('[axios] response error', error)
@@ -65,17 +73,8 @@ axiosInstance.interceptors.response.use(
 
     if (error.response) {
       const status = error.response.status as number
-      switch (status) {
-        case 401: {
-          // 未登录接口若被网关返回 HTTP 401，不应误清刚写入的本地会话（业务态以 body.code 为准）。
-          const url = String((error.config as { url?: string })?.url ?? '')
-          if (!/\/api\/auth\/me\b/.test(url)) {
-            useAuthStore.getState().clearUser()
-          }
-          break
-        }
-        default:
-          break
+      if (status === 401) {
+        redirectUnauthorizedToHome()
       }
     }
 

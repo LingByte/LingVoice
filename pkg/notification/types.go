@@ -58,7 +58,7 @@ type MailConfig struct {
 	APIKey  string `json:"api_key"`
 
 	From     string `json:"from"`               // 发件邮箱；也可写 RFC 格式「显示名 <email>」
-	FromName string `json:"from_name,omitempty"` // 可选显示名（如 解忧造物）；与 From 中 Name 二选一，此项在纯邮箱 From 时生效
+	FromName string `json:"from_name,omitempty"` // 可选显示名；与 From 中 Name 二选一，此项在纯邮箱 From 时生效
 }
 
 // MultiChannelMailConfig is a convenience wrapper for JSON/YAML config: ordered list of channels
@@ -102,13 +102,26 @@ func (p RetryPolicy) normalized() RetryPolicy {
 type MailerOption func(*mailerOptions)
 
 type mailerOptions struct {
-	retry RetryPolicy
+	retry         RetryPolicy
+	mailLogUserID *uint // 写入 mail_logs.user_id；与 NewMailerMultiWithDB 的显式 userID 同时存在时以后者为准
 }
 
 // WithRetry sets retry policy (merged with defaults for zero fields if you only set MaxAttempts).
 func WithRetry(p RetryPolicy) MailerOption {
 	return func(o *mailerOptions) {
 		o.retry = p
+	}
+}
+
+// WithMailLogUserID sets mail_logs.user_id for sends that use NewMailerMultiWithIP (no session user on mailer).
+func WithMailLogUserID(uid uint) MailerOption {
+	return func(o *mailerOptions) {
+		if uid == 0 {
+			o.mailLogUserID = nil
+			return
+		}
+		u := uid
+		o.mailLogUserID = &u
 	}
 }
 

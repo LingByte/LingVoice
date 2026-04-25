@@ -32,6 +32,7 @@ var (
 
 type emailVerifyCodeJob struct {
 	db        *gorm.DB
+	userID    uint
 	email     string
 	code      string
 	clientIP  string
@@ -100,6 +101,7 @@ func registerUserSignalHandlers(lg *zap.Logger) {
 		)
 		job := emailVerifyCodeJob{
 			db:        db,
+			userID:    u.ID,
 			email:     u.Email,
 			code:      code,
 			clientIP:  clientIP,
@@ -136,7 +138,7 @@ func sendEmailLoginCodeHTML(ctx context.Context, job emailVerifyCodeJob) (struct
 		logger.Warn("email login code mail: no mail channels", zap.Error(err))
 		return out, err
 	}
-	mailer, err := notification.NewMailerMultiWithIP(cfgs, job.db, job.clientIP)
+	mailer, err := notification.NewMailerMultiWithIP(cfgs, job.db, job.clientIP, notification.WithMailLogUserID(job.userID))
 	if err != nil {
 		logger.Warn("email login code mail: mailer", zap.Error(err))
 		return out, err
