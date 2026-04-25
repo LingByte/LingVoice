@@ -1,5 +1,7 @@
 package models
 
+import "strings"
+
 // Copyright (c) 2026 LingByte
 // SPDX-License-Identifier: MIT
 
@@ -11,9 +13,39 @@ const (
 	MultiKeyModePolling MultiKeyMode = "polling" // 轮询
 )
 
+// 上游 LLM 渠道商 / 协议（与路由、鉴权头、Base URL 约定对齐）。
+const (
+	LLMChannelProtocolOpenAI    = "openai"
+	LLMChannelProtocolAnthropic  = "anthropic"
+	LLMChannelProtocolCoze      = "coze"
+	LLMChannelProtocolOllama    = "ollama"
+	LLMChannelProtocolLMStudio  = "lmstudio"
+)
+
+// LLMChannelProtocols 管理端可选协议列表。
+var LLMChannelProtocols = []string{
+	LLMChannelProtocolOpenAI,
+	LLMChannelProtocolAnthropic,
+	LLMChannelProtocolCoze,
+	LLMChannelProtocolOllama,
+	LLMChannelProtocolLMStudio,
+}
+
+// IsLLMChannelProtocolKnown 校验 API 入参。
+func IsLLMChannelProtocolKnown(p string) bool {
+	p = strings.ToLower(strings.TrimSpace(p))
+	for _, x := range LLMChannelProtocols {
+		if p == x {
+			return true
+		}
+	}
+	return false
+}
+
 // LLMChannel 大模型上游渠道（OpenAI 兼容、自建网关等），与 ASR/TTS 分表。
 type LLMChannel struct {
 	Id                 int            `json:"id"`
+	Protocol           string         `json:"protocol" gorm:"size:32;not null;default:'openai';index;comment:渠道协议 openai|anthropic|coze|ollama|lmstudio"`
 	Type               int            `json:"type" gorm:"default:0"`
 	Key                string         `json:"key" gorm:"not null"`
 	OpenAIOrganization *string        `json:"openai_organization"`
@@ -25,7 +57,6 @@ type LLMChannel struct {
 	TestTime           int64          `json:"test_time" gorm:"bigint"`
 	ResponseTime       int            `json:"response_time"` // in milliseconds
 	BaseURL            *string        `json:"base_url" gorm:"column:base_url;default:''"`
-	Other              string         `json:"other"`
 	Balance            float64        `json:"balance"` // in USD
 	BalanceUpdatedTime int64          `json:"balance_updated_time" gorm:"bigint"`
 	Models             string         `json:"models"`
@@ -35,14 +66,8 @@ type LLMChannel struct {
 	StatusCodeMapping  *string        `json:"status_code_mapping" gorm:"type:varchar(1024);default:''"`
 	Priority           *int64         `json:"priority" gorm:"bigint;default:0"`
 	AutoBan            *int           `json:"auto_ban" gorm:"default:1"`
-	OtherInfo          string         `json:"other_info"`
 	Tag                *string        `json:"tag" gorm:"index"`
-	Setting            *string        `json:"setting" gorm:"type:text"` // 渠道额外设置
-	ParamOverride      *string        `json:"param_override" gorm:"type:text"`
-	HeaderOverride     *string        `json:"header_override" gorm:"type:text"`
-	Remark             *string        `json:"remark" gorm:"type:varchar(255)" validate:"max=255"`
 	ChannelInfo        LLMChannelInfo `json:"channel_info" gorm:"column:channel_info;type:json"`
-	OtherSettings      string         `json:"settings" gorm:"column:settings"`
 	Keys               []string       `json:"-" gorm:"-"`
 }
 

@@ -1,12 +1,15 @@
 import { Button, Layout, Menu, Tooltip } from '@arco-design/web-react'
 import {
   Braces,
+  Cpu,
   LayoutTemplate,
   MessageSquare,
+  Mic,
   PanelLeft,
   PanelLeftClose,
   RadioTower,
   ScrollText,
+  Volume2,
 } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useColorModeStore } from '@/stores/colorMode'
@@ -38,6 +41,21 @@ const menu = [
     icon: <ScrollText size={16} strokeWidth={1.85} />,
   },
   {
+    key: '/channels/llm',
+    label: 'LLM 渠道',
+    icon: <Cpu size={16} strokeWidth={1.85} />,
+  },
+  {
+    key: '/channels/asr',
+    label: 'ASR 渠道',
+    icon: <Mic size={16} strokeWidth={1.85} />,
+  },
+  {
+    key: '/channels/tts',
+    label: 'TTS 渠道',
+    icon: <Volume2 size={16} strokeWidth={1.85} />,
+  },
+  {
     key: '/debug/openapi',
     label: 'OpenAPI 调试',
     icon: <Braces size={16} strokeWidth={1.85} />,
@@ -47,6 +65,9 @@ const menu = [
 function menuPathSelected(pathname: string, itemKey: string): boolean {
   if (itemKey === '/notify/channels') return pathname.startsWith('/notify/channels')
   if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
+  if (itemKey === '/channels/llm') return pathname.startsWith('/channels/llm')
+  if (itemKey === '/channels/asr') return pathname.startsWith('/channels/asr')
+  if (itemKey === '/channels/tts') return pathname.startsWith('/channels/tts')
   if (itemKey === '/debug/openapi') return pathname === '/debug/openapi'
   return pathname === itemKey
 }

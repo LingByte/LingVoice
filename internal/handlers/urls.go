@@ -27,6 +27,31 @@ func (h *Handlers) Register(engine *gin.Engine) {
 
 	h.registerOpenAPIRoutes(api)
 
+	llm := api.Group("/llm-channels")
+	{
+		llm.GET("", h.listLLMChannels)
+		llm.POST("", h.createLLMChannel)
+		llm.GET("/:id", h.getLLMChannel)
+		llm.PUT("/:id", h.updateLLMChannel)
+		llm.DELETE("/:id", h.deleteLLMChannel)
+	}
+	asr := api.Group("/asr-channels")
+	{
+		asr.GET("", h.listASRChannels)
+		asr.POST("", h.createASRChannel)
+		asr.GET("/:id", h.getASRChannel)
+		asr.PUT("/:id", h.updateASRChannel)
+		asr.DELETE("/:id", h.deleteASRChannel)
+	}
+	tts := api.Group("/tts-channels")
+	{
+		tts.GET("", h.listTTSChannels)
+		tts.POST("", h.createTTSChannel)
+		tts.GET("/:id", h.getTTSChannel)
+		tts.PUT("/:id", h.updateTTSChannel)
+		tts.DELETE("/:id", h.deleteTTSChannel)
+	}
+
 	nc := api.Group("/notification-channels")
 	{
 		nc.GET("", h.listNotificationChannels)
