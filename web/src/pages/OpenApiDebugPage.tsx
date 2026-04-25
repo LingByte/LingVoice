@@ -87,6 +87,21 @@ const PRESETS: {
     ),
   },
   {
+    label: 'Agent chat/stream（NDJSON，OpenAI 协议渠道）',
+    method: 'POST',
+    path: '/api/openapi/v1/agent/chat/stream',
+    authMode: 'llm',
+    body: JSON.stringify(
+      {
+        model: 'gpt-4o-mini',
+        input: '用三步说明如何泡一杯茶',
+        max_tasks: 6,
+      },
+      null,
+      2,
+    ),
+  },
+  {
     label: 'Anthropic /v1/messages（凭证 kind=llm）',
     method: 'POST',
     path: '/api/openapi/v2/v1/messages',

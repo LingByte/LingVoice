@@ -14,6 +14,7 @@ import {
   Popconfirm,
   Select,
   Space,
+  Spin,
   Typography,
 } from '@arco-design/web-react'
 import {
@@ -24,18 +25,20 @@ import {
   listChatSessions,
   patchChatSessionTitle,
 } from '@/api/chat'
-import { fetchOpenAPIModels, streamOpenAIChatCompletion } from '@/api/openapiLlm'
+import { fetchOpenAPIModels, streamOpenAPIAgentChat, streamOpenAIChatCompletion } from '@/api/openapiLlm'
 import { useAuthStore } from '@/stores/authStore'
 import {
   Bot,
   ChevronLeft,
   ChevronRight,
+  Copy,
   MessageSquarePlus,
   Mic,
   Paperclip,
   Send,
   Trash2,
 } from 'lucide-react'
+import { MarkdownMessageBody } from '@/components/chat/MarkdownMessageBody'
 import { cn } from '@/lib/cn'
 
 const { Header, Footer, Content } = Layout
@@ -54,6 +57,9 @@ type ChatMessage = { id: string; role: 'user' | 'assistant' | 'system'; content:
 
 const LS_OPENAPI_KEY = 'lingvoice_openapi_llm_key'
 const LS_CHAT_MODEL = 'lingvoice_chat_model'
+const LS_CHAT_MODE = 'lingvoice_chat_mode'
+
+type ChatInteractionMode = 'chat' | 'agent'
 
 function readLocal(key: string) {
   try {
@@ -91,9 +97,18 @@ function newSession(title = '新对话'): ChatSession {
   }
 }
 
-function ChatMessageRow({ message }: { message: ChatMessage }) {
+function ChatMessageRow({
+  message,
+  renderMarkdown,
+  streaming,
+}: {
+  message: ChatMessage
+  renderMarkdown?: boolean
+  streaming?: boolean
+}) {
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
+  const showCopy = Boolean(renderMarkdown && !streaming && message.content.trim().length > 0)
   return (
     <div
       className={cn(
@@ -124,9 +139,39 @@ function ChatMessageRow({ message }: { message: ChatMessage }) {
         )}
         bodyStyle={{ padding: '10px 14px' }}
       >
-        <Paragraph className="!m-0 !text-[14px] !leading-relaxed !text-[var(--color-text-1)]">
-          {message.content}
-        </Paragraph>
+        {!isUser && !isSystem ? (
+          <div className="mb-2 flex min-h-[24px] items-center justify-end gap-2">
+            {streaming ? (
+              <span className="inline-flex items-center gap-1 text-[12px] text-[var(--color-text-3)]">
+                <Spin size={14} />
+                思考中…
+              </span>
+            ) : null}
+            {showCopy ? (
+              <Button
+                type="outline"
+                size="mini"
+                className="!h-7"
+                icon={<Copy size={14} strokeWidth={1.75} />}
+                onClick={() => {
+                  void navigator.clipboard.writeText(message.content).then(
+                    () => Message.success('已复制到剪贴板'),
+                    () => Message.error('复制失败'),
+                  )
+                }}
+              >
+                复制
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {renderMarkdown ? (
+          <MarkdownMessageBody content={message.content} />
+        ) : (
+          <Paragraph className="!m-0 !text-[14px] !leading-relaxed !text-[var(--color-text-1)]">
+            {message.content}
+          </Paragraph>
+        )}
       </Card>
       {isUser && (
         <Avatar
@@ -157,6 +202,10 @@ export function ChatPage() {
   const [sessionPanelOpen, setSessionPanelOpen] = useState(true)
   const [apiKey, setApiKeyState] = useState(() => readLocal(LS_OPENAPI_KEY))
   const [model, setModelState] = useState(() => readLocal(LS_CHAT_MODEL))
+  const [chatMode, setChatModeState] = useState<ChatInteractionMode>(() => {
+    const v = readLocal(LS_CHAT_MODE)
+    return v === 'agent' ? 'agent' : 'chat'
+  })
 
   const setApiKey = (v: string) => {
     setApiKeyState(v)
@@ -170,6 +219,14 @@ export function ChatPage() {
     setModelState(v)
     try {
       localStorage.setItem(LS_CHAT_MODEL, v)
+    } catch {
+      /* ignore */
+    }
+  }
+  const setChatMode = (v: ChatInteractionMode) => {
+    setChatModeState(v)
+    try {
+      localStorage.setItem(LS_CHAT_MODE, v)
     } catch {
       /* ignore */
     }
@@ -435,22 +492,101 @@ export function ChatPage() {
       const signal = chatAbortRef.current.signal
       let assistantBody = ''
       try {
-        await streamOpenAIChatCompletion({
-          apiKey: apiKey.trim(),
-          model: model.trim(),
-          messages: apiMessages,
-          signal,
-          onDelta: (chunk) => {
-            assistantBody += chunk
+        if (chatMode === 'agent') {
+          const agentTextRef = { current: '' }
+          let agentText =
+            '**Agent**\n\n_已发送请求，等待上游响应…_\n\n'
+          agentTextRef.current = agentText
+          const bumpAgent = () => {
+            agentTextRef.current = agentText
             setMessagesBySession((prev) => {
               const list = prev[sid] ?? []
-              const next = list.map((m) =>
-                m.id === assistantId ? { ...m, content: m.content + chunk } : m,
-              )
-              return { ...prev, [sid]: next }
+              return {
+                ...prev,
+                [sid]: list.map((m) => (m.id === assistantId ? { ...m, content: agentTextRef.current } : m)),
+              }
             })
-          },
-        })
+          }
+          bumpAgent()
+          await streamOpenAPIAgentChat({
+            apiKey: apiKey.trim(),
+            model: model.trim(),
+            input: text,
+            max_tasks: 6,
+            sessionId: user ? sid : undefined,
+            signal,
+            onEvent: (ev) => {
+              if (ev.event === 'start') {
+                agentText =
+                  '**Agent**\n\n_正在拆解目标并规划子任务…_\n\n'
+                agentTextRef.current = agentText
+                bumpAgent()
+                return
+              }
+              if (ev.event === 'plan') {
+                const n = Number(ev.data.task_count ?? 0)
+                agentText += `\n\n---\n\n## 计划（共 ${n} 步）\n\n`
+                const tasks = ev.data.tasks
+                if (Array.isArray(tasks)) {
+                  for (const t of tasks) {
+                    const row = t as { title?: string; id?: string }
+                    agentText += `- ${String(row.title ?? row.id ?? '')}\n`
+                  }
+                }
+                agentText += '\n'
+              } else if (ev.event === 'task') {
+                const phase = String(ev.data.phase ?? '')
+                const idx = ev.data.index
+                const tot = ev.data.total
+                const title = String(ev.data.title ?? ev.data.task_id ?? '')
+                if (phase === 'running' && typeof idx === 'number' && typeof tot === 'number') {
+                  agentText += `\n\n---\n\n### 正在执行任务 ${idx} / ${tot}\n\n**${title}**\n\n_执行中…_\n\n`
+                  agentTextRef.current = agentText
+                  bumpAgent()
+                  return
+                }
+                const st = String(ev.data.status ?? '')
+                if (st !== 'succeeded' && st !== 'failed') {
+                  return
+                }
+                agentText += `- **${st}** ${title}\n`
+                if (st === 'failed' && ev.data.error) {
+                  agentText += `  - ${String(ev.data.error)}\n`
+                }
+                if (st === 'succeeded' && ev.data.output) {
+                  const o = String(ev.data.output)
+                  const clip = o.length > 800 ? `${o.slice(0, 800)}…` : o
+                  agentText += `\n\n\`\`\`text\n${clip}\n\`\`\`\n\n`
+                }
+              } else if (ev.event === 'final') {
+                agentText += `\n\n---\n\n## 最终结果\n\n${String(ev.data.output ?? '')}\n`
+              } else if (ev.event === 'error') {
+                agentText += `\n\n**错误**\n\n${String(ev.data.message ?? 'unknown')}\n`
+              }
+              agentTextRef.current = agentText
+              bumpAgent()
+            },
+          })
+          assistantBody = agentTextRef.current
+          bumpAgent()
+        } else {
+          await streamOpenAIChatCompletion({
+            apiKey: apiKey.trim(),
+            model: model.trim(),
+            messages: apiMessages,
+            signal,
+            onDelta: (chunk) => {
+              assistantBody += chunk
+              setMessagesBySession((prev) => {
+                const list = prev[sid] ?? []
+                const next = list.map((m) =>
+                  m.id === assistantId ? { ...m, content: m.content + chunk } : m,
+                )
+                return { ...prev, [sid]: next }
+              })
+            },
+          })
+        }
         if (user && assistantBody.trim()) {
           await appendChatMessage(sid, {
             role: 'assistant',
@@ -713,8 +849,20 @@ export function ChatPage() {
           ) : (
             <div className="chat-msg-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
               <div className="mx-auto flex w-full max-w-[720px] flex-col gap-3">
-                {messages.map((m) => (
-                  <ChatMessageRow key={m.id} message={m} />
+                {messages.map((m, idx) => (
+                  <ChatMessageRow
+                    key={m.id}
+                    message={m}
+                    renderMarkdown={
+                      m.role === 'assistant' && m.content.trimStart().startsWith('**Agent**')
+                    }
+                    streaming={
+                      sendLoading &&
+                      m.role === 'assistant' &&
+                      idx === messages.length - 1 &&
+                      chatMode === 'agent'
+                    }
+                  />
                 ))}
               </div>
             </div>
@@ -732,7 +880,11 @@ export function ChatPage() {
                 value={draft}
                 onChange={setDraft}
                 onKeyDown={onTextareaKeyDown}
-                placeholder="输入问题，发送 [Enter] / 换行 [Shift + Enter]"
+                placeholder={
+                  chatMode === 'agent'
+                    ? 'Agent：描述目标或复杂问题，系统将拆解为多步执行 [Enter] 发送 / [Shift+Enter] 换行'
+                    : '输入问题，发送 [Enter] / 换行 [Shift + Enter]'
+                }
                 autoSize={{ minRows: 2, maxRows: 8 }}
                 className="!resize-none !border-none !bg-transparent !p-0 !text-[14px] focus:!shadow-none"
               />
@@ -751,18 +903,30 @@ export function ChatPage() {
                   </Text>
                 ) : null}
                 <Space align="center" className="!w-full" style={{ justifyContent: 'space-between' }}>
-                <Select
-                  size="small"
-                  value={model || undefined}
-                  onChange={(v) => setModel(v == null ? '' : String(v))}
-                  options={modelOptions}
-                  loading={modelsLoading}
-                  placeholder={apiKey.trim() ? '选择模型' : '填写密钥后加载'}
-                  notFoundContent={modelDropdownEmpty}
-                  triggerProps={{ updateOnScroll: true }}
-                  className="chat-model-select min-w-0"
-                  style={{ width: 200 }}
-                />
+                <Space size={8} wrap>
+                  <Select
+                    size="small"
+                    value={chatMode}
+                    onChange={(v) => setChatMode(v === 'agent' ? 'agent' : 'chat')}
+                    options={[
+                      { label: '对话', value: 'chat' },
+                      { label: 'Agent', value: 'agent' },
+                    ]}
+                    style={{ width: 100 }}
+                  />
+                  <Select
+                    size="small"
+                    value={model || undefined}
+                    onChange={(v) => setModel(v == null ? '' : String(v))}
+                    options={modelOptions}
+                    loading={modelsLoading}
+                    placeholder={apiKey.trim() ? '选择模型' : '填写密钥后加载'}
+                    notFoundContent={modelDropdownEmpty}
+                    triggerProps={{ updateOnScroll: true }}
+                    className="chat-model-select min-w-0"
+                    style={{ width: 200 }}
+                  />
+                </Space>
                 <Space size={4}>
                   <Button
                     type="secondary"

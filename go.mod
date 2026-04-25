@@ -5,7 +5,6 @@ go 1.26.2
 require (
 	cloud.google.com/go/speech v1.33.0
 	cloud.google.com/go/texttospeech v1.19.0
-	github.com/LingByte/SoulNexus v1.0.0
 	github.com/LingByte/lingstorage-sdk-go v0.0.0-20260113030255-ff9d0501909c
 	github.com/abema/go-mp4 v1.5.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.16

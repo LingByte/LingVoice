@@ -45,6 +45,7 @@ func (h *Handlers) registerOpenAPIRoutes(api *gin.RouterGroup) {
 	{
 		v1llm.GET("/models", h.openAPIListModels)
 		v1llm.POST("/chat/completions", h.openAPIOpenAIChatCompletions)
+		v1llm.POST("/agent/chat/stream", h.openAPIAgentChatStream)
 	}
 
 	v1asr := api.Group("/openapi/v1/speech/asr")

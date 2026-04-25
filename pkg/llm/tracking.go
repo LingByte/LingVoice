@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"strings"
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/utils"
@@ -167,6 +168,10 @@ func (t *LLMRequestTracker) Complete(response *QueryResponse) {
 
 	utils.Sig().Emit(SignalLLMRequestEnd, t, endData)
 
+	respClip := ClipOpenAPIUsageBody(output)
+	if strings.TrimSpace(t.responseContent) != "" {
+		respClip = ClipOpenAPIUsageBody(t.responseContent)
+	}
 	payload := LLMUsageSignalPayload{
 		RequestID:       t.requestID,
 		UserID:          t.userID,
@@ -184,7 +189,7 @@ func (t *LLMRequestTracker) Complete(response *QueryResponse) {
 		TPS:             tps,
 		QueueTimeMs:     queueTimeMs,
 		RequestContent:  t.requestContent,
-		ResponseContent: output,
+		ResponseContent: respClip,
 		UserAgent:       t.userAgent,
 		IPAddress:       t.ipAddress,
 		StatusCode:      t.statusCode,
@@ -235,7 +240,7 @@ func (t *LLMRequestTracker) Error(errCode, errorMessage string) {
 		LatencyMs:       latencyMs,
 		QueueTimeMs:     queueTimeMs,
 		RequestContent:  t.requestContent,
-		ResponseContent: t.responseContent,
+		ResponseContent: ClipOpenAPIUsageBody(t.responseContent),
 		UserAgent:       t.userAgent,
 		IPAddress:       t.ipAddress,
 		StatusCode:      t.statusCode,

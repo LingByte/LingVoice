@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LingByte/SoulNexus/pkg/media"
+	"github.com/LingByte/LingVoice/pkg/media"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -309,15 +310,6 @@ func (oh *OpenaiHandler) QueryWithOptions(text string, options *QueryOptions) (*
 		model = "gpt-3.5-turbo"
 	}
 
-	tracker := NewLLMRequestTracker(
-		options.SessionID,
-		options.UserID,
-		"openai",
-		model,
-		oh.baseUrl,
-		requestType,
-	)
-
 	// 构建消息 - 目前使用单条文本，后续可扩展支持消息历史
 
 	var rewrite *QueryRewrite
@@ -357,7 +349,7 @@ func (oh *OpenaiHandler) QueryWithOptions(text string, options *QueryOptions) (*
 		estimatedMaxOutputChars = options.MaxTokens * 4
 	}
 
-	tracker = NewLLMRequestTracker(
+	tracker := NewLLMRequestTracker(
 		options.SessionID,
 		options.UserID,
 		oh.Provider(),
@@ -365,6 +357,13 @@ func (oh *OpenaiHandler) QueryWithOptions(text string, options *QueryOptions) (*
 		oh.baseUrl,
 		requestType,
 	)
+	tracker.SetUserAgent(strings.TrimSpace(options.HTTPUserAgent))
+	tracker.SetIPAddress(strings.TrimSpace(options.ClientIP))
+	if options.UsageChannelID > 0 {
+		tracker.SetChannelUsageMeta(options.UsageChannelID, nil)
+	}
+	tracker.SetStatusCode(http.StatusOK)
+	tracker.MarkStarted()
 
 	requestID := GenerateLingRequestID()
 	requestedOutputFormat := options.OutputFormat
@@ -513,6 +512,12 @@ func (oh *OpenaiHandler) QueryWithOptions(text string, options *QueryOptions) (*
 	if options.LogitBias != nil {
 		request.LogitBias = options.LogitBias
 	}
+	if reqAudit, err := json.Marshal(request); err == nil {
+		tracker.SetRequestContent(ClipOpenAPIUsageBody(string(reqAudit)))
+	} else {
+		tracker.SetRequestContent(ClipOpenAPIUsageBody(text))
+	}
+
 	reqCtx, cancel := context.WithCancel(oh.ctx)
 	cancelID := oh.setCurrentCancel(cancel)
 	defer func() {
@@ -521,6 +526,8 @@ func (oh *OpenaiHandler) QueryWithOptions(text string, options *QueryOptions) (*
 	}()
 	response, err := oh.client.CreateChatCompletion(reqCtx, request)
 	if err != nil {
+		tracker.SetResponseContent(ClipOpenAPIUsageBody(err.Error()))
+		tracker.SetStatusCode(http.StatusBadGateway)
 		tracker.Error("API_ERROR", err.Error())
 		return nil, err
 	}
@@ -640,6 +647,7 @@ func (oh *OpenaiHandler) QueryWithOptions(text string, options *QueryOptions) (*
 	}
 	if b, e := json.Marshal(response); e == nil {
 		llmDetails.RawResponseJSON = string(b)
+		tracker.SetResponseContent(ClipOpenAPIUsageBody(string(b)))
 	}
 
 	tracker.Complete(resp)

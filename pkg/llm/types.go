@@ -84,6 +84,10 @@ type QueryOptions struct {
 	SessionID   string // 会话ID
 	UserID      string // 用户ID
 	RequestType string // 请求类型: query, query_stream, rewrite, expand
+	// HTTPUserAgent / ClientIP / UsageChannelID 供服务端调用（如 OpenAPI Agent）写入 llm_usage。
+	HTTPUserAgent  string
+	ClientIP       string
+	UsageChannelID int
 }
 
 type ChatMessage struct {
