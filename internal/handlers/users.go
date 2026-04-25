@@ -223,3 +223,169 @@ func (h *Handlers) postRefresh(c *gin.Context) {
 	}
 	response.Success(c, "ok", out)
 }
+
+type adminPatchUserBody struct {
+	Status      string `json:"status"`
+	Role        string `json:"role"`
+	DisplayName string `json:"display_name"`
+	Locale      string `json:"locale"`
+}
+
+// listAdminUsers GET /api/admin/users
+func (h *Handlers) listAdminUsers(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	page := parseQueryInt(c, "page", 1)
+	if page < 1 {
+		page = 1
+	}
+	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	offset := (page - 1) * pageSize
+
+	q := h.db.Model(&models.User{})
+	if s := strings.TrimSpace(c.Query("email")); s != "" {
+		q = q.Where("email LIKE ?", "%"+strings.TrimSpace(strings.ToLower(s))+"%")
+	}
+	if s := strings.TrimSpace(c.Query("status")); s != "" {
+		q = q.Where("status = ?", s)
+	}
+	if s := strings.TrimSpace(c.Query("role")); s != "" {
+		q = q.Where("role = ?", s)
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+
+	listQ := h.db.Model(&models.User{})
+	if s := strings.TrimSpace(c.Query("email")); s != "" {
+		listQ = listQ.Where("email LIKE ?", "%"+strings.TrimSpace(strings.ToLower(s))+"%")
+	}
+	if s := strings.TrimSpace(c.Query("status")); s != "" {
+		listQ = listQ.Where("status = ?", s)
+	}
+	if s := strings.TrimSpace(c.Query("role")); s != "" {
+		listQ = listQ.Where("role = ?", s)
+	}
+
+	var list []models.User
+	if err := listQ.Order("id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+	totalPage := int(total) / pageSize
+	if int(total)%pageSize != 0 {
+		totalPage++
+	}
+	response.Success(c, "ok", gin.H{
+		"list":      list,
+		"total":     total,
+		"page":      page,
+		"pageSize":  pageSize,
+		"totalPage": totalPage,
+	})
+}
+
+// getAdminUser GET /api/admin/users/:id
+func (h *Handlers) getAdminUser(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		response.FailWithCode(c, 400, "无效的用户 id", nil)
+		return
+	}
+	var row models.User
+	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.FailWithCode(c, 404, "用户不存在", nil)
+			return
+		}
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+	response.Success(c, "ok", gin.H{"user": row})
+}
+
+// patchAdminUser PATCH /api/admin/users/:id
+func (h *Handlers) patchAdminUser(c *gin.Context) {
+	op := models.CurrentUser(c)
+	if !requireAdmin(c) {
+		return
+	}
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		response.FailWithCode(c, 400, "无效的用户 id", nil)
+		return
+	}
+	var body adminPatchUserBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		return
+	}
+	var row models.User
+	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.FailWithCode(c, 404, "用户不存在", nil)
+			return
+		}
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+
+	if row.IsSuperAdmin() && !op.IsSuperAdmin() {
+		response.FailWithCode(c, 403, "无权修改超级管理员账号", nil)
+		return
+	}
+
+	vals := map[string]any{}
+	if s := strings.TrimSpace(body.Status); s != "" {
+		norm := models.NormalizeUserStatus(s)
+		if norm == "" {
+			response.FailWithCode(c, 400, "无效的 status", nil)
+			return
+		}
+		if op.ID == row.ID && !models.UserStatusAllowsLogin(norm) {
+			response.FailWithCode(c, 400, "不能将本人账号设为不可登录状态", nil)
+			return
+		}
+		vals["status"] = norm
+	}
+	if r := strings.TrimSpace(body.Role); r != "" {
+		if r != models.RoleUser && r != models.RoleAdmin && r != models.RoleSuperAdmin {
+			response.FailWithCode(c, 400, "无效的 role", nil)
+			return
+		}
+		if r != row.Role {
+			if !op.IsSuperAdmin() {
+				response.FailWithCode(c, 403, "仅超级管理员可变更用户角色", nil)
+				return
+			}
+			vals["role"] = r
+		}
+	}
+	if body.DisplayName != "" {
+		vals["display_name"] = strings.TrimSpace(body.DisplayName)
+	}
+	if body.Locale != "" {
+		vals["locale"] = strings.TrimSpace(body.Locale)
+	}
+	if len(vals) == 0 {
+		response.FailWithCode(c, 400, "无可更新字段", nil)
+		return
+	}
+	vals["update_by"] = operatorFromUser(op)
+	if err := models.UpdateUserFields(h.db, &row, vals); err != nil {
+		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
+		response.Success(c, "已更新", gin.H{"user": gin.H{"id": id}})
+		return
+	}
+	response.Success(c, "已更新", gin.H{"user": row})
+}

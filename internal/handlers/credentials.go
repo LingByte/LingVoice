@@ -210,7 +210,7 @@ func (h *Handlers) createCredential(c *gin.Context) {
 	}
 	for i := 0; i < 8; i++ {
 		row := base
-		row.Key = utils.RandString(48)
+		row.Key = utils.RandCredentialAPIKey()
 		if err := h.db.Create(&row).Error; err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "unique") {
 				continue

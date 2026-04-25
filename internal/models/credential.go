@@ -54,6 +54,10 @@ func MaskTokenKey(key string) string {
 	if key == "" {
 		return ""
 	}
+	// 与 OpenAI 风格 sk-… 密钥一致的脱敏展示
+	if strings.HasPrefix(key, "sk-") && len(key) > 12 {
+		return "sk-" + strings.Repeat("*", min(24, len(key)-7)) + key[len(key)-4:]
+	}
 	if len(key) <= 4 {
 		return strings.Repeat("*", len(key))
 	}

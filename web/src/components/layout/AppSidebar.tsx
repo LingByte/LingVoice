@@ -1,6 +1,7 @@
 import { Button, Layout, Menu, Tooltip } from '@arco-design/web-react'
 import {
   BarChart3,
+  Bot,
   Braces,
   Cpu,
   LayoutTemplate,
@@ -11,6 +12,7 @@ import {
   PanelLeftClose,
   RadioTower,
   ScrollText,
+  Users,
   Volume2,
 } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -68,6 +70,16 @@ const menu = [
     icon: <Mic2 size={16} strokeWidth={1.85} />,
   },
   {
+    key: '/admin/agent-runs',
+    label: 'Agent 运行',
+    icon: <Bot size={16} strokeWidth={1.85} />,
+  },
+  {
+    key: '/admin/users',
+    label: '用户管理',
+    icon: <Users size={16} strokeWidth={1.85} />,
+  },
+  {
     key: '/debug/openapi',
     label: 'OpenAPI 调试',
     icon: <Braces size={16} strokeWidth={1.85} />,
@@ -79,6 +91,8 @@ function menuPathSelected(pathname: string, itemKey: string): boolean {
   if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
   if (itemKey === '/notify/llm-usage') return pathname === '/notify/llm-usage'
   if (itemKey === '/notify/speech-usage') return pathname === '/notify/speech-usage'
+  if (itemKey === '/admin/agent-runs') return pathname === '/admin/agent-runs'
+  if (itemKey === '/admin/users') return pathname === '/admin/users'
   if (itemKey === '/channels/llm') return pathname.startsWith('/channels/llm')
   if (itemKey === '/channels/asr') return pathname.startsWith('/channels/asr')
   if (itemKey === '/channels/tts') return pathname.startsWith('/channels/tts')

@@ -86,6 +86,23 @@ func (h *Handlers) Register(engine *gin.Engine) {
 		su.GET("/:id", h.getSpeechUsage)
 	}
 
+	agent := api.Group("/agent")
+	agent.Use(models.AuthRequired)
+	{
+		ar := agent.Group("/runs")
+		ar.GET("", h.listAgentRuns)
+		ar.GET("/:id/steps", h.listAgentRunSteps)
+		ar.GET("/:id", h.getAgentRun)
+	}
+
+	admin := api.Group("/admin")
+	admin.Use(models.AuthRequired)
+	{
+		admin.GET("/users", h.listAdminUsers)
+		admin.GET("/users/:id", h.getAdminUser)
+		admin.PATCH("/users/:id", h.patchAdminUser)
+	}
+
 	ml := api.Group("/mail-logs")
 	{
 		ml.GET("", h.listMailLogs)

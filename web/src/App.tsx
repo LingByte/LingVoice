@@ -19,6 +19,8 @@ import { LlmUsagePage } from '@/pages/LlmUsagePage'
 import { SpeechUsagePage } from '@/pages/SpeechUsagePage'
 import { AsrChannelsPage } from '@/pages/AsrChannelsPage'
 import { TtsChannelsPage } from '@/pages/TtsChannelsPage'
+import { AgentRunsPage } from '@/pages/AgentRunsPage'
+import { AdminUsersPage } from '@/pages/AdminUsersPage'
 
 export default function App() {
   return (
@@ -39,6 +41,8 @@ export default function App() {
           <Route path="notify/mail-logs" element={<MailLogsPage />} />
           <Route path="notify/llm-usage" element={<LlmUsagePage />} />
           <Route path="notify/speech-usage" element={<SpeechUsagePage />} />
+          <Route path="admin/agent-runs" element={<AgentRunsPage />} />
+          <Route path="admin/users" element={<AdminUsersPage />} />
           <Route path="channels/llm" element={<LlmChannelsPage />} />
           <Route path="channels/asr" element={<AsrChannelsPage />} />
           <Route path="channels/tts" element={<TtsChannelsPage />} />
