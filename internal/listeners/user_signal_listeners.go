@@ -12,7 +12,7 @@ import (
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
-	"github.com/LingByte/LingVoice/pkg/mailstatic"
+	"github.com/LingByte/LingVoice/pkg/mailtemplate"
 	"github.com/LingByte/LingVoice/pkg/notification"
 	"github.com/LingByte/LingVoice/pkg/task"
 	"github.com/LingByte/LingVoice/pkg/utils"
@@ -148,8 +148,8 @@ func sendEmailLoginCodeHTML(ctx context.Context, job emailVerifyCodeJob) (struct
 		Code       string
 		ExpireHint string
 	}
-	html, err := mailstatic.RenderHTML(mailstatic.TplEmailLoginCode, codeTpl{
-		Username:   mailstatic.UsernameFromEmail(job.email),
+	html, err := mailtemplate.RenderHTML(mailtemplate.TplEmailLoginCode, codeTpl{
+		Username:   mailtemplate.UsernameFromEmail(job.email),
 		Code:       job.code,
 		ExpireHint: "10 分钟",
 	})

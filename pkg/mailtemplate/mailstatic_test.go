@@ -1,4 +1,4 @@
-package mailstatic
+package mailtemplate
 
 import (
 	"strings"

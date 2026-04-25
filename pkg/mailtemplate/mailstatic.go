@@ -1,9 +1,7 @@
 // Copyright (c) 2026 LingByte. All rights reserved.
 // SPDX-License-Identifier: AGPL-3.0
 
-// Package mailstatic holds embedded HTML email layouts (//go:embed).
-// Runtime 发信应使用本包渲染，不依赖数据库 MailTemplate。
-package mailstatic
+package mailtemplate
 
 import (
 	"bytes"
@@ -19,14 +17,14 @@ var files embed.FS
 
 // 嵌入模版路径（相对本包 embed 根）。
 const (
-	TplEmailLoginCode      = "html/email_login_code.html"
-	TplEmailVerification   = "html/email_verification.html"
-	TplVerification        = "html/verification.html"
-	TplPasswordReset     = "html/password_reset.html"
-	TplWelcome           = "html/welcome.html"
-	TplNewDeviceLogin    = "html/new_device_login.html"
+	TplEmailLoginCode     = "html/email_login_code.html"
+	TplEmailVerification  = "html/email_verification.html"
+	TplVerification       = "html/verification.html"
+	TplPasswordReset      = "html/password_reset.html"
+	TplWelcome            = "html/welcome.html"
+	TplNewDeviceLogin     = "html/new_device_login.html"
 	TplDeviceVerification = "html/device_verification.html"
-	TplGroupInvitation   = "html/group_invitation.html"
+	TplGroupInvitation    = "html/group_invitation.html"
 )
 
 // UsernameFromEmail 用邮箱 @ 前作为称呼占位。
