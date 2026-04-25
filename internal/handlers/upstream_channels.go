@@ -18,20 +18,20 @@ import (
 // ---------- LLM ----------
 
 type llmChannelWrite struct {
-	Type               int    `json:"type"`
-	Key                string `json:"key"`
-	Name               string `json:"name" binding:"required"`
-	Protocol           string `json:"protocol"`
-	Status             int    `json:"status"`
-	OpenAIOrganization *string `json:"openai_organization"`
-	TestModel          *string `json:"test_model"`
-	BaseURL            *string `json:"base_url"`
-	Models             string `json:"models"`
-	Group              string `json:"group"`
-	ModelMapping       *string `json:"model_mapping"`
-	StatusCodeMapping  *string `json:"status_code_mapping"`
-	Priority           int64  `json:"priority"`
-	Weight             uint   `json:"weight"`
+	Type               int                   `json:"type"`
+	Key                string                `json:"key"`
+	Name               string                `json:"name" binding:"required"`
+	Protocol           string                `json:"protocol"`
+	Status             int                   `json:"status"`
+	OpenAIOrganization *string               `json:"openai_organization"`
+	TestModel          *string               `json:"test_model"`
+	BaseURL            *string               `json:"base_url"`
+	Models             string                `json:"models"`
+	Group              string                `json:"group"`
+	ModelMapping       *string               `json:"model_mapping"`
+	StatusCodeMapping  *string               `json:"status_code_mapping"`
+	Priority           int64                 `json:"priority"`
+	Weight             uint                  `json:"weight"`
 	AutoBan            int                   `json:"auto_ban"`
 	Tag                *string               `json:"tag"`
 	ChannelInfo        models.LLMChannelInfo `json:"channel_info"`

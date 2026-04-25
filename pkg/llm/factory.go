@@ -72,4 +72,3 @@ func NewLLMProvider(ctx context.Context, provider, apiKey, apiURL, systemPrompt 
 		SystemPrompt: systemPrompt,
 	})
 }
-

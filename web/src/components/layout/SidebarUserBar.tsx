@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { Avatar, Button, Dropdown, Menu, Space, Tooltip } from '@arco-design/web-react'
-import { Database, Key, LogOut, Moon, Settings, Sun, User } from 'lucide-react'
+import { Key, LogOut, Moon, Settings, Sun, User } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { logoutSession } from '@/api/auth'
 import { useAuthStore } from '@/stores/authStore'

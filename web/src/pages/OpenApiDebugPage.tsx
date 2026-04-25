@@ -5,6 +5,7 @@ import { getApiBaseURL } from '@/config/apiConfig'
 const { Title, Paragraph, Text } = Typography
 
 type HttpMethod = 'GET' | 'POST'
+type OpenApiAuthMode = 'email' | 'llm'
 
 function randomNonce(): string {
   const a = new Uint8Array(16)
@@ -17,12 +18,14 @@ const PRESETS: {
   method: HttpMethod
   path: string
   body: string
+  authMode?: OpenApiAuthMode
 }[] = [
   {
     label: '列出邮件模版',
     method: 'GET',
     path: '/api/openapi/v1/mail-templates?page=1&pageSize=10',
     body: '',
+    authMode: 'email',
   },
   {
     label: '创建邮件模版（示例）',
@@ -39,12 +42,14 @@ const PRESETS: {
       null,
       2,
     ),
+    authMode: 'email',
   },
   {
     label: '邮件日志列表',
     method: 'GET',
     path: '/api/openapi/v1/mail-logs?page=1&pageSize=10',
     body: '',
+    authMode: 'email',
   },
   {
     label: '发送邮件（按模版 + 参数）',
@@ -63,6 +68,43 @@ const PRESETS: {
       null,
       2,
     ),
+    authMode: 'email',
+  },
+  {
+    label: 'OpenAI chat/completions（凭证 kind=llm）',
+    method: 'POST',
+    path: '/api/openapi/v1/chat/completions',
+    authMode: 'llm',
+    body: JSON.stringify(
+      {
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 32,
+        stream: false,
+      },
+      null,
+      2,
+    ),
+  },
+  {
+    label: 'Anthropic /v1/messages（凭证 kind=llm）',
+    method: 'POST',
+    path: '/api/openapi/v2/v1/messages',
+    authMode: 'llm',
+    body: JSON.stringify(
+      {
+        model: 'claude-3-5-haiku-20241022',
+        max_tokens: 256,
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'text', text: 'ping' }],
+          },
+        ],
+      },
+      null,
+      2,
+    ),
   },
 ]
 
@@ -74,6 +116,7 @@ function joinUrl(base: string, path: string): string {
 
 export function OpenApiDebugPage() {
   const [apiKey, setApiKey] = useState('')
+  const [authMode, setAuthMode] = useState<OpenApiAuthMode>('email')
   const [method, setMethod] = useState<HttpMethod>('GET')
   const [path, setPath] = useState(PRESETS[0].path)
   const [body, setBody] = useState('')
@@ -92,6 +135,7 @@ export function OpenApiDebugPage() {
     if (!p) return
     setMethod(p.method)
     setPath(p.path)
+    setAuthMode(p.authMode ?? 'email')
     if (p.path === '/api/openapi/v1/mail-templates' && p.method === 'POST') {
       try {
         const o = JSON.parse(p.body || '{}') as Record<string, unknown>
@@ -108,7 +152,7 @@ export function OpenApiDebugPage() {
   const send = async () => {
     const key = apiKey.trim()
     if (!key) {
-      Message.warning('请填写邮件 API 密钥（kind=email）')
+      Message.warning(authMode === 'llm' ? '请填写 LLM 代理 API 密钥（kind=llm）' : '请填写邮件 API 密钥（kind=email）')
       return
     }
     const p = path.trim()
@@ -122,12 +166,22 @@ export function OpenApiDebugPage() {
     try {
       const base = getApiBaseURL()
       const url = joinUrl(base, p)
-      const ts = Math.floor(Date.now() / 1000)
-      const nonce = randomNonce()
-      const headers: Record<string, string> = {
-        LAuthorization: `Bearer ${key}`,
-        'L-Timestamp': String(ts),
-        'L-Nonce': nonce,
+      const headers: Record<string, string> = {}
+      if (authMode === 'email') {
+        const ts = Math.floor(Date.now() / 1000)
+        const nonce = randomNonce()
+        headers.LAuthorization = `Bearer ${key}`
+        headers['L-Timestamp'] = String(ts)
+        headers['L-Nonce'] = nonce
+      } else {
+        const p = path.trim()
+        const useAnthropicKeyHeader =
+          p.includes('/openapi/v2/') && !p.includes('/openapi/v1/')
+        if (useAnthropicKeyHeader) {
+          headers['x-api-key'] = key
+        } else {
+          headers.Authorization = `Bearer ${key}`
+        }
       }
       let init: RequestInit = { method, headers, credentials: 'omit' }
       if (method === 'POST') {
@@ -157,10 +211,12 @@ export function OpenApiDebugPage() {
         OpenAPI 调试
       </Title>
       <Paragraph type="secondary" className="!mb-4 !mt-0 max-w-3xl text-[13px]">
-        使用 <Text code>LAuthorization</Text>、<Text code>L-Timestamp</Text>、<Text code>L-Nonce</Text>
-        调用 <Text code>/api/openapi/v1</Text>，不走浏览器会话 JWT。仅支持 kind 为 email 的密钥。
-        发送邮件接口为 <Text code>template_id</Text> + <Text code>params</Text>（与模版 HTML 中{' '}
-        <Text code>{'{{.Key}}'}</Text> 对应），可选 <Text code>subject</Text>（可含占位符）。
+        邮件类接口：使用 <Text code>LAuthorization</Text>、<Text code>L-Timestamp</Text>、<Text code>L-Nonce</Text>，凭证{' '}
+        <Text code>kind=email</Text>。LLM 代理：<Text code>/api/openapi/v1/chat/completions</Text>（OpenAI 协议，Bearer）与{' '}
+        <Text code>/api/openapi/v2/v1/messages</Text>（Anthropic 协议，推荐 <Text code>x-api-key</Text> 或 Bearer），凭证{' '}
+        <Text code>kind=llm</Text>，按凭证的 <Text code>group</Text> 选用同组的 LLM 渠道（协议须为 openai / anthropic）。
+        发送邮件：<Text code>template_id</Text> + <Text code>params</Text>（与模版 <Text code>{'{{.Key}}'}</Text> 对应），可选{' '}
+        <Text code>subject</Text>。
       </Paragraph>
 
       <Alert
@@ -181,8 +237,24 @@ export function OpenApiDebugPage() {
           />
         </div>
         <div>
-          <Text className="mb-1 block text-[13px]">API Key（邮件凭证）</Text>
-          <Input.Password placeholder="粘贴完整密钥" value={apiKey} onChange={setApiKey} />
+          <Text className="mb-1 block text-[13px]">认证方式</Text>
+          <Select
+            style={{ width: '100%' }}
+            value={authMode}
+            onChange={(v) => setAuthMode((v as OpenApiAuthMode) || 'email')}
+            options={[
+              { label: '邮件 OpenAPI（L-* 头）', value: 'email' },
+              { label: 'LLM 代理（Bearer / x-api-key）', value: 'llm' },
+            ]}
+          />
+        </div>
+        <div>
+          <Text className="mb-1 block text-[13px]">API Key</Text>
+          <Input.Password
+            placeholder={authMode === 'llm' ? 'kind=llm 的密钥' : 'kind=email 的密钥'}
+            value={apiKey}
+            onChange={setApiKey}
+          />
         </div>
         <Space>
           <Select

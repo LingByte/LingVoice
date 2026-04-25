@@ -1,5 +1,6 @@
 import { Button, Layout, Menu, Tooltip } from '@arco-design/web-react'
 import {
+  BarChart3,
   Braces,
   Cpu,
   LayoutTemplate,
@@ -31,6 +32,21 @@ const menu = [
     icon: <RadioTower size={16} strokeWidth={1.85} />,
   },
   {
+      key: '/channels/llm',
+      label: 'LLM 渠道',
+      icon: <Cpu size={16} strokeWidth={1.85} />,
+  },
+  {
+      key: '/channels/asr',
+      label: 'ASR 渠道',
+      icon: <Mic size={16} strokeWidth={1.85} />,
+  },
+  {
+      key: '/channels/tts',
+      label: 'TTS 渠道',
+      icon: <Volume2 size={16} strokeWidth={1.85} />,
+  },
+  {
     key: '/notify/mail-templates',
     label: '邮件模版',
     icon: <LayoutTemplate size={16} strokeWidth={1.85} />,
@@ -41,19 +57,9 @@ const menu = [
     icon: <ScrollText size={16} strokeWidth={1.85} />,
   },
   {
-    key: '/channels/llm',
-    label: 'LLM 渠道',
-    icon: <Cpu size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/channels/asr',
-    label: 'ASR 渠道',
-    icon: <Mic size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/channels/tts',
-    label: 'TTS 渠道',
-    icon: <Volume2 size={16} strokeWidth={1.85} />,
+    key: '/notify/llm-usage',
+    label: 'LLM 用量',
+    icon: <BarChart3 size={16} strokeWidth={1.85} />,
   },
   {
     key: '/debug/openapi',
@@ -65,6 +71,7 @@ const menu = [
 function menuPathSelected(pathname: string, itemKey: string): boolean {
   if (itemKey === '/notify/channels') return pathname.startsWith('/notify/channels')
   if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
+  if (itemKey === '/notify/llm-usage') return pathname === '/notify/llm-usage'
   if (itemKey === '/channels/llm') return pathname.startsWith('/channels/llm')
   if (itemKey === '/channels/asr') return pathname.startsWith('/channels/asr')
   if (itemKey === '/channels/tts') return pathname.startsWith('/channels/tts')

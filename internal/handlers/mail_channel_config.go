@@ -60,15 +60,15 @@ func BuildEmailChannelConfigJSON(driver string, name string, smtpHost string, sm
 type EmailChannelFormView struct {
 	Driver string `json:"driver"`
 
-	SMTPHost          string `json:"smtpHost"`
-	SMTPPort          int64  `json:"smtpPort"`
-	SMTPUsername      string `json:"smtpUsername"`
-	SMTPFrom          string `json:"smtpFrom"`
-	FromDisplayName   string `json:"fromDisplayName"`
-	SMTPPasswordSet   bool   `json:"smtpPasswordSet"`
-	SendcloudAPIUser  string `json:"sendcloudApiUser"`
+	SMTPHost           string `json:"smtpHost"`
+	SMTPPort           int64  `json:"smtpPort"`
+	SMTPUsername       string `json:"smtpUsername"`
+	SMTPFrom           string `json:"smtpFrom"`
+	FromDisplayName    string `json:"fromDisplayName"`
+	SMTPPasswordSet    bool   `json:"smtpPasswordSet"`
+	SendcloudAPIUser   string `json:"sendcloudApiUser"`
 	SendcloudAPIKeySet bool   `json:"sendcloudApiKeySet"`
-	SendcloudFrom     string `json:"sendcloudFrom"`
+	SendcloudFrom      string `json:"sendcloudFrom"`
 }
 
 // DecodeEmailChannelForm parses config_json into a flat form view (passwords not echoed).

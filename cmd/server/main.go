@@ -9,9 +9,9 @@ import (
 
 	"github.com/LingByte/LingVoice/cmd/bootstrap"
 	"github.com/LingByte/LingVoice/internal/handlers"
+	"github.com/LingByte/LingVoice/internal/listeners"
 	"github.com/LingByte/LingVoice/internal/migrations"
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/internal/listeners"
 	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
@@ -86,6 +86,11 @@ func main() {
 				models.TTSChannel{},
 				models.Credential{},
 				models.User{},
+				&models.ChatSession{},
+				&models.ChatMessage{},
+				&models.LLMUsage{},
+				&models.AgentRun{},
+				&models.AgentStep{},
 			}
 		},
 	})
@@ -96,6 +101,7 @@ func main() {
 	}
 	listeners.InitApplicationListeners(db, zap.L())
 	migrations.DropMailTemplateSubjectTplColumn(db)
+	migrations.DropLLMUsageSessionIDColumn(db)
 
 	// 8. Load Base Configs
 	var addr = config.GlobalConfig.Server.Addr
@@ -153,7 +159,7 @@ func main() {
 		Addr:           addr,
 		Handler:        r,
 		ReadTimeout:    120 * time.Second,
-		WriteTimeout:   30 * time.Second,
+		WriteTimeout:   300 * time.Second, // LLM / OpenAPI 流式响应需较长写窗口
 		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}

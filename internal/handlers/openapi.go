@@ -29,14 +29,29 @@ type openapiSendMailBody struct {
 }
 
 func (h *Handlers) registerOpenAPIRoutes(api *gin.RouterGroup) {
-	og := api.Group("/openapi/v1")
-	og.Use(middleware.OpenAPIEmailCredential(h.db))
+	v1mail := api.Group("/openapi/v1")
+	v1mail.Use(middleware.OpenAPIEmailCredential(h.db))
 	{
-		og.GET("/mail-templates", h.listMailTemplates)
-		og.POST("/mail-templates", h.openAPICreateMailTemplate)
-		og.GET("/mail-logs", h.listMailLogs)
-		og.GET("/mail-logs/:id", h.getMailLog)
-		og.POST("/mail/send", h.openAPISendMail)
+		v1mail.GET("/mail-templates", h.listMailTemplates)
+		v1mail.POST("/mail-templates", h.openAPICreateMailTemplate)
+		v1mail.GET("/mail-logs", h.listMailLogs)
+		v1mail.GET("/mail-logs/:id", h.getMailLog)
+		v1mail.POST("/mail/send", h.openAPISendMail)
+	}
+
+	// OpenAI 协议：与官方 SDK 一致，使用 Authorization: Bearer（凭证 kind=llm）。
+	v1llm := api.Group("/openapi/v1")
+	v1llm.Use(middleware.OpenAPILLMProxyAuth(h.db, middleware.OpenAPILLMStyleOpenAI))
+	{
+		v1llm.GET("/models", h.openAPIListModels)
+		v1llm.POST("/chat/completions", h.openAPIOpenAIChatCompletions)
+	}
+
+	// Anthropic 协议：路径对齐官方 /v1/messages；鉴权可用 x-api-key 或 Bearer（凭证 kind=llm）。
+	v2llm := api.Group("/openapi/v2")
+	v2llm.Use(middleware.OpenAPILLMProxyAuth(h.db, middleware.OpenAPILLMStyleAnthropic))
+	{
+		v2llm.POST("/v1/messages", h.openAPIAnthropicMessages)
 	}
 }
 
@@ -170,7 +185,7 @@ func (h *Handlers) openAPISendMail(c *gin.Context) {
 	}
 
 	response.Success(c, "已发送", gin.H{
-		"to":           to,
+		"to":          to,
 		"template_id": tpl.ID,
 		"code":        tpl.Code,
 	})

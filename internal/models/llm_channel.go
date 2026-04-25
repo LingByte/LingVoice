@@ -1,6 +1,11 @@
 package models
 
-import "strings"
+import (
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // Copyright (c) 2026 LingByte
 // SPDX-License-Identifier: MIT
@@ -16,7 +21,7 @@ const (
 // 上游 LLM 渠道商 / 协议（与路由、鉴权头、Base URL 约定对齐）。
 const (
 	LLMChannelProtocolOpenAI    = "openai"
-	LLMChannelProtocolAnthropic  = "anthropic"
+	LLMChannelProtocolAnthropic = "anthropic"
 	LLMChannelProtocolCoze      = "coze"
 	LLMChannelProtocolOllama    = "ollama"
 	LLMChannelProtocolLMStudio  = "lmstudio"
@@ -80,6 +85,37 @@ type LLMChannelInfo struct {
 	MultiKeyDisabledTime   map[int]int64  `json:"multi_key_disabled_time,omitempty"`
 	MultiKeyPollingIndex   int            `json:"multi_key_polling_index"`
 	MultiKeyMode           MultiKeyMode   `json:"multi_key_mode"`
+}
+
+// Value 实现 driver.Valuer，供 GORM 写入 JSON 列（sqlite/mysql 等）。
+func (i LLMChannelInfo) Value() (driver.Value, error) {
+	b, err := json.Marshal(i)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// Scan 实现 sql.Scanner，供 GORM 从 JSON 列扫描到结构体。
+func (i *LLMChannelInfo) Scan(value interface{}) error {
+	if value == nil {
+		*i = LLMChannelInfo{}
+		return nil
+	}
+	var raw []byte
+	switch v := value.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return fmt.Errorf("LLMChannelInfo: unsupported scan type %T", value)
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		*i = LLMChannelInfo{}
+		return nil
+	}
+	return json.Unmarshal(raw, i)
 }
 
 // TableName GORM 表名（与 ASR/TTS 分表）。

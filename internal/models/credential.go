@@ -38,8 +38,11 @@ type Credential struct {
 	ModelLimits        string         `json:"model_limits" gorm:"type:text"`
 	AllowIps           *string        `json:"allow_ips" gorm:"default:''"`
 	Group              string         `json:"group" gorm:"default:''"`
-	CrossGroupRetry    bool           `json:"cross_group_retry"`
-	DeletedAt          gorm.DeletedAt `gorm:"index"`
+	CrossGroupRetry           bool           `json:"cross_group_retry"`
+	// OpenAPIModelCatalogJSON /v1/models 与前端展示用；JSON 数组，元素为 {"id":"..."} 或字符串。
+	// 为空时从本凭证 group 下 OpenAI 协议渠道的 models 字段汇总。
+	OpenAPIModelCatalogJSON string `json:"openapi_model_catalog,omitempty" gorm:"column:openapi_model_catalog_json;type:text"`
+	DeletedAt               gorm.DeletedAt `gorm:"index"`
 }
 
 // TableName 与历史常量一致。

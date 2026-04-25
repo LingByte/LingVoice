@@ -15,6 +15,8 @@ type LLMRequestTracker struct {
 	model           string
 	baseURL         string
 	requestType     string
+	channelID       int
+	channelAttempts []UsageChannelAttempt
 	startTime       time.Time
 	startedAt       time.Time
 	firstTokenAt    time.Time
@@ -23,6 +25,14 @@ type LLMRequestTracker struct {
 	userAgent       string
 	ipAddress       string
 	statusCode      int
+}
+
+// SetChannelUsageMeta 可选：绑定本次调用命中的上游渠道 id 与多渠道路由尝试明细（如经网关轮询）。
+func (t *LLMRequestTracker) SetChannelUsageMeta(channelID int, attempts []UsageChannelAttempt) {
+	t.channelID = channelID
+	if len(attempts) > 0 {
+		t.channelAttempts = append([]UsageChannelAttempt(nil), attempts...)
+	}
 }
 
 // NewLLMRequestTracker 创建LLM请求跟踪器
@@ -157,35 +167,34 @@ func (t *LLMRequestTracker) Complete(response *QueryResponse) {
 
 	utils.Sig().Emit(SignalLLMRequestEnd, t, endData)
 
-	// 发送LLM用量信号（纯信号方式）
-	usageInfo := map[string]interface{}{
-		"request_id":       t.requestID,
-		"session_id":       t.sessionID,
-		"user_id":          t.userID,
-		"provider":         t.provider,
-		"model":            t.model,
-		"base_url":         t.baseURL,
-		"request_type":     t.requestType,
-		"input_tokens":     inputTokens,
-		"output_tokens":    outputTokens,
-		"total_tokens":     totalTokens,
-		"latency_ms":       latencyMs,
-		"ttft_ms":          ttftMs,
-		"tps":              tps,
-		"queue_time_ms":    queueTimeMs,
-		"request_content":  t.requestContent,
-		"response_content": t.responseContent,
-		"user_agent":       t.userAgent,
-		"ip_address":       t.ipAddress,
-		"status_code":      t.statusCode,
-		"success":          true,
-		"requested_at":     t.startTime.UnixMilli(),
-		"started_at":       t.startedAt.UnixMilli(),
-		"first_token_at":   t.firstTokenAt.UnixMilli(),
-		"completed_at":     endTime.UnixMilli(),
+	payload := LLMUsageSignalPayload{
+		RequestID:       t.requestID,
+		UserID:          t.userID,
+		Provider:        t.provider,
+		Model:           t.model,
+		BaseURL:         t.baseURL,
+		RequestType:     t.requestType,
+		ChannelID:       t.channelID,
+		ChannelAttempts: t.channelAttempts,
+		InputTokens:     inputTokens,
+		OutputTokens:    outputTokens,
+		TotalTokens:     totalTokens,
+		LatencyMs:       latencyMs,
+		TTFTMs:          ttftMs,
+		TPS:             tps,
+		QueueTimeMs:     queueTimeMs,
+		RequestContent:  t.requestContent,
+		ResponseContent: output,
+		UserAgent:       t.userAgent,
+		IPAddress:       t.ipAddress,
+		StatusCode:      t.statusCode,
+		Success:         true,
+		RequestedAtMs:   t.startTime.UnixMilli(),
+		StartedAtMs:     t.startedAt.UnixMilli(),
+		FirstTokenAtMs:  t.firstTokenAt.UnixMilli(),
+		CompletedAtMs:   endTime.UnixMilli(),
 	}
-
-	utils.Sig().Emit("LLMUsage", usageInfo, "text", output)
+	utils.Sig().Emit(SignalLLMUsage, &payload)
 }
 
 // Error 记录请求错误
@@ -214,35 +223,31 @@ func (t *LLMRequestTracker) Error(errCode, errorMessage string) {
 	}
 	utils.Sig().Emit(SignalLLMRequestError, t, errorData)
 
-	usageInfo := map[string]interface{}{
-		"request_id":       t.requestID,
-		"session_id":       t.sessionID,
-		"user_id":          t.userID,
-		"provider":         t.provider,
-		"model":            t.model,
-		"base_url":         t.baseURL,
-		"request_type":     t.requestType,
-		"input_tokens":     0,
-		"output_tokens":    0,
-		"total_tokens":     0,
-		"latency_ms":       latencyMs,
-		"ttft_ms":          0,
-		"tps":              0,
-		"queue_time_ms":    queueTimeMs,
-		"request_content":  t.requestContent,
-		"response_content": t.responseContent,
-		"user_agent":       t.userAgent,
-		"ip_address":       t.ipAddress,
-		"status_code":      t.statusCode,
-		"success":          false,
-		"error_code":       errCode,
-		"error_message":    errorMessage,
-		"requested_at":     t.startTime.UnixMilli(),
-		"started_at":       t.startedAt.UnixMilli(),
-		"first_token_at":   t.firstTokenAt.UnixMilli(),
-		"completed_at":     endTime.UnixMilli(),
+	payload := LLMUsageSignalPayload{
+		RequestID:       t.requestID,
+		UserID:          t.userID,
+		Provider:        t.provider,
+		Model:           t.model,
+		BaseURL:         t.baseURL,
+		RequestType:     t.requestType,
+		ChannelID:       t.channelID,
+		ChannelAttempts: t.channelAttempts,
+		LatencyMs:       latencyMs,
+		QueueTimeMs:     queueTimeMs,
+		RequestContent:  t.requestContent,
+		ResponseContent: t.responseContent,
+		UserAgent:       t.userAgent,
+		IPAddress:       t.ipAddress,
+		StatusCode:      t.statusCode,
+		Success:         false,
+		ErrorCode:       errCode,
+		ErrorMessage:    errorMessage,
+		RequestedAtMs:   t.startTime.UnixMilli(),
+		StartedAtMs:     t.startedAt.UnixMilli(),
+		FirstTokenAtMs:  t.firstTokenAt.UnixMilli(),
+		CompletedAtMs:   endTime.UnixMilli(),
 	}
-	utils.Sig().Emit("LLMUsage", usageInfo, "text", "")
+	utils.Sig().Emit(SignalLLMUsage, &payload)
 }
 
 // CreateSession 创建会话并发送信号

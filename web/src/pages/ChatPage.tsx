@@ -1,6 +1,8 @@
 import type { KeyboardEvent } from 'react'
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
+  Alert,
   Avatar,
   Button,
   Card,
@@ -8,11 +10,22 @@ import {
   Empty,
   Input,
   Layout,
+  Message,
   Popconfirm,
   Select,
   Space,
   Typography,
 } from '@arco-design/web-react'
+import {
+  appendChatMessage,
+  createChatSession,
+  deleteChatSession,
+  listChatMessages,
+  listChatSessions,
+  patchChatSessionTitle,
+} from '@/api/chat'
+import { fetchOpenAPIModels, streamOpenAIChatCompletion } from '@/api/openapiLlm'
+import { useAuthStore } from '@/stores/authStore'
 import {
   Bot,
   ChevronLeft,
@@ -33,17 +46,34 @@ type ChatSession = {
   id: string
   title: string
   timeLabel: string
+  /** 云端会话绑定的模型，切换会话时同步到输入区 */
+  boundModel?: string
 }
 
-type ChatMessage = { id: string; role: 'user' | 'assistant'; content: string }
+type ChatMessage = { id: string; role: 'user' | 'assistant' | 'system'; content: string }
 
-const MODEL_OPTIONS = [
-  { label: 'qwen2.5-plus', value: 'qwen2.5-plus' },
-  { label: 'gpt-4o', value: 'gpt-4o' },
-]
+const LS_OPENAPI_KEY = 'lingvoice_openapi_llm_key'
+const LS_CHAT_MODEL = 'lingvoice_chat_model'
+
+function readLocal(key: string) {
+  try {
+    return localStorage.getItem(key) ?? ''
+  } catch {
+    return ''
+  }
+}
 
 function formatTimeLabel() {
   return new Date().toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+}
+
+function formatTimeFromMs(ms: number) {
+  if (!ms || Number.isNaN(ms)) return formatTimeLabel()
+  return new Date(ms).toLocaleTimeString('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
@@ -63,11 +93,13 @@ function newSession(title = '新对话'): ChatSession {
 
 function ChatMessageRow({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user'
+  const isSystem = message.role === 'system'
   return (
     <div
       className={cn(
         'chat-msg-row',
         isUser ? 'chat-msg-row--user' : 'chat-msg-row--assistant',
+        isSystem && 'opacity-95',
       )}
     >
       {!isUser && (
@@ -86,7 +118,9 @@ function ChatMessageRow({ message }: { message: ChatMessage }) {
           'chat-msg-bubble min-w-0 max-w-[min(85vw,520px)] transition-[box-shadow,transform] duration-200 ease-out',
           isUser
             ? '!border !border-[var(--color-border-2)] !bg-[var(--color-bg-2)] !shadow-sm'
-            : '!border !border-[var(--color-border-2)] !bg-[var(--color-fill-2)] !shadow-sm',
+            : isSystem
+              ? '!border !border-[var(--color-border-2)] !bg-[var(--color-fill-1)] !shadow-sm !opacity-95'
+              : '!border !border-[var(--color-border-2)] !bg-[var(--color-fill-2)] !shadow-sm',
         )}
         bodyStyle={{ padding: '10px 14px' }}
       >
@@ -107,13 +141,137 @@ function ChatMessageRow({ message }: { message: ChatMessage }) {
   )
 }
 
+function mapServerMessages(list: { id: string; role: string; content: string }[]): ChatMessage[] {
+  return list.map((m) => ({
+    id: m.id,
+    role: m.role === 'user' || m.role === 'assistant' || m.role === 'system' ? m.role : 'assistant',
+    content: m.content,
+  }))
+}
+
 export function ChatPage() {
+  const user = useAuthStore((s) => s.user)
   const [sessions, setSessions] = useState<ChatSession[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(false)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [sessionPanelOpen, setSessionPanelOpen] = useState(true)
-  const [model, setModel] = useState('qwen2.5-plus')
+  const [apiKey, setApiKeyState] = useState(() => readLocal(LS_OPENAPI_KEY))
+  const [model, setModelState] = useState(() => readLocal(LS_CHAT_MODEL))
+
+  const setApiKey = (v: string) => {
+    setApiKeyState(v)
+    try {
+      localStorage.setItem(LS_OPENAPI_KEY, v)
+    } catch {
+      /* 隐私模式等可能失败 */
+    }
+  }
+  const setModel = (v: string) => {
+    setModelState(v)
+    try {
+      localStorage.setItem(LS_CHAT_MODEL, v)
+    } catch {
+      /* ignore */
+    }
+  }
+  const [modelOptions, setModelOptions] = useState<{ label: string; value: string }[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState<string | null>(null)
+  const [sendLoading, setSendLoading] = useState(false)
+  const chatAbortRef = useRef<AbortController | null>(null)
   const [draft, setDraft] = useState('')
   const [messagesBySession, setMessagesBySession] = useState<Record<string, ChatMessage[]>>({})
+
+  const refreshCloudSessions = useCallback(async () => {
+    if (!user) return
+    setSessionsLoading(true)
+    try {
+      const list = await listChatSessions()
+      const mapped: ChatSession[] = list.map((r) => ({
+        id: r.id,
+        title: r.title?.trim() || '新对话',
+        timeLabel: formatTimeFromMs(r.updated_at),
+        boundModel: r.model,
+      }))
+      setSessions(mapped)
+      setActiveId((prev) => {
+        if (prev && mapped.some((x) => x.id === prev)) return prev
+        return mapped[0]?.id ?? null
+      })
+    } catch (e) {
+      Message.error(e instanceof Error ? e.message : '加载会话失败')
+      setSessions([])
+      setActiveId(null)
+    } finally {
+      setSessionsLoading(false)
+    }
+  }, [user])
+
+  useEffect(() => {
+    if (!user) {
+      setSessions([])
+      setActiveId(null)
+      setMessagesBySession({})
+      return
+    }
+    void refreshCloudSessions()
+  }, [user, refreshCloudSessions])
+
+  useEffect(() => {
+    if (!user || !activeId || sendLoading) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const { list, session } = await listChatMessages(activeId)
+        if (cancelled) return
+        setMessagesBySession((prev) => ({
+          ...prev,
+          [activeId]: mapServerMessages(list),
+        }))
+        if (session.model) setModel(session.model)
+      } catch (e) {
+        if (!cancelled) {
+          Message.error(e instanceof Error ? e.message : '加载消息失败')
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [user, activeId, sendLoading])
+
+  useEffect(() => {
+    const k = apiKey.trim()
+    if (!k) {
+      setModelOptions([])
+      setModelsError(null)
+      return
+    }
+    let cancelled = false
+    setModelsLoading(true)
+    setModelsError(null)
+    void (async () => {
+      try {
+        const list = await fetchOpenAPIModels(k)
+        if (cancelled) return
+        const opts = list.map((m) => ({ label: m.id, value: m.id }))
+        setModelOptions(opts)
+        if (opts.length > 0 && !opts.some((o) => o.value === model)) {
+          setModel(opts[0].value)
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setModelOptions([])
+          setModelsError(e instanceof Error ? e.message : '无法加载模型列表')
+        }
+      } finally {
+        if (!cancelled) setModelsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [apiKey])
 
   const activeSession = useMemo(
     () => (activeId ? sessions.find((s) => s.id === activeId) : undefined),
@@ -122,6 +280,31 @@ export function ChatPage() {
   const messages = activeId ? (messagesBySession[activeId] ?? []) : []
 
   const handleNewChat = () => {
+    if (user) {
+      void (async () => {
+        try {
+          const row = await createChatSession({
+            title: '新对话',
+            model: model.trim() || 'gpt-4o-mini',
+            provider: 'openai',
+          })
+          const next: ChatSession = {
+            id: row.id,
+            title: row.title || '新对话',
+            timeLabel: formatTimeFromMs(row.updated_at),
+            boundModel: row.model,
+          }
+          setSessions((prev) => [next, ...prev.filter((s) => s.id !== next.id)])
+          setActiveId(next.id)
+          setMessagesBySession((prev) => ({ ...prev, [next.id]: [] }))
+          if (row.model) setModel(row.model)
+          setDraft('')
+        } catch (e) {
+          Message.error(e instanceof Error ? e.message : '创建会话失败')
+        }
+      })()
+      return
+    }
     const s = newSession()
     setSessions((prev) => [s, ...prev])
     setActiveId(s.id)
@@ -129,13 +312,28 @@ export function ChatPage() {
   }
 
   const handleClearSessions = () => {
+    if (user) {
+      void (async () => {
+        try {
+          await Promise.all(sessions.map((s) => deleteChatSession(s.id)))
+          setSessions([])
+          setActiveId(null)
+          setMessagesBySession({})
+          setDraft('')
+          Message.success('已清空')
+        } catch (e) {
+          Message.error(e instanceof Error ? e.message : '清空失败')
+        }
+      })()
+      return
+    }
     setSessions([])
     setActiveId(null)
     setMessagesBySession({})
     setDraft('')
   }
 
-  const ensureActiveSession = (): string => {
+  const ensureLocalSession = (): string => {
     if (activeId) return activeId
     const s = newSession()
     setSessions((prev) => [s, ...prev])
@@ -146,24 +344,140 @@ export function ChatPage() {
   const handleSend = () => {
     const text = draft.trim()
     if (!text) return
-    const sid = ensureActiveSession()
-    const userMsg: ChatMessage = {
-      id: `m-${Date.now()}-u`,
-      role: 'user',
-      content: text,
+    if (!apiKey.trim()) {
+      Message.warning('请先在左侧会话栏最下方填写「OpenAPI 密钥」后再发送（密钥保存在本机浏览器）。')
+      return
     }
-    setMessagesBySession((prev) => ({
-      ...prev,
-      [sid]: [...(prev[sid] ?? []), userMsg],
-    }))
-    setSessions((prev) =>
-      prev.map((s) => {
-        if (s.id !== sid) return s
-        if (s.title !== '新对话') return s
-        return { ...s, title: text.length > 28 ? `${text.slice(0, 28)}…` : text }
-      }),
-    )
-    setDraft('')
+    if (!model.trim()) {
+      Message.warning('请选择模型；密钥有效时会自动从 /v1/models 加载')
+      return
+    }
+    void (async () => {
+      setSendLoading(true)
+      try {
+      let sid = activeId
+      if (user) {
+        if (!sid) {
+          try {
+            const row = await createChatSession({
+              title: '新对话',
+              model: model.trim(),
+              provider: 'openai',
+            })
+            sid = row.id
+            setSessions((prev) => [
+              {
+                id: row.id,
+                title: row.title || '新对话',
+                timeLabel: formatTimeFromMs(row.updated_at),
+                boundModel: row.model,
+              },
+              ...prev.filter((x) => x.id !== row.id),
+            ])
+            setActiveId(row.id)
+            setMessagesBySession((prev) => ({ ...prev, [row.id]: prev[row.id] ?? [] }))
+          } catch (e) {
+            Message.error(e instanceof Error ? e.message : '创建会话失败')
+            return
+          }
+        }
+      } else {
+        sid = ensureLocalSession()
+      }
+
+      const userMsg: ChatMessage = {
+        id: `m-${Date.now()}-u`,
+        role: 'user',
+        content: text,
+      }
+      const assistantId = `m-${Date.now()}-a`
+      const assistantMsg: ChatMessage = { id: assistantId, role: 'assistant', content: '' }
+
+      const historyBefore = [...(messagesBySession[sid] ?? [])]
+      const apiMessages = [...historyBefore, userMsg].map((m) => ({ role: m.role, content: m.content }))
+
+      setMessagesBySession((prev) => ({
+        ...prev,
+        [sid]: [...(prev[sid] ?? []), userMsg, assistantMsg],
+      }))
+      const newTitle = text.length > 28 ? `${text.slice(0, 28)}…` : text
+      setSessions((prev) =>
+        prev.map((s) => {
+          if (s.id !== sid) return s
+          if (s.title !== '新对话') return s
+          return { ...s, title: newTitle, timeLabel: formatTimeLabel() }
+        }),
+      )
+      setDraft('')
+
+      if (user) {
+        try {
+          await appendChatMessage(sid, { role: 'user', content: text, model: model.trim(), provider: 'openai' })
+          if (historyBefore.length === 0) {
+            await patchChatSessionTitle(sid, newTitle)
+            setSessions((p) => p.map((s) => (s.id === sid ? { ...s, title: newTitle } : s)))
+          }
+        } catch (e) {
+          Message.error(e instanceof Error ? e.message : '保存用户消息失败')
+          setMessagesBySession((prev) => {
+            const list = prev[sid] ?? []
+            return {
+              ...prev,
+              [sid]: list.filter((m) => m.id !== userMsg.id && m.id !== assistantId),
+            }
+          })
+          return
+        }
+      }
+
+      chatAbortRef.current?.abort()
+      chatAbortRef.current = new AbortController()
+      const signal = chatAbortRef.current.signal
+      let assistantBody = ''
+      try {
+        await streamOpenAIChatCompletion({
+          apiKey: apiKey.trim(),
+          model: model.trim(),
+          messages: apiMessages,
+          signal,
+          onDelta: (chunk) => {
+            assistantBody += chunk
+            setMessagesBySession((prev) => {
+              const list = prev[sid] ?? []
+              const next = list.map((m) =>
+                m.id === assistantId ? { ...m, content: m.content + chunk } : m,
+              )
+              return { ...prev, [sid]: next }
+            })
+          },
+        })
+        if (user && assistantBody.trim()) {
+          await appendChatMessage(sid, {
+            role: 'assistant',
+            content: assistantBody,
+            model: model.trim(),
+            provider: 'openai',
+          })
+          try {
+            const { list } = await listChatMessages(sid)
+            setMessagesBySession((prev) => ({ ...prev, [sid]: mapServerMessages(list) }))
+          } catch {
+            /* 仍以本地拼接为准 */
+          }
+        }
+      } catch (e) {
+        if (signal.aborted) return
+        const msg = e instanceof Error ? e.message : '请求失败'
+        Message.error(msg)
+        setMessagesBySession((prev) => {
+          const list = prev[sid] ?? []
+          return { ...prev, [sid]: list.filter((m) => m.id !== assistantId) }
+        })
+      }
+      } finally {
+        setSendLoading(false)
+      }
+    })()
   }
 
   const onTextareaKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -174,6 +488,21 @@ export function ChatPage() {
   }
 
   const headerTitle = activeSession?.title ?? 'LingVoice'
+
+  const modelDropdownEmpty = useMemo(
+    () =>
+      modelsLoading ? (
+        <div className="chat-model-dropdown-empty chat-model-dropdown-empty--loading">加载模型列表中…</div>
+      ) : (
+        <div className="chat-model-dropdown-empty">
+          <p className="chat-model-dropdown-empty__title">暂无可用模型</p>
+          <p className="chat-model-dropdown-empty__hint">
+            请确认 OpenAPI 密钥正确，或在控制台为该凭证配置「OpenAPI 模型目录」、并为分组配置 LLM 渠道的模型列表。
+          </p>
+        </div>
+      ),
+    [modelsLoading],
+  )
 
   return (
     <Layout className="chat-page-root !h-full !min-h-0 !min-w-0 !flex-1 !bg-[var(--color-bg-1)]">
@@ -199,6 +528,14 @@ export function ChatPage() {
               <Title heading={6} className="!m-0 !text-[15px] !font-semibold">
                 聊天
               </Title>
+              {!user ? (
+                <Text type="secondary" className="!mt-1 !block !text-[11px] !leading-snug">
+                  <Link to="/login" className="text-[rgb(var(--primary-6))] underline-offset-2 hover:underline">
+                    登录
+                  </Link>
+                  后可把会话与消息同步到云端
+                </Text>
+              ) : null}
             </Header>
 
             <div className="flex min-w-0 shrink-0 items-center gap-2 px-3 pb-2 pt-2">
@@ -214,7 +551,11 @@ export function ChatPage() {
               </Button>
               <Popconfirm
                 title="清空全部会话？"
-                content="本地会话与消息将被清除。"
+                content={
+                  user
+                    ? '将删除服务器上的全部会话与消息，不可恢复。'
+                    : '本地会话与消息将被清除。'
+                }
                 okText="清空"
                 cancelText="取消"
                 onOk={handleClearSessions}
@@ -231,7 +572,11 @@ export function ChatPage() {
             </div>
 
             <Content className="chat-session-list !min-h-0 !flex-1 !overflow-y-auto !bg-[var(--color-bg-1)] !px-0 !pb-2 !pt-0">
-              {sessions.length === 0 ? (
+              {sessionsLoading ? (
+                <div className="flex justify-center py-10">
+                  <Text type="secondary">加载会话…</Text>
+                </div>
+              ) : sessions.length === 0 ? (
                 <Empty
                   className="!py-8"
                   description={
@@ -252,7 +597,10 @@ export function ChatPage() {
                         key={item.id}
                         type="button"
                         role="listitem"
-                        onClick={() => setActiveId(item.id)}
+                        onClick={() => {
+                          setActiveId(item.id)
+                          if (item.boundModel) setModel(item.boundModel)
+                        }}
                         className={cn(
                           'chat-session-line flex w-full items-baseline justify-between gap-2 border-0 border-b border-solid border-[var(--color-border-2)] bg-transparent px-3 py-2.5 text-left outline-none transition-colors duration-100',
                           active
@@ -282,10 +630,20 @@ export function ChatPage() {
               )}
             </Content>
 
-            <Footer className="!h-auto !flex-none !border-t !border-[var(--color-border-2)] !bg-[var(--color-bg-1)] !px-3 !py-2">
-              <Text type="secondary" className="!block !text-center !text-[11px]">
-                已加载全部
-              </Text>
+            <Footer className="!h-auto !flex-none !border-t !border-[var(--color-border-2)] !bg-[var(--color-bg-1)] !px-3 !py-2.5">
+              <Space direction="vertical" size={6} className="!w-full">
+                <Text type="secondary" className="!block !text-[11px] !leading-snug">
+                  OpenAPI 密钥（Bearer）仅保存在本机，刷新后仍保留
+                </Text>
+                <Input.Password
+                  size="small"
+                  value={apiKey}
+                  onChange={setApiKey}
+                  placeholder="粘贴 LLM 凭证密钥"
+                  className="font-mono text-[11px]"
+                  autoComplete="off"
+                />
+              </Space>
             </Footer>
           </div>
 
@@ -379,14 +737,31 @@ export function ChatPage() {
                 className="!resize-none !border-none !bg-transparent !p-0 !text-[14px] focus:!shadow-none"
               />
               <Divider className="!my-2" />
-              <Space align="center" className="!w-full" style={{ justifyContent: 'space-between' }}>
+              {!apiKey.trim() ? (
+                <Alert
+                  type="warning"
+                  className="!mb-2"
+                  content="请先在左侧会话栏最底部填写 OpenAPI 密钥后再对话。"
+                />
+              ) : null}
+              <Space direction="vertical" size={6} className="!w-full">
+                {modelsError ? (
+                  <Text type="error" className="!block !text-[12px]">
+                    {modelsError}
+                  </Text>
+                ) : null}
+                <Space align="center" className="!w-full" style={{ justifyContent: 'space-between' }}>
                 <Select
                   size="small"
-                  value={model}
-                  onChange={(v) => setModel(String(v))}
-                  options={MODEL_OPTIONS}
+                  value={model || undefined}
+                  onChange={(v) => setModel(v == null ? '' : String(v))}
+                  options={modelOptions}
+                  loading={modelsLoading}
+                  placeholder={apiKey.trim() ? '选择模型' : '填写密钥后加载'}
+                  notFoundContent={modelDropdownEmpty}
+                  triggerProps={{ updateOnScroll: true }}
                   className="chat-model-select min-w-0"
-                  style={{ width: 160 }}
+                  style={{ width: 200 }}
                 />
                 <Space size={4}>
                   <Button
@@ -409,9 +784,11 @@ export function ChatPage() {
                     size="small"
                     aria-label="发送"
                     icon={<Send size={17} strokeWidth={1.75} />}
+                    loading={sendLoading}
                     onClick={handleSend}
                   />
                 </Space>
+              </Space>
               </Space>
             </Card>
           </div>

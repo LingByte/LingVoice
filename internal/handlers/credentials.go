@@ -33,14 +33,15 @@ type credentialCreateBody struct {
 }
 
 type credentialUpdateBody struct {
-	Name            string `json:"name" binding:"required,min=1,max=128"`
-	Status          int    `json:"status"` // 0 或 1
-	RemainQuota     int    `json:"remain_quota"`
-	UnlimitedQuota  bool   `json:"unlimited_quota"`
-	AllowIps        string `json:"allow_ips"`
-	Group           string `json:"group" binding:"max=128"`
-	CrossGroupRetry bool   `json:"cross_group_retry"`
-	ExpiredTime     int64  `json:"expired_time"`
+	Name                    string  `json:"name" binding:"required,min=1,max=128"`
+	Status                  int     `json:"status"` // 0 或 1
+	RemainQuota             int     `json:"remain_quota"`
+	UnlimitedQuota          bool    `json:"unlimited_quota"`
+	AllowIps                string  `json:"allow_ips"`
+	Group                   string  `json:"group" binding:"max=128"`
+	CrossGroupRetry         bool   `json:"cross_group_retry"`
+	ExpiredTime             int64  `json:"expired_time"`
+	OpenAPIModelCatalogJSON string `json:"openapi_model_catalog"`
 }
 
 func credentialKindError(kind string) string {
@@ -77,6 +78,7 @@ func credentialToPublic(row *models.Credential) gin.H {
 		"status":               row.Status,
 		"name":                 row.Name,
 		"extra":                jsonRawIfObject(row.ExtraJSON),
+		"openapi_model_catalog": jsonRawIfJSONArray(row.OpenAPIModelCatalogJSON),
 		"created_time":         row.CreatedTime,
 		"accessed_time":        row.AccessedTime,
 		"expired_time":         row.ExpiredTime,
@@ -99,6 +101,22 @@ func jsonRawIfObject(s string) any {
 	var v any
 	if json.Unmarshal([]byte(s), &v) == nil {
 		return v
+	}
+	return s
+}
+
+func jsonRawIfJSONArray(s string) any {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return []any{}
+	}
+	var v []any
+	if json.Unmarshal([]byte(s), &v) == nil {
+		return v
+	}
+	var objs []map[string]any
+	if json.Unmarshal([]byte(s), &objs) == nil {
+		return objs
 	}
 	return s
 }
@@ -273,6 +291,9 @@ func (h *Handlers) updateCredential(c *gin.Context) {
 	row.Group = strings.TrimSpace(body.Group)
 	row.CrossGroupRetry = body.CrossGroupRetry
 	row.ExpiredTime = exp
+	if strings.EqualFold(strings.TrimSpace(row.Kind), models.CredentialKindLLM) {
+		row.OpenAPIModelCatalogJSON = strings.TrimSpace(body.OpenAPIModelCatalogJSON)
+	}
 
 	if err := h.db.Save(&row).Error; err != nil {
 		response.Fail(c, "更新失败", gin.H{"error": err.Error()})

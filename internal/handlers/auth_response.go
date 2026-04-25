@@ -37,12 +37,12 @@ type AuthUserResponse struct {
 
 // AuthLoginResponse is returned after login, register, magic-link login, or token refresh.
 type AuthLoginResponse struct {
-	User               AuthUserResponse `json:"user"`
-	AccessToken        string           `json:"accessToken"`
-	RefreshToken       string           `json:"refreshToken"`
-	TokenType          string           `json:"tokenType"` // "Bearer"
-	ExpiresIn          int64            `json:"expiresIn"` // access lifetime seconds
-	RefreshExpiresIn   int64            `json:"refreshExpiresIn"`
+	User             AuthUserResponse `json:"user"`
+	AccessToken      string           `json:"accessToken"`
+	RefreshToken     string           `json:"refreshToken"`
+	TokenType        string           `json:"tokenType"` // "Bearer"
+	ExpiresIn        int64            `json:"expiresIn"` // access lifetime seconds
+	RefreshExpiresIn int64            `json:"refreshExpiresIn"`
 }
 
 // AuthMeResponse is returned by GET /api/auth/me.

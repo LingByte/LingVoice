@@ -13,4 +13,5 @@ import (
 func InitApplicationListeners(db *gorm.DB, lg *zap.Logger) {
 	InitSystemListeners()
 	InitUserSignalListeners(db, lg)
+	InitLLMUsageListener(db, lg)
 }

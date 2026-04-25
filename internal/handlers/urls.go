@@ -72,6 +72,13 @@ func (h *Handlers) Register(engine *gin.Engine) {
 		mt.DELETE("/:id", h.deleteMailTemplate)
 	}
 
+	lu := api.Group("/llm-usage")
+	lu.Use(models.AuthRequired)
+	{
+		lu.GET("", h.listLLMUsage)
+		lu.GET("/:id", h.getLLMUsage)
+	}
+
 	ml := api.Group("/mail-logs")
 	{
 		ml.GET("", h.listMailLogs)
@@ -79,6 +86,18 @@ func (h *Handlers) Register(engine *gin.Engine) {
 		ml.GET("/:id", h.getMailLog)
 		ml.PUT("/:id", h.updateMailLog)
 		ml.DELETE("/:id", h.deleteMailLog)
+	}
+
+	chat := api.Group("/chat")
+	chat.Use(models.AuthRequired)
+	{
+		chat.GET("/sessions", h.listChatSessions)
+		chat.POST("/sessions", h.createChatSession)
+		chat.GET("/sessions/:id/messages", h.listChatMessages)
+		chat.POST("/sessions/:id/messages", h.appendChatMessage)
+		chat.GET("/sessions/:id", h.getChatSession)
+		chat.PATCH("/sessions/:id", h.patchChatSession)
+		chat.DELETE("/sessions/:id", h.deleteChatSession)
 	}
 
 	cr := api.Group("/credentials")

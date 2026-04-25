@@ -20,6 +20,7 @@ import {
 import dayjs, { type Dayjs } from 'dayjs'
 import type { CSSProperties } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { listLLMChannels, type LLMChannelRow } from '@/api/channelsAdmin'
 import {
   createCredential,
   deleteCredential,
@@ -68,6 +69,55 @@ function dayjsToExpiredUnix(d: unknown): number {
   return x.endOf('day').unix()
 }
 
+function splitModelsFromChannelField(s: string): string[] {
+  const t = String(s || '')
+    .replace(/\r/g, '')
+    .replace(/；/g, ',')
+    .replace(/，/g, ',')
+    .replace(/\n/g, ',')
+  return t
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+}
+
+/** 从凭证 openapi_model_catalog 解析出已选模型 id 列表 */
+function parseCatalogToModelIds(cat: unknown): string[] {
+  if (cat == null || cat === '') return []
+  if (Array.isArray(cat)) {
+    const out: string[] = []
+    for (const x of cat) {
+      if (typeof x === 'string' && x.trim()) out.push(x.trim())
+      else if (x && typeof x === 'object' && 'id' in (x as object)) {
+        const id = String((x as { id?: unknown }).id ?? '').trim()
+        if (id) out.push(id)
+      }
+    }
+    return out
+  }
+  if (typeof cat === 'string') {
+    const raw = cat.trim()
+    if (!raw) return []
+    try {
+      return parseCatalogToModelIds(JSON.parse(raw) as unknown)
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
+function openAIChannelModelOptions(channels: LLMChannelRow[]): { label: string; value: string }[] {
+  const set = new Set<string>()
+  for (const ch of channels) {
+    if (String(ch.protocol || 'openai').toLowerCase() !== 'openai') continue
+    for (const id of splitModelsFromChannelField(ch.models || '')) {
+      set.add(id)
+    }
+  }
+  return [...set].sort().map((id) => ({ label: id, value: id }))
+}
+
 export function CredentialsPage() {
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<CredentialRow[]>([])
@@ -84,6 +134,35 @@ export function CredentialsPage() {
   const [editForm] = Form.useForm()
   const [editSaving, setEditSaving] = useState(false)
   const [editing, setEditing] = useState<CredentialRow | null>(null)
+  const [catalogOptions, setCatalogOptions] = useState<{ label: string; value: string }[]>([])
+  const [catalogOptionsLoading, setCatalogOptionsLoading] = useState(false)
+  const catalogIdsWatch = Form.useWatch('openapi_model_catalog_ids', editForm) as string[] | undefined
+  const catalogSelectMerged = useMemo(() => {
+    const map = new Map<string, { label: string; value: string }>()
+    for (const o of catalogOptions) {
+      map.set(o.value, o)
+    }
+    for (const id of catalogIdsWatch ?? []) {
+      const t = String(id).trim()
+      if (t && !map.has(t)) {
+        map.set(t, { label: t, value: t })
+      }
+    }
+    return [...map.values()].sort((a, b) => a.value.localeCompare(b.value))
+  }, [catalogOptions, catalogIdsWatch])
+
+  const loadCatalogOptionsForGroup = useCallback(async (group: string | undefined) => {
+    setCatalogOptionsLoading(true)
+    try {
+      const g = group != null && String(group).trim() !== '' ? String(group).trim() : undefined
+      const p = await listLLMChannels(1, 500, g)
+      setCatalogOptions(openAIChannelModelOptions(p.list ?? []))
+    } catch {
+      setCatalogOptions([])
+    } finally {
+      setCatalogOptionsLoading(false)
+    }
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -159,8 +238,15 @@ export function CredentialsPage() {
       group: row.group ?? '',
       cross_group_retry: row.cross_group_retry,
       expires_day: expiredToDayjs(row.expired_time),
+      openapi_model_catalog_ids:
+        row.kind === 'llm' ? parseCatalogToModelIds(row.openapi_model_catalog) : [],
     })
     setEditOpen(true)
+    if (row.kind === 'llm') {
+      void loadCatalogOptionsForGroup(row.group || undefined)
+    } else {
+      setCatalogOptions([])
+    }
   }
 
   const submitEdit = async () => {
@@ -177,6 +263,11 @@ export function CredentialsPage() {
         group: String(v.group ?? '').trim(),
         cross_group_retry: Boolean(v.cross_group_retry),
         expired_time: dayjsToExpiredUnix(v.expires_day),
+      }
+      if (editing.kind === 'llm') {
+        const ids = (v.openapi_model_catalog_ids as string[] | undefined) ?? []
+        const cleaned = [...new Set(ids.map((x) => String(x).trim()).filter(Boolean))]
+        body.openapi_model_catalog = cleaned.length === 0 ? '' : JSON.stringify(cleaned)
       }
       await updateCredential(editing.id, body)
       Message.success('已保存')
@@ -352,7 +443,7 @@ export function CredentialsPage() {
           </span>
         }
         visible={editOpen}
-        width={400}
+        width={editing?.kind === 'llm' ? 460 : 400}
         placement="right"
         bodyStyle={drawerBodyStyle}
         footer={
@@ -362,6 +453,7 @@ export function CredentialsPage() {
               onClick={() => {
                 setEditOpen(false)
                 setEditing(null)
+                setCatalogOptions([])
               }}
             >
               取消
@@ -374,12 +466,25 @@ export function CredentialsPage() {
         onCancel={() => {
           setEditOpen(false)
           setEditing(null)
+          setCatalogOptions([])
         }}
         unmountOnExit
         className="credential-drawer"
       >
         {editing ? (
-          <Form form={editForm} layout="vertical" size="small" className="credential-drawer__form">
+          <Form
+            form={editForm}
+            layout="vertical"
+            size="small"
+            className="credential-drawer__form"
+            onValuesChange={(changed, values) => {
+              if (!editing || editing.kind !== 'llm') return
+              if ('group' in changed) {
+                const g = String(values.group ?? '').trim()
+                void loadCatalogOptionsForGroup(g || undefined)
+              }
+            }}
+          >
             <Alert type="info" className="!mb-2 !rounded-md" content={`#${editing.id} · 已用 ${editing.used_quota}`} />
             <FormItem label="名称" field="name" rules={[{ required: true }]}>
               <Input size="small" />
@@ -414,9 +519,27 @@ export function CredentialsPage() {
             <FormItem label="分组" field="group" className="!mb-2">
               <Input size="small" />
             </FormItem>
-            <FormItem label="跨分组重试" field="cross_group_retry" triggerPropName="checked" className="!mb-0">
+            <FormItem label="跨分组重试" field="cross_group_retry" triggerPropName="checked" className="!mb-2">
               <Switch size="small" />
             </FormItem>
+            {editing.kind === 'llm' ? (
+              <FormItem
+                label="OpenAPI 模型目录"
+                field="openapi_model_catalog_ids"
+                className="!mb-0"
+                extra="多选下方候选（来自同分组 OpenAI 协议渠道的模型列表）；可输入新模型 id 回车添加。全部清空则走渠道汇总。"
+              >
+                <Select
+                  mode="multiple"
+                  allowCreate
+                  showSearch
+                  loading={catalogOptionsLoading}
+                  options={catalogSelectMerged}
+                  placeholder="选择或输入模型 id"
+                  size="small"
+                />
+              </FormItem>
+            ) : null}
           </Form>
         ) : null}
       </Drawer>

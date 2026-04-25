@@ -339,6 +339,33 @@ body {
   background: var(--color-fill-3);
 }
 
+/* 聊天页：模型下拉无数据 / 加载态 */
+.chat-model-dropdown-empty {
+  padding: 20px 16px 18px;
+  text-align: center;
+  max-width: 260px;
+  box-sizing: border-box;
+}
+
+.chat-model-dropdown-empty--loading {
+  color: var(--color-text-3);
+  font-size: 13px;
+}
+
+.chat-model-dropdown-empty__title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-2);
+}
+
+.chat-model-dropdown-empty__hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-3);
+}
+
 /* 聊天消息：左右布局 + 入场动画 */
 .chat-msg-row {
   display: flex;

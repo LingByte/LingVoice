@@ -22,6 +22,8 @@ export type CredentialRow = {
   allow_ips?: string | null
   group: string
   cross_group_retry: boolean
+  /** LLM 凭证：OpenAPI /v1/models 展示用 JSON 数组 */
+  openapi_model_catalog?: unknown
 }
 
 export type CredentialCreateBody = {
@@ -49,6 +51,8 @@ export type CredentialUpdateBody = {
   group: string
   cross_group_retry: boolean
   expired_time: number
+  /** 仅 kind=llm 时写入；JSON 文本 */
+  openapi_model_catalog?: string
 }
 
 function ensureOk<T>(r: ApiResponse<T>): T {
