@@ -6,6 +6,7 @@ import {
   LayoutTemplate,
   MessageSquare,
   Mic,
+  Mic2,
   PanelLeft,
   PanelLeftClose,
   RadioTower,
@@ -62,6 +63,11 @@ const menu = [
     icon: <BarChart3 size={16} strokeWidth={1.85} />,
   },
   {
+    key: '/notify/speech-usage',
+    label: '语音用量',
+    icon: <Mic2 size={16} strokeWidth={1.85} />,
+  },
+  {
     key: '/debug/openapi',
     label: 'OpenAPI 调试',
     icon: <Braces size={16} strokeWidth={1.85} />,
@@ -72,6 +78,7 @@ function menuPathSelected(pathname: string, itemKey: string): boolean {
   if (itemKey === '/notify/channels') return pathname.startsWith('/notify/channels')
   if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
   if (itemKey === '/notify/llm-usage') return pathname === '/notify/llm-usage'
+  if (itemKey === '/notify/speech-usage') return pathname === '/notify/speech-usage'
   if (itemKey === '/channels/llm') return pathname.startsWith('/channels/llm')
   if (itemKey === '/channels/asr') return pathname.startsWith('/channels/asr')
   if (itemKey === '/channels/tts') return pathname.startsWith('/channels/tts')

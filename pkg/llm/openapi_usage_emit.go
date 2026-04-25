@@ -26,6 +26,11 @@ func clipForOpenAPIUsageStore(s string) string {
 	return string(b[:n]) + "…(truncated)"
 }
 
+// ClipOpenAPIUsageBody 裁剪大段 JSON/文本，供用量审计或其它落库复用。
+func ClipOpenAPIUsageBody(s string) string {
+	return clipForOpenAPIUsageStore(s)
+}
+
 // OpenAPIUsageEmitMeta 由 HTTP 层填入，用于 OpenAPI 代理用量信号（不含 gin / models）。
 type OpenAPIUsageEmitMeta struct {
 	UserIDStr string
@@ -327,7 +332,7 @@ func EmitOpenAPIOpenAIUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMe
 		TPS:             tps,
 		QueueTimeMs:     0,
 		RequestContent:  clipForOpenAPIUsageStore(string(reqBody)),
-		ResponseContent: "",
+		ResponseContent: cap.streamResponseContentForUsage(),
 		UserAgent:       meta.UserAgent,
 		IPAddress:       meta.ClientIP,
 		StatusCode:      cap.StatusCode,
@@ -376,7 +381,7 @@ func EmitOpenAPIAnthropicUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmi
 		TPS:             tps,
 		QueueTimeMs:     0,
 		RequestContent:  clipForOpenAPIUsageStore(string(reqBody)),
-		ResponseContent: "",
+		ResponseContent: cap.streamResponseContentForUsage(),
 		UserAgent:       meta.UserAgent,
 		IPAddress:       meta.ClientIP,
 		StatusCode:      cap.StatusCode,

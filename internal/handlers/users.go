@@ -10,7 +10,6 @@ import (
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
-	"github.com/LingByte/LingVoice/pkg/jwtauth"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/response"
 	"github.com/LingByte/LingVoice/pkg/utils"
@@ -201,7 +200,7 @@ func (h *Handlers) postRefresh(c *gin.Context) {
 		return
 	}
 	rt := strings.TrimSpace(req.RefreshToken)
-	payload, err := jwtauth.ParseRefreshToken(rt, config.GlobalConfig.Auth.RefreshJWTSigningKey())
+	payload, err := utils.ParseRefreshToken(rt, config.GlobalConfig.Auth.RefreshJWTSigningKey())
 	if err != nil {
 		response.FailWithCode(c, 401, "刷新令牌无效或已过期", nil)
 		return

@@ -16,7 +16,6 @@ import (
 
 	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
-	"github.com/LingByte/LingVoice/pkg/jwtauth"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/response"
 	"github.com/LingByte/LingVoice/pkg/utils"
@@ -349,7 +348,7 @@ func CurrentUser(c *gin.Context) *User {
 	if raw == "" {
 		return nil
 	}
-	payload, err := jwtauth.ParseAccessToken(raw, config.GlobalConfig.Auth.JWTSigningKey())
+	payload, err := utils.ParseAccessToken(raw, config.GlobalConfig.Auth.JWTSigningKey())
 	if err != nil {
 		return nil
 	}

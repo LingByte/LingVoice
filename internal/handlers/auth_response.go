@@ -10,7 +10,7 @@ import (
 
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/config"
-	"github.com/LingByte/LingVoice/pkg/jwtauth"
+	"github.com/LingByte/LingVoice/pkg/utils"
 )
 
 // AuthUserResponse is the public user slice returned on auth endpoints.
@@ -92,7 +92,7 @@ func buildAuthLoginResponse(u *models.User) (*AuthLoginResponse, error) {
 	}
 	accessTTL := cfg.Auth.AccessTokenTTL()
 	refreshTTL := cfg.Auth.RefreshTokenTTL()
-	access, err := jwtauth.SignAccessToken(jwtauth.AccessPayload{
+	access, err := utils.SignAccessToken(utils.AccessPayload{
 		UserID: u.ID,
 		Email:  u.Email,
 		Role:   u.Role,
@@ -100,7 +100,7 @@ func buildAuthLoginResponse(u *models.User) (*AuthLoginResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	refresh, err := jwtauth.SignRefreshToken(jwtauth.RefreshPayload{UserID: u.ID}, cfg.Auth.RefreshJWTSigningKey(), refreshTTL)
+	refresh, err := utils.SignRefreshToken(utils.RefreshPayload{UserID: u.ID}, cfg.Auth.RefreshJWTSigningKey(), refreshTTL)
 	if err != nil {
 		return nil, err
 	}

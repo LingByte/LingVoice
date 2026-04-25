@@ -79,6 +79,13 @@ func (h *Handlers) Register(engine *gin.Engine) {
 		lu.GET("/:id", h.getLLMUsage)
 	}
 
+	su := api.Group("/speech-usage")
+	su.Use(models.AuthRequired)
+	{
+		su.GET("", h.listSpeechUsage)
+		su.GET("/:id", h.getSpeechUsage)
+	}
+
 	ml := api.Group("/mail-logs")
 	{
 		ml.GET("", h.listMailLogs)

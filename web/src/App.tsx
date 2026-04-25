@@ -16,6 +16,7 @@ import { OpenApiDebugPage } from '@/pages/OpenApiDebugPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { LlmChannelsPage } from '@/pages/LlmChannelsPage'
 import { LlmUsagePage } from '@/pages/LlmUsagePage'
+import { SpeechUsagePage } from '@/pages/SpeechUsagePage'
 import { AsrChannelsPage } from '@/pages/AsrChannelsPage'
 import { TtsChannelsPage } from '@/pages/TtsChannelsPage'
 
@@ -37,6 +38,7 @@ export default function App() {
           <Route path="notify/mail-templates/:templateId" element={<MailTemplateEditPage />} />
           <Route path="notify/mail-logs" element={<MailLogsPage />} />
           <Route path="notify/llm-usage" element={<LlmUsagePage />} />
+          <Route path="notify/speech-usage" element={<SpeechUsagePage />} />
           <Route path="channels/llm" element={<LlmChannelsPage />} />
           <Route path="channels/asr" element={<AsrChannelsPage />} />
           <Route path="channels/tts" element={<TtsChannelsPage />} />

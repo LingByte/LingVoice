@@ -57,6 +57,8 @@ type OpenAIStreamCapture struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	// assistantBuf 从 SSE delta 拼接的助手文本（有字节上限），用于用量表 response_content 近似非流式形态。
+	assistantBuf []byte
 }
 
 func (c *OpenAIStreamCapture) effectiveRequestID() string {
@@ -64,6 +66,61 @@ func (c *OpenAIStreamCapture) effectiveRequestID() string {
 		return c.RequestID
 	}
 	return openapiUsageFailRequestID("ling-openapi-openai-stream-")
+}
+
+func appendStreamCaptureText(dst *[]byte, part string, maxBytes int) {
+	if part == "" || maxBytes <= 0 {
+		return
+	}
+	room := maxBytes - len(*dst)
+	if room <= 0 {
+		return
+	}
+	p := part
+	if len(p) > room {
+		p = p[:room]
+		for len(p) > 0 && p[len(p)-1]&0xC0 == 0x80 {
+			p = p[:len(p)-1]
+		}
+	}
+	*dst = append(*dst, p...)
+}
+
+// streamResponseContentForUsage 合成与 chat completion 相近的 JSON，便于用量详情展示；正文为流式拼接结果。
+func (cap *OpenAIStreamCapture) streamResponseContentForUsage() string {
+	if cap == nil {
+		return ""
+	}
+	tot := cap.TotalTokens
+	if tot == 0 {
+		tot = cap.PromptTokens + cap.CompletionTokens
+	}
+	out := map[string]any{
+		"id":     strings.TrimSpace(cap.RequestID),
+		"object": "chat.completion",
+		"model":  strings.TrimSpace(cap.Model),
+		"choices": []any{
+			map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": string(cap.assistantBuf),
+				},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]any{
+			"prompt_tokens":     cap.PromptTokens,
+			"completion_tokens": cap.CompletionTokens,
+			"total_tokens":      tot,
+		},
+		"_stream_reconstructed": true,
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return ""
+	}
+	return clipForOpenAPIUsageStore(string(b))
 }
 
 // ProxyOpenAIStreamWithCapture 流式转发并解析 SSE data 行中的 id/model/usage；将字节原样写入 w。
@@ -168,6 +225,9 @@ func parseOpenAISSELine(line []byte, cap *OpenAIStreamCapture, firstTokenRecorde
 			cap.TotalTokens = cap.PromptTokens + cap.CompletionTokens
 		}
 	}
+	for i := range chunk.Choices {
+		appendStreamCaptureText(&cap.assistantBuf, chunk.Choices[i].Delta.Content, maxOpenAPIUsageBodyClip)
+	}
 	if !*firstTokenRecorded && len(chunk.Choices) > 0 && strings.TrimSpace(chunk.Choices[0].Delta.Content) != "" {
 		cap.FirstTokenAtMs = time.Now().UnixMilli()
 		*firstTokenRecorded = true
@@ -186,6 +246,7 @@ type AnthropicStreamCapture struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	assistantBuf     []byte
 }
 
 func (c *AnthropicStreamCapture) effectiveRequestID() string {
@@ -193,6 +254,38 @@ func (c *AnthropicStreamCapture) effectiveRequestID() string {
 		return c.RequestID
 	}
 	return openapiUsageFailRequestID("ling-openapi-anthropic-stream-")
+}
+
+func (cap *AnthropicStreamCapture) streamResponseContentForUsage() string {
+	if cap == nil {
+		return ""
+	}
+	tot := cap.TotalTokens
+	if tot == 0 {
+		tot = cap.PromptTokens + cap.CompletionTokens
+	}
+	out := map[string]any{
+		"id":    strings.TrimSpace(cap.RequestID),
+		"type":  "message",
+		"model": strings.TrimSpace(cap.Model),
+		"role":  "assistant",
+		"content": []any{
+			map[string]any{
+				"type": "text",
+				"text": string(cap.assistantBuf),
+			},
+		},
+		"usage": map[string]any{
+			"input_tokens":  cap.PromptTokens,
+			"output_tokens": cap.CompletionTokens,
+		},
+		"_stream_reconstructed": true,
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return ""
+	}
+	return clipForOpenAPIUsageStore(string(b))
 }
 
 // ProxyAnthropicStreamWithCapture 流式转发并解析 Anthropic SSE。
@@ -305,6 +398,9 @@ func parseAnthropicSSELine(line []byte, cap *AnthropicStreamCapture, firstConten
 			cap.TotalTokens = cap.PromptTokens + cap.CompletionTokens
 		}
 	case "content_block_delta":
+		if wrap.Delta != nil && strings.TrimSpace(wrap.Delta.Text) != "" {
+			appendStreamCaptureText(&cap.assistantBuf, wrap.Delta.Text, maxOpenAPIUsageBodyClip)
+		}
 		if !*firstContent && wrap.Delta != nil && strings.TrimSpace(wrap.Delta.Text) != "" {
 			cap.FirstTokenAtMs = time.Now().UnixMilli()
 			*firstContent = true

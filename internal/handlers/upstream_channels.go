@@ -242,8 +242,42 @@ type speechChannelWrite struct {
 	ConfigJSON string `json:"configJson"`
 }
 
+func normalizeASRProviderLocal(raw string) string {
+	orig := strings.TrimSpace(raw)
+	p := strings.ToLower(orig)
+	switch p {
+	case "tencent":
+		return "qcloud"
+	case "aliyun_funasr", "aliyun-funasr", "aliyun":
+		return "funasr"
+	case "volcengine_llm":
+		return "volcllmasr"
+	default:
+		return orig
+	}
+}
+
+func normalizeTTSProviderLocal(raw string) string {
+	orig := strings.TrimSpace(raw)
+	if strings.EqualFold(orig, "tencent") {
+		return "qcloud"
+	}
+	return orig
+}
+
+func validateConfigJSON(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if !json.Valid([]byte(s)) {
+		return errors.New("configJson 须为合法 JSON")
+	}
+	return nil
+}
+
 func speechWriteToASR(w *speechChannelWrite, row *models.ASRChannel) {
-	row.Provider = strings.TrimSpace(w.Provider)
+	row.Provider = normalizeASRProviderLocal(strings.TrimSpace(w.Provider))
 	row.Name = strings.TrimSpace(w.Name)
 	row.Group = strings.TrimSpace(w.Group)
 	if w.Enabled != nil {
@@ -258,7 +292,7 @@ func speechWriteToASR(w *speechChannelWrite, row *models.ASRChannel) {
 }
 
 func speechWriteToTTS(w *speechChannelWrite, row *models.TTSChannel) {
-	row.Provider = strings.TrimSpace(w.Provider)
+	row.Provider = normalizeTTSProviderLocal(strings.TrimSpace(w.Provider))
 	row.Name = strings.TrimSpace(w.Name)
 	row.Group = strings.TrimSpace(w.Group)
 	if w.Enabled != nil {
@@ -270,17 +304,6 @@ func speechWriteToTTS(w *speechChannelWrite, row *models.TTSChannel) {
 		row.SortOrder = *w.SortOrder
 	}
 	row.ConfigJSON = strings.TrimSpace(w.ConfigJSON)
-}
-
-func validateConfigJSON(s string) error {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	if !json.Valid([]byte(s)) {
-		return errors.New("configJson 须为合法 JSON")
-	}
-	return nil
 }
 
 func (h *Handlers) listASRChannels(c *gin.Context) {

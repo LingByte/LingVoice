@@ -745,6 +745,14 @@ func NewSynthesisServiceFromCredential(config TTSCredentialConfig) (SynthesisSer
 		if err := json.Unmarshal(configBytes, &options); err != nil {
 			return nil, fmt.Errorf("反序列化Azure配置失败: %w", err)
 		}
+		if c := config.getString("codec"); c != "" {
+			options["codec"] = c
+		}
+		if sr := config.getInt64("sampleRate"); sr > 0 {
+			options["sample_rate"] = sr
+		} else if sr := config.getInt64("sample_rate"); sr > 0 {
+			options["sample_rate"] = sr
+		}
 
 	case "xunfei":
 		appID := config.getString("appId")
@@ -790,10 +798,36 @@ func NewSynthesisServiceFromCredential(config TTSCredentialConfig) (SynthesisSer
 		if baseURL == "" {
 			baseURL = "https://api.openai.com"
 		}
-		// OpenAI 配置
-		options = map[string]any{
-			"api_key":  apiKey,
-			"base_url": baseURL,
+		oc := NewOpenAIConfig(apiKey)
+		oc.BaseURL = baseURL
+		if v := config.getString("voice"); v != "" {
+			oc.Voice = v
+		}
+		if m := config.getString("model"); m != "" {
+			oc.Model = m
+		}
+		if rf := config.getString("response_format"); rf != "" {
+			oc.Codec = rf
+		} else if c := config.getString("codec"); c != "" {
+			oc.Codec = c
+		}
+		if sp := config.getString("speed"); sp != "" {
+			if f, err := strconv.ParseFloat(sp, 64); err == nil {
+				oc.Speed = f
+			}
+		}
+		if sr := config.getInt64("sampleRate"); sr > 0 {
+			oc.SampleRate = int(sr)
+		} else if sr := config.getInt64("sample_rate"); sr > 0 {
+			oc.SampleRate = int(sr)
+		}
+		configBytes, err := json.Marshal(oc)
+		if err != nil {
+			return nil, fmt.Errorf("序列化OpenAI TTS配置失败: %w", err)
+		}
+		options = make(map[string]any)
+		if err := json.Unmarshal(configBytes, &options); err != nil {
+			return nil, fmt.Errorf("反序列化OpenAI TTS配置失败: %w", err)
 		}
 
 	case "google":

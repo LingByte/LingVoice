@@ -1,4 +1,5 @@
 import {
+  Alert,
   Button,
   Drawer,
   Form,
@@ -7,13 +8,14 @@ import {
   Message,
   Pagination,
   Popconfirm,
+  Select,
   Space,
   Switch,
   Table,
   Typography,
 } from '@arco-design/web-react'
 import type { CSSProperties } from 'react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   createASRChannel,
   createTTSChannel,
@@ -29,11 +31,60 @@ import {
   type SpeechChannelUpsert,
   type SpeechKind,
 } from '@/api/channelsAdmin'
+import {
+  normalizeASRProviderId,
+  normalizeTTSProviderId,
+  speechProvidersForKind,
+  type SpeechConfigField,
+} from '@/config/speechProviders'
 
 const { Title, Paragraph } = Typography
 const FormItem = Form.Item
 
 const drawerBodyStyle: CSSProperties = { padding: '12px 16px 8px' }
+
+function emptyConfigForm(): Record<string, string | number | undefined> {
+  return {}
+}
+
+function configFromParsed(raw: unknown): Record<string, string | number | undefined> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return emptyConfigForm()
+  const out: Record<string, string | number | undefined> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (v === null || v === undefined) continue
+    if (typeof v === 'number') out[k] = v
+    else out[k] = String(v)
+  }
+  return out
+}
+
+function buildConfigJsonFromForm(
+  fields: SpeechConfigField[],
+  cfg: Record<string, string | number | undefined> | undefined,
+): { ok: true; json: string } | { ok: false; message: string } {
+  const obj: Record<string, unknown> = {}
+  const src = cfg ?? {}
+  for (const f of fields) {
+    const raw = src[f.key]
+    const empty = raw === undefined || raw === '' || (typeof raw === 'number' && Number.isNaN(raw))
+    if (empty) {
+      if (f.required) {
+        return { ok: false, message: `请填写「${f.label}」` }
+      }
+      continue
+    }
+    if (f.type === 'number') {
+      const n = typeof raw === 'number' ? raw : Number(String(raw).trim())
+      if (Number.isNaN(n)) {
+        return { ok: false, message: `「${f.label}」须为数字` }
+      }
+      obj[f.key] = n
+    } else {
+      obj[f.key] = typeof raw === 'string' ? raw.trim() : raw
+    }
+  }
+  return { ok: true, json: JSON.stringify(obj) }
+}
 
 export function SpeechChannelsListPage(props: {
   kind: SpeechKind
@@ -47,7 +98,7 @@ export function SpeechChannelsListPage(props: {
     enabled: boolean
     group: string
     sortOrder: number
-    configJson: string
+    config: Record<string, string | number | undefined>
   }>()
 
   const [loading, setLoading] = useState(false)
@@ -66,7 +117,17 @@ export function SpeechChannelsListPage(props: {
   const [drawerLoading, setDrawerLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
+  const providers = useMemo(() => speechProvidersForKind(kind), [kind])
+
   const label = kind === 'asr' ? 'ASR' : 'TTS'
+
+  const watchedProvider = Form.useWatch('provider', form) as string | undefined
+
+  const activeMeta = useMemo(() => {
+    const id = String(watchedProvider || '').trim()
+    if (!id) return undefined
+    return providers.find((p) => p.id === id)
+  }, [providers, watchedProvider])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -96,12 +157,12 @@ export function SpeechChannelsListPage(props: {
     setDrawerMode('create')
     setEditingId(null)
     form.setFieldsValue({
-      provider: '',
+      provider: providers[0]?.id ?? '',
       name: '',
       enabled: true,
       group: '',
       sortOrder: 0,
-      configJson: '{\n  \n}\n',
+      config: emptyConfigForm(),
     })
     setDrawerOpen(true)
   }
@@ -113,14 +174,13 @@ export function SpeechChannelsListPage(props: {
     setDrawerLoading(true)
     try {
       const { channel } = kind === 'asr' ? await getASRChannel(id) : await getTTSChannel(id)
-      let cfg = channel.configJson || ''
-      if (cfg.trim() === '') {
-        cfg = '{\n  \n}\n'
-      } else {
+      let cfg: Record<string, string | number | undefined> = emptyConfigForm()
+      const raw = channel.configJson?.trim()
+      if (raw) {
         try {
-          cfg = JSON.stringify(JSON.parse(cfg), null, 2)
+          cfg = configFromParsed(JSON.parse(raw) as unknown)
         } catch {
-          /* keep */
+          Message.warning('configJson 解析失败，已清空表单中的厂商参数')
         }
       }
       form.setFieldsValue({
@@ -129,7 +189,7 @@ export function SpeechChannelsListPage(props: {
         enabled: channel.enabled,
         group: channel.group || '',
         sortOrder: channel.sortOrder ?? 0,
-        configJson: cfg,
+        config: cfg,
       })
     } catch (e) {
       Message.error(e instanceof Error ? e.message : '加载失败')
@@ -140,25 +200,34 @@ export function SpeechChannelsListPage(props: {
   }
 
   const submitDrawer = async () => {
+    if (providers.length === 0) {
+      Message.warning('厂商列表为空')
+      return
+    }
     setSaving(true)
     try {
       const v = await form.validate()
-      const raw = String(v.configJson || '').trim()
-      if (raw !== '') {
-        try {
-          JSON.parse(raw)
-        } catch {
-          Message.error('configJson 须为合法 JSON')
-          return
-        }
+      const pid = String(v.provider || '').trim()
+      const meta = providers.find((p) => p.id === pid)
+      if (!meta) {
+        Message.error('请选择有效厂商')
+        return
       }
+      const built = buildConfigJsonFromForm(meta.configFields, v.config)
+      if (built.ok === false) {
+        Message.error(built.message)
+        return
+      }
+      const configJson = built.json
+      const providerNorm =
+        kind === 'asr' ? normalizeASRProviderId(pid) : normalizeTTSProviderId(pid)
       const body: SpeechChannelUpsert = {
-        provider: String(v.provider || '').trim(),
+        provider: providerNorm,
         name: String(v.name || '').trim(),
         enabled: Boolean(v.enabled),
         group: String(v.group || '').trim(),
         sortOrder: Number(v.sortOrder) || 0,
-        configJson: raw,
+        configJson,
       }
       if (drawerMode === 'create') {
         if (kind === 'asr') await createASRChannel(body)
@@ -189,13 +258,54 @@ export function SpeechChannelsListPage(props: {
     }
   }
 
+  const providerSelectOptions = useMemo(
+    () =>
+      providers.map((p) => ({
+        value: p.id,
+        label: `${p.label}（${p.id}）`,
+      })),
+    [providers],
+  )
+
+  const renderConfigField = (f: SpeechConfigField) => {
+    const extra = f.hint ? <span className="text-[12px] text-[var(--color-text-3)]">{f.hint}</span> : undefined
+    const rules = f.required ? [{ required: true, message: `请填写${f.label}` }] : undefined
+    const field = `config.${f.key}` as const
+    if (f.type === 'password') {
+      return (
+        <FormItem key={f.key} label={f.label} field={field} rules={rules} extra={extra}>
+          <Input.Password autoComplete="new-password" placeholder={f.placeholder} />
+        </FormItem>
+      )
+    }
+    if (f.type === 'number') {
+      return (
+        <FormItem key={f.key} label={f.label} field={field} rules={rules} extra={extra}>
+          <InputNumber min={0} style={{ width: '100%' }} placeholder={f.placeholder} />
+        </FormItem>
+      )
+    }
+    if (f.type === 'textarea') {
+      return (
+        <FormItem key={f.key} label={f.label} field={field} rules={rules} extra={extra}>
+          <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder={f.placeholder} />
+        </FormItem>
+      )
+    }
+    return (
+      <FormItem key={f.key} label={f.label} field={field} rules={rules} extra={extra}>
+        <Input placeholder={f.placeholder} />
+      </FormItem>
+    )
+  }
+
   return (
     <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-auto bg-[var(--color-fill-1)] px-5 py-5">
       <Title heading={5} className="!mb-1 !mt-0 shrink-0">
         {title}
       </Title>
       <Paragraph type="secondary" className="!mb-4 !mt-0 text-[13px]">
-        {description} 新建与编辑在右侧抽屉完成。
+        {description} 新建与编辑在右侧抽屉完成；厂商与参数字段由前端配置维护（与后端 recognizer / synthesizer 的 provider 命名对齐）。
       </Paragraph>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -223,7 +333,7 @@ export function SpeechChannelsListPage(props: {
         >
           查询
         </Button>
-        <Button type="primary" onClick={openCreate}>
+        <Button type="primary" onClick={openCreate} disabled={providers.length === 0}>
           新建渠道
         </Button>
         <Button onClick={() => void load()} loading={loading}>
@@ -290,7 +400,7 @@ export function SpeechChannelsListPage(props: {
           </span>
         }
         visible={drawerOpen}
-        width={420}
+        width={480}
         placement="right"
         bodyStyle={drawerBodyStyle}
         onCancel={() => setDrawerOpen(false)}
@@ -307,9 +417,31 @@ export function SpeechChannelsListPage(props: {
         className="credential-drawer"
       >
         <Form form={form} layout="vertical" size="small" disabled={drawerLoading} className="credential-drawer__form">
-          <FormItem label="厂商 provider" field="provider" rules={[{ required: true, message: '必填' }]}>
-            <Input placeholder="如 aliyun_funasr、azure" />
+          <FormItem label="厂商" field="provider" rules={[{ required: true, message: '请选择厂商' }]}>
+            <Select
+              placeholder="选择厂商"
+              options={providerSelectOptions}
+              showSearch
+              filterOption={(input, option) => {
+                const opt = option as { value?: string; label?: string }
+                const q = input.toLowerCase()
+                return (
+                  String(opt.value ?? '')
+                    .toLowerCase()
+                    .includes(q) || String(opt.label ?? '').toLowerCase().includes(q)
+                )
+              }}
+              onChange={() => {
+                form.setFieldValue('config', emptyConfigForm())
+              }}
+            />
           </FormItem>
+          {activeMeta?.description ? (
+            <Alert type="info" className="!mb-3" content={activeMeta.description} />
+          ) : null}
+          {activeMeta?.notes ? (
+            <Alert type="warning" className="!mb-3" content={activeMeta.notes} />
+          ) : null}
           <FormItem label="名称" field="name" rules={[{ required: true, message: '必填' }]}>
             <Input />
           </FormItem>
@@ -322,13 +454,10 @@ export function SpeechChannelsListPage(props: {
           <FormItem label="排序 sortOrder" field="sortOrder" extra="默认 0，同组内越小越靠前">
             <InputNumber min={0} style={{ width: '100%' }} />
           </FormItem>
-          <FormItem
-            label="配置 configJson"
-            field="configJson"
-            extra="厂商相关参数（endpoint、密钥等），须为合法 JSON；可为 {}"
-          >
-            <Input.TextArea className="font-mono text-[12px]" autoSize={{ minRows: 10, maxRows: 24 }} />
-          </FormItem>
+          <Paragraph className="!mb-2 !mt-1 !text-[12px] text-[var(--color-text-3)]">
+            以下为写入 configJson 的厂商参数（合法 JSON 对象）；音色等随请求变化的参数见 SPEC，不在此配置。
+          </Paragraph>
+          {activeMeta ? activeMeta.configFields.map(renderConfigField) : null}
         </Form>
       </Drawer>
     </div>

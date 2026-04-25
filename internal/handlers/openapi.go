@@ -47,6 +47,17 @@ func (h *Handlers) registerOpenAPIRoutes(api *gin.RouterGroup) {
 		v1llm.POST("/chat/completions", h.openAPIOpenAIChatCompletions)
 	}
 
+	v1asr := api.Group("/openapi/v1/speech/asr")
+	v1asr.Use(middleware.OpenAPISpeechProxyAuth(h.db, models.CredentialKindASR))
+	{
+		v1asr.POST("/transcribe", h.openAPIASRTranscribe)
+	}
+	v1tts := api.Group("/openapi/v1/speech/tts")
+	v1tts.Use(middleware.OpenAPISpeechProxyAuth(h.db, models.CredentialKindTTS))
+	{
+		v1tts.POST("/synthesize", h.openAPITTSSynthesize)
+	}
+
 	// Anthropic 协议：路径对齐官方 /v1/messages；鉴权可用 x-api-key 或 Bearer（凭证 kind=llm）。
 	v2llm := api.Group("/openapi/v2")
 	v2llm.Use(middleware.OpenAPILLMProxyAuth(h.db, middleware.OpenAPILLMStyleAnthropic))

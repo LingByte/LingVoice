@@ -89,6 +89,7 @@ func main() {
 				&models.ChatSession{},
 				&models.ChatMessage{},
 				&models.LLMUsage{},
+				&models.SpeechUsage{},
 				&models.AgentRun{},
 				&models.AgentStep{},
 			}

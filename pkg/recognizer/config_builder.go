@@ -104,8 +104,6 @@ func NewTranscriberConfigFromMap(
 		return buildQCloudConfig(config)
 	case "google":
 		return buildGoogleConfig(config, language)
-	case "qiniu":
-		return buildQiniuConfig(config)
 	case "funasr":
 		return buildFunASRConfig(config)
 	case "funasr_realtime":
@@ -195,17 +193,6 @@ func buildGoogleConfig(config map[string]interface{}, language string) (*GoogleA
 	}
 
 	opt := NewGoogleASROption(googleEncoding, int32(sampleRate), languageCode)
-	return &opt, nil
-}
-
-// buildQiniuConfig 构建七牛云ASR配置
-func buildQiniuConfig(config map[string]interface{}) (*QiniuASROption, error) {
-	cfg := NewConfigReader(config)
-	apiKey := cfg.String("apiKey", "api_key")
-	if apiKey == "" {
-		return nil, fmt.Errorf("七牛云ASR配置不完整：缺少apiKey")
-	}
-	opt := NewQiniuASROption(apiKey)
 	return &opt, nil
 }
 

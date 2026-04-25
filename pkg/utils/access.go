@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 // Package jwtauth provides a small HS256 access-token template (claims + sign/parse).
-package jwtauth
+package utils
 
 import (
 	"errors"
