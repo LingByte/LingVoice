@@ -28,7 +28,15 @@ type sendVerifyEmailRequest struct {
 	Email string `json:"email" binding:"required"`
 }
 
-// postSendVerifyEmail 向已注册邮箱发送 6 位数字登录验证码（邮件内为验证码，非链接）。
+type registerRequest struct {
+	Email       string `json:"email" binding:"required"`
+	Password    string `json:"password" binding:"required"`
+	Code        string `json:"code" binding:"required"`
+	DisplayName string `json:"displayName"`
+	Source      string `json:"source"`
+}
+
+// postSendVerifyEmail 向邮箱发送 6 位数字验证码（登录或注册用，邮件内为验证码，非链接）。
 func (h *Handlers) postSendVerifyEmail(c *gin.Context) {
 	var req sendVerifyEmailRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -38,12 +46,30 @@ func (h *Handlers) postSendVerifyEmail(c *gin.Context) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	db := h.db
 	user, err := models.GetUserByEmail(db, email)
+	isRegistration := false
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.Success(c, "若该邮箱已注册，将收到验证码邮件", nil)
+			// For registration, create a temporary user record to store the verification code
+			// This will be replaced when the actual registration happens
+			isRegistration = true
+			tempUser := &models.User{
+				Email:         email,
+				Status:        models.UserStatusPendingVerification,
+				EmailVerified: false,
+			}
+			if err := db.Create(tempUser).Error; err != nil {
+				response.FailWithCode(c, 500, "无法创建临时记录", nil)
+				return
+			}
+			user = tempUser
+		} else {
+			response.FailWithCode(c, 500, "查询失败", nil)
 			return
 		}
-		response.FailWithCode(c, 500, "查询失败", nil)
+	}
+	// Rate limiting: check if verification code was sent within last 60 seconds
+	if user.EmailVerifyExpires != nil && time.Since(*user.EmailVerifyExpires) < -9*time.Minute {
+		response.FailWithCode(c, 429, "验证码发送过于频繁，请60秒后再试", nil)
 		return
 	}
 	code, err := models.GenerateEmailVerifyToken(db, user)
@@ -52,7 +78,11 @@ func (h *Handlers) postSendVerifyEmail(c *gin.Context) {
 		return
 	}
 	utils.Sig().Emit(constants.SigUserVerifyEmail, user, code, c.ClientIP(), c.Request.UserAgent(), db)
-	response.Success(c, "若该邮箱已注册，将收到验证码邮件", nil)
+	if isRegistration {
+		response.Success(c, "验证码已发送，请查收邮箱", nil)
+	} else {
+		response.Success(c, "若该邮箱已注册，将收到验证码邮件", nil)
+	}
 }
 
 func (h *Handlers) postLogin(c *gin.Context) {
@@ -100,37 +130,56 @@ func (h *Handlers) postLogin(c *gin.Context) {
 }
 
 func (h *Handlers) postRegister(c *gin.Context) {
-	var form models.RegisterUserForm
-	if err := c.ShouldBindJSON(&form); err != nil {
+	var req registerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		response.FailWithCode(c, 400, "无效的请求", nil)
 		return
 	}
-	email := strings.ToLower(strings.TrimSpace(form.Email))
-	if email == "" || strings.TrimSpace(form.Password) == "" {
-		response.FailWithCode(c, 400, "邮箱和密码不能为空", nil)
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	code := strings.TrimSpace(req.Code)
+	password := strings.TrimSpace(req.Password)
+	if email == "" || password == "" || code == "" {
+		response.FailWithCode(c, 400, "邮箱、密码和验证码不能为空", nil)
 		return
 	}
-	if models.IsExistsByEmail(h.db, email) {
-		response.FailWithCode(c, 400, "邮箱已被注册", nil)
-		return
-	}
-	source := models.NormalizeUserSource(form.Source)
-	user, err := models.CreateUserWithMeta(h.db, email, form.Password, source, models.UserStatusActive)
+	// Verify email code before allowing registration
+	var tempUser models.User
+	err := h.db.Where("email = ? AND email_verify_token = ? AND email_verify_expires > ?", email, code, time.Now()).First(&tempUser).Error
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.FailWithCode(c, 400, "验证码无效或已过期", nil)
+		} else {
+			response.FailWithCode(c, 500, "验证码验证失败", nil)
+		}
+		return
+	}
+	// Check if this is a pending registration (status = pending_verification) or an existing user
+	if tempUser.Status == models.UserStatusActive && tempUser.Password != "" {
+		response.FailWithCode(c, 400, "该邮箱已被注册", nil)
+		return
+	}
+	// Update the temporary user record with the actual registration data
+	source := models.NormalizeUserSource(req.Source)
+	hashedPassword := models.HashPassword(password)
+	updateData := map[string]any{
+		"password":           hashedPassword,
+		"status":             models.UserStatusActive,
+		"email_verified":     true,
+		"email_verify_token": "",
+		"source":             source,
+	}
+	if strings.TrimSpace(req.DisplayName) != "" {
+		updateData["display_name"] = strings.TrimSpace(req.DisplayName)
+	}
+	if err := models.UpdateUserFields(h.db, &tempUser, updateData); err != nil {
 		response.FailWithCode(c, 500, "注册失败", nil)
 		return
 	}
-	if strings.TrimSpace(form.DisplayName) != "" || strings.TrimSpace(form.FirstName) != "" || strings.TrimSpace(form.LastName) != "" {
-		_ = models.UpdateUserFields(h.db, user, map[string]any{
-			"display_name": strings.TrimSpace(form.DisplayName),
-			"first_name":   strings.TrimSpace(form.FirstName),
-			"last_name":    strings.TrimSpace(form.LastName),
-			"locale":       strings.TrimSpace(form.Locale),
-			"timezone":     strings.TrimSpace(form.Timezone),
-		})
-		if ref, e2 := models.GetUserByEmail(h.db, email); e2 == nil && ref != nil {
-			user = ref
-		}
+	// Reload the user to get updated data
+	user, err := models.GetUserByEmail(h.db, email)
+	if err != nil {
+		response.FailWithCode(c, 500, "注册失败", nil)
+		return
 	}
 	utils.Sig().Emit(constants.SigUserCreate, user, c)
 	models.Login(c, user)

@@ -155,6 +155,7 @@ export async function loginWithEmailCode(
 export type RegisterPayload = {
   email: string
   password: string
+  code?: string
   displayName?: string
   source?: string
 }
@@ -163,6 +164,7 @@ export async function registerAccount(payload: RegisterPayload): Promise<AuthSes
   const r = await post<AuthSession>('/api/auth/register', {
     email: payload.email.trim(),
     password: payload.password,
+    code: payload.code?.trim(),
     displayName: payload.displayName?.trim(),
     source: payload.source || 'SYSTEM',
   })

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Button,
   Form,
@@ -33,6 +33,7 @@ export function LoginPage() {
   const [activeTab, setActiveTab] = useState('password')
   const [codeSending, setCodeSending] = useState(false)
   const [codeLoggingIn, setCodeLoggingIn] = useState(false)
+  const [countdown, setCountdown] = useState(0)
 
   const onPasswordSubmit = async () => {
     const v = await pwdForm.validate().catch(() => null)
@@ -65,12 +66,20 @@ export function LoginPage() {
     try {
       await sendEmailLoginCode(email)
       Message.success('若该邮箱已注册，将收到验证码邮件，请查收邮箱')
+      setCountdown(60)
     } catch (e) {
       Message.error(e instanceof Error ? e.message : '发送失败')
     } finally {
       setCodeSending(false)
     }
   }
+
+  useEffect(() => {
+    if (countdown > 0) {
+      const timer = setTimeout(() => setCountdown(countdown - 1), 1000)
+      return () => clearTimeout(timer)
+    }
+  }, [countdown])
 
   const onEmailCodeLogin = async () => {
     const v = await emailForm.validate().catch(() => null)
@@ -99,44 +108,45 @@ export function LoginPage() {
   }
 
   return (
-    <div className="login-page">
-      <div className="login-page__bg" aria-hidden />
+    <div className="relative flex flex-col h-screen h-[100dvh] max-h-screen max-h-[100dvh] overflow-hidden">
+      <div className="absolute inset-0 bg-[url('/background.png')] bg-center bg-cover" aria-hidden />
+      <div className="absolute inset-0 bg-gradient-to-br from-purple-500/15 via-pink-400/10 to-blue-500/15 backdrop-blur-sm" />
 
-      <div className="login-page__toolbar">
+      <div className="absolute right-6 top-6 z-10">
         <Select
           size="small"
           defaultValue="zh-CN"
           options={LANG_OPTIONS}
-          className="login-page__lang"
+          className="w-32"
         />
       </div>
 
-      <div className="login-page__center">
-        <div className="login-page__card">
-          <div className="login-page__brand">
-            <img
-              src="/logo.png"
-              alt=""
-              width={40}
-              height={40}
-              className="login-page__brand-logo"
-            />
-            <Title heading={5} className="!m-0 !text-[var(--color-text-1)]">
-              LingVoice
-            </Title>
-          </div>
+      <div className="relative z-10 flex flex-1 min-h-0 flex-col items-center justify-center p-8 pt-8 pb-4 gap-6">
+        <div className="flex items-center gap-4 animate-[fadeIn_0.6s_ease-out]">
+          <img
+            src="/logo.png"
+            alt=""
+            width={48}
+            height={48}
+            className="rounded-2xl shadow-lg shadow-purple-500/40 transition-transform hover:scale-110"
+          />
+          <Title heading={4} className="!m-0 text-[var(--color-text-1)]">
+            LingVoice
+          </Title>
+        </div>
 
+        <div className="w-full max-w-[420px] rounded-3xl border border-white/40 bg-white/95 p-8 pb-6 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_32px_80px_-24px_rgba(0,0,0,0.2),0_12px_32px_-12px_rgba(0,0,0,0.1)] backdrop-blur-xl animate-[fadeIn_0.5s_ease-out]">
           <Tabs
             activeTab={activeTab}
             onChange={setActiveTab}
-            className="login-page__tabs"
+            className="mb-2"
           >
             <TabPane key="password" title="账号密码">
               <Form
                 form={pwdForm}
                 layout="vertical"
                 requiredSymbol={false}
-                className="login-page__form"
+                className="mb-5 last:mb-4"
                 onSubmit={onPasswordSubmit}
               >
                 <Form.Item
@@ -146,8 +156,9 @@ export function LoginPage() {
                 >
                   <Input
                     size="large"
-                    placeholder="name@example.com"
+                    placeholder="请输入您的邮箱"
                     autoComplete="email"
+                    className="!rounded-xl !bg-gray-100/80 !border-transparent hover:!bg-gray-100 focus:!bg-white focus:!border-purple-500 focus:!shadow-[0_0_0_4px_rgba(139,92,246,0.15)] transition-all"
                   />
                 </Form.Item>
                 <Form.Item
@@ -159,27 +170,16 @@ export function LoginPage() {
                     size="large"
                     placeholder="密码"
                     autoComplete="current-password"
+                    className="!rounded-xl !bg-gray-100/80 !border-transparent hover:!bg-gray-100 focus:!bg-white focus:!border-purple-500 focus:!shadow-[0_0_0_4px_rgba(139,92,246,0.15)] transition-all"
                   />
                 </Form.Item>
-
-                <Text className="login-page__terms">
-                  使用即代表您已阅读并同意{' '}
-                  <button type="button" className="login-page__terms-link">
-                    服务协议
-                  </button>
-                  {' '}
-                  和{' '}
-                  <button type="button" className="login-page__terms-link">
-                    隐私协议
-                  </button>
-                </Text>
 
                 <Button
                   type="primary"
                   htmlType="submit"
                   long
                   size="large"
-                  className="login-page__submit"
+                  className="!h-12 !mb-4 !rounded-xl !text-base !font-semibold !border-none !bg-gradient-to-r !from-purple-500 !via-purple-600 !to-purple-700 !shadow-[0_12px_32px_-12px_rgba(139,92,246,0.5)] hover:!-translate-y-0.5 hover:!shadow-[0_16px_40px_-12px_rgba(139,92,246,0.6)] active:!translate-y-0 active:!shadow-[0_8px_24px_-8px_rgba(139,92,246,0.5)] transition-all"
                 >
                   登录
                 </Button>
@@ -191,11 +191,8 @@ export function LoginPage() {
                 form={emailForm}
                 layout="vertical"
                 requiredSymbol={false}
-                className="login-page__form"
+                className="mb-5 last:mb-4"
               >
-                <Text type="secondary" className="!mb-3 !block text-[13px] leading-relaxed">
-                  输入已注册邮箱，点击获取验证码；查收邮件后填写 6 位数字验证码即可登录（无需密码）。
-                </Text>
                 <Form.Item
                   field="email"
                   label="邮箱"
@@ -203,8 +200,9 @@ export function LoginPage() {
                 >
                   <Input
                     size="large"
-                    placeholder="name@example.com"
+                    placeholder="请输入您的邮箱"
                     autoComplete="email"
+                    className="!rounded-xl !bg-gray-100/80 !border-transparent hover:!bg-gray-100 focus:!bg-white focus:!border-purple-500 focus:!shadow-[0_0_0_4px_rgba(139,92,246,0.15)] transition-all"
                   />
                 </Form.Item>
                 <Form.Item
@@ -217,23 +215,26 @@ export function LoginPage() {
                     placeholder="6 位数字"
                     maxLength={16}
                     autoComplete="one-time-code"
+                    className="!rounded-xl !bg-gray-100/80 !border-transparent hover:!bg-gray-100 focus:!bg-white focus:!border-purple-500 focus:!shadow-[0_0_0_4px_rgba(139,92,246,0.15)] transition-all"
+                    addAfter={
+                      <Button
+                        type="text"
+                        size="small"
+                        disabled={countdown > 0 || codeSending}
+                        loading={codeSending}
+                        onClick={onSendCode}
+                        className="px-3"
+                      >
+                        {countdown > 0 ? `${countdown}s` : '获取验证码'}
+                      </Button>
+                    }
                   />
                 </Form.Item>
-                <Button
-                  type="outline"
-                  long
-                  size="large"
-                  className="login-page__submit !mb-3"
-                  loading={codeSending}
-                  onClick={onSendCode}
-                >
-                  获取验证码
-                </Button>
                 <Button
                   type="primary"
                   long
                   size="large"
-                  className="login-page__submit"
+                  className="!h-12 !mb-4 !rounded-xl !text-base !font-semibold !border-none !bg-gradient-to-r !from-purple-500 !via-purple-600 !to-purple-700 !shadow-[0_12px_32px_-12px_rgba(139,92,246,0.5)] hover:!-translate-y-0.5 hover:!shadow-[0_16px_40px_-12px_rgba(139,92,246,0.6)] active:!translate-y-0 active:!shadow-[0_8px_24px_-8px_rgba(139,92,246,0.5)] transition-all"
                   loading={codeLoggingIn}
                   onClick={onEmailCodeLogin}
                 >
@@ -243,15 +244,9 @@ export function LoginPage() {
             </TabPane>
           </Tabs>
 
-          <div className="login-page__links login-page__links--mt">
-            <Link to="/register" className="login-page__muted-link !no-underline">
+          <div className="flex items-center justify-center gap-2 mb-1 text-sm">
+            <Link to="/register" className="text-[var(--color-text-2)] hover:text-purple-600 no-underline">
               注册账号
-            </Link>
-          </div>
-
-          <div className="login-page__foot">
-            <Link to="/" className="login-page__foot-link">
-              返回首页
             </Link>
           </div>
         </div>
