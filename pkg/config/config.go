@@ -4,10 +4,12 @@ package config
 // SPDX-License-Identifier: AGPL-3.0
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/logger"
@@ -45,6 +47,8 @@ type ServerConfig struct {
 	Mode        string `env:"MODE"`
 	DocsPrefix  string `env:"DOCS_PREFIX"`
 	APIPrefix   string `env:"API_PREFIX"`
+	// WebAppURL is the browser origin for the SPA (e.g. http://localhost:5173). Used in magic-link emails; falls back to URL when empty.
+	WebAppURL   string `env:"WEB_APP_URL"`
 	SSLEnabled  bool   `env:"SSL_ENABLED"`
 	SSLCertFile string `env:"SSL_CERT_FILE"`
 	SSLKeyFile  string `env:"SSL_KEY_FILE"`
@@ -62,12 +66,41 @@ type AuthConfig struct {
 	SessionSecret    string `env:"SESSION_SECRET"`
 	SecretExpireDays string `env:"SESSION_EXPIRE_DAYS"`
 	APISecretKey     string `env:"API_SECRET_KEY"`
+	// JWTSecret signs access tokens; empty means use APISecretKey (see JWTSigningKey).
+	JWTSecret string `env:"JWT_SECRET"`
+	// JWTExpireHours access token lifetime in hours (default 168 = 7d).
+	JWTExpireHours int `env:"JWT_EXPIRE_HOURS"`
+	// JWTRefreshSecret signs refresh tokens; empty falls back to JWTSigningKey() (see RefreshJWTSigningKey).
+	JWTRefreshSecret string `env:"JWT_REFRESH_SECRET"`
+	// JWTRefreshExpireHours refresh token lifetime (default 720 = 30d).
+	JWTRefreshExpireHours int `env:"JWT_REFRESH_EXPIRE_HOURS"`
 }
 
 // ServicesConfig services configuration
 type ServicesConfig struct {
-	LLM     LLMConfig     `mapstructure:"llm"`
-	Storage StorageConfig `mapstructure:"storage"`
+	LLM         LLMConfig         `mapstructure:"llm"`
+	Storage     StorageConfig     `mapstructure:"storage"`
+	Translation TranslationConfig `mapstructure:"translation"`
+	// OpenAPIQuotaGroupRatios maps credential `group` (see models.Credential.Group) to a billing multiplier, same role as new-api 分组倍率. Loaded from OPENAPI_QUOTA_GROUP_RATIOS JSON; unknown group falls back to key "default" or 1.0.
+	OpenAPIQuotaGroupRatios map[string]float64 `mapstructure:"-"`
+	// SpeechQuota OpenAPI ASR/TTS 成功调用后的额度扣减（与 LLM 相同整数额度单位；按「墙钟 + 字节估算时长」取 max 再乘 rate，再乘分组倍率）。
+	SpeechQuota SpeechQuotaConfig `mapstructure:"-"`
+}
+
+// SpeechQuotaConfig 语音 OpenAPI 扣费；时长单位为秒；rate 为每「计费秒」扣多少额度单位。
+type SpeechQuotaConfig struct {
+	ASRUnitsPerBillableSecond float64 `mapstructure:"-"` // OPENAPI_SPEECH_ASR_UNITS_PER_SEC，默认 1
+	TTSUnitsPerBillableSecond float64 `mapstructure:"-"` // OPENAPI_SPEECH_TTS_UNITS_PER_SEC，默认 1
+	// ASRInputBytesPerSec 由输入音频字节估算时长（如 32000≈16kHz 单声道 16bit PCM）；0 表示不用字节只用墙钟。
+	ASRInputBytesPerSec int64 `mapstructure:"-"` // OPENAPI_SPEECH_ASR_BYTES_PER_SEC 默认 32000
+	// TTSOutputBytesPerSec 由输出音频字节估算播放时长；0 表示不用输出字节只用墙钟。
+	TTSOutputBytesPerSec int64 `mapstructure:"-"` // OPENAPI_SPEECH_TTS_BYTES_PER_SEC 默认 16000
+	MinDeltaOnSuccess int `mapstructure:"-"` // OPENAPI_SPEECH_QUOTA_MIN_ON_SUCCESS 默认 1
+}
+
+// TranslationConfig optional third-party translation (MyMemory).
+type TranslationConfig struct {
+	MyMemoryEmail string `mapstructure:"mymemory_email"` // optional; higher free quota when set
 }
 
 // LLMConfig LLM service configuration
@@ -155,6 +188,7 @@ func Load() error {
 			Mode:        getStringOrDefault("MODE", "development"),
 			DocsPrefix:  getStringOrDefault("DOCS_PREFIX", "/api/docs"),
 			APIPrefix:   getStringOrDefault("API_PREFIX", "/api"),
+			WebAppURL:   getStringOrDefault("WEB_APP_URL", ""),
 			SSLEnabled:  getBoolOrDefault("SSL_ENABLED", false),
 			SSLCertFile: getStringOrDefault("SSL_CERT_FILE", ""),
 			SSLKeyFile:  getStringOrDefault("SSL_KEY_FILE", ""),
@@ -176,6 +210,10 @@ func Load() error {
 			SessionSecret:    getStringOrDefault("SESSION_SECRET", generateDefaultSessionSecret()),
 			SecretExpireDays: getStringOrDefault("SESSION_EXPIRE_DAYS", "7"),
 			APISecretKey:     getStringOrDefault("API_SECRET_KEY", generateDefaultSessionSecret()),
+			JWTSecret:             getStringOrDefault("JWT_SECRET", ""),
+			JWTExpireHours:        getIntOrDefault("JWT_EXPIRE_HOURS", 24),
+			JWTRefreshSecret:      getStringOrDefault("JWT_REFRESH_SECRET", ""),
+			JWTRefreshExpireHours: getIntOrDefault("JWT_REFRESH_EXPIRE_HOURS", 720),
 		},
 		Services: ServicesConfig{
 			LLM: LLMConfig{
@@ -188,6 +226,17 @@ func Load() error {
 				APIKey:    getStringOrDefault("LINGSTORAGE_API_KEY", ""),
 				APISecret: getStringOrDefault("LINGSTORAGE_API_SECRET", ""),
 				Bucket:    getStringOrDefault("LINGSTORAGE_BUCKET", "default"),
+			},
+			Translation: TranslationConfig{
+				MyMemoryEmail: getStringOrDefault("MYMEMORY_EMAIL", ""),
+			},
+			OpenAPIQuotaGroupRatios: parseOpenAPIQuotaGroupRatiosJSON(getStringOrDefault("OPENAPI_QUOTA_GROUP_RATIOS", "")),
+			SpeechQuota: SpeechQuotaConfig{
+				ASRUnitsPerBillableSecond:  getFloatOrDefault("OPENAPI_SPEECH_ASR_UNITS_PER_SEC", 1),
+				TTSUnitsPerBillableSecond:  getFloatOrDefault("OPENAPI_SPEECH_TTS_UNITS_PER_SEC", 1),
+				ASRInputBytesPerSec:        getInt64EnvParsed("OPENAPI_SPEECH_ASR_BYTES_PER_SEC", 32000),
+				TTSOutputBytesPerSec:       getInt64EnvParsed("OPENAPI_SPEECH_TTS_BYTES_PER_SEC", 16000),
+				MinDeltaOnSuccess:          getIntOrDefault("OPENAPI_SPEECH_QUOTA_MIN_ON_SUCCESS", 1),
 			},
 		},
 		Middleware: loadMiddlewareConfig(),
@@ -241,6 +290,19 @@ func getIntOrDefault(key string, defaultValue int) int {
 		return defaultValue
 	}
 	return int(value)
+}
+
+// getInt64EnvParsed parses int64 from env; empty string returns default; allows explicit 0 (unlike getIntOrDefault).
+func getInt64EnvParsed(key string, defaultValue int64) int64 {
+	s := strings.TrimSpace(utils.GetEnv(key))
+	if s == "" {
+		return defaultValue
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return defaultValue
+	}
+	return n
 }
 
 // getFloatOrDefault gets float environment variable value, returns default if empty
@@ -377,3 +439,87 @@ func loadMiddlewareConfig() MiddlewareConfig {
 		EnableOperationLog:   getBoolOrDefault("ENABLE_OPERATION_LOG", defaultConfig.EnableOperationLog),
 	}
 }
+
+// JWTSigningKey returns JWT_SECRET when set; otherwise API_SECRET_KEY.
+func (a *AuthConfig) JWTSigningKey() string {
+	if a == nil {
+		return ""
+	}
+	s := strings.TrimSpace(a.JWTSecret)
+	if s != "" {
+		return s
+	}
+	return a.APISecretKey
+}
+
+// AccessTokenTTL returns a positive duration for access JWT lifetime.
+func (a *AuthConfig) AccessTokenTTL() time.Duration {
+	if a == nil {
+		return 24 * time.Hour
+	}
+	h := a.JWTExpireHours
+	if h <= 0 {
+		h = 24
+	}
+	return time.Duration(h) * time.Hour
+}
+
+// RefreshJWTSigningKey prefers JWT_REFRESH_SECRET; otherwise JWTSigningKey().
+func (a *AuthConfig) RefreshJWTSigningKey() string {
+	if a == nil {
+		return ""
+	}
+	s := strings.TrimSpace(a.JWTRefreshSecret)
+	if s != "" {
+		return s
+	}
+	return a.JWTSigningKey()
+}
+
+// RefreshTokenTTL returns refresh JWT lifetime.
+func (a *AuthConfig) RefreshTokenTTL() time.Duration {
+	if a == nil {
+		return 720 * time.Hour
+	}
+	h := a.JWTRefreshExpireHours
+	if h <= 0 {
+		h = 720
+	}
+	return time.Duration(h) * time.Hour
+}
+
+func parseOpenAPIQuotaGroupRatiosJSON(raw string) map[string]float64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var m map[string]float64
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		log.Printf("OPENAPI_QUOTA_GROUP_RATIOS: invalid JSON, ignored: %v", err)
+		return nil
+	}
+	return m
+}
+
+// OpenAPIQuotaGroupRatio returns the billing multiplier for an API credential group (new-api-style 分组倍率). Defaults to 1.
+func (c *Config) OpenAPIQuotaGroupRatio(group string) float64 {
+	if c == nil {
+		return 1
+	}
+	m := c.Services.OpenAPIQuotaGroupRatios
+	if len(m) == 0 {
+		return 1
+	}
+	g := strings.TrimSpace(group)
+	if g == "" {
+		g = "default"
+	}
+	if v, ok := m[g]; ok && v > 0 {
+		return v
+	}
+	if v, ok := m["default"]; ok && v > 0 {
+		return v
+	}
+	return 1
+}
+

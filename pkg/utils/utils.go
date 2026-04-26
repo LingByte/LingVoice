@@ -49,6 +49,13 @@ func RandString(n int) string {
 	return randRunes(n, letterRunes)
 }
 
+// RandCredentialAPIKey 生成用户凭证密钥，形如 sk- 前缀 + 随机段，总长 48（与 credential.key char(48) 一致）。
+func RandCredentialAPIKey() string {
+	const prefix = "sk-"
+	const totalLen = 48
+	return prefix + RandString(totalLen-len(prefix))
+}
+
 func GetTimestamp() int64 {
 	return time.Now().Unix()
 }

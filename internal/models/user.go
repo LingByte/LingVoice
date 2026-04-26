@@ -5,7 +5,6 @@ package models
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"fmt"
 
@@ -204,7 +203,6 @@ type User struct {
 	City                 string     `json:"city,omitempty"`
 	Region               string     `json:"region,omitempty"`
 	EmailNotifications   bool       `json:"emailNotifications"`                           // 邮件通知
-	PushNotifications    bool       `json:"pushNotifications" gorm:"default:true"`        // 推送通知
 	EmailVerified        bool       `json:"emailVerified" gorm:"default:false"`           // 邮箱已验证
 	PhoneVerified        bool       `json:"phoneVerified" gorm:"default:false"`           // 手机已验证
 	TwoFactorEnabled     bool       `json:"twoFactorEnabled" gorm:"default:false"`        // 双因素认证
@@ -215,6 +213,9 @@ type User struct {
 	PasswordResetExpires *time.Time `json:"-"`                                            // 密码重置过期时间
 	EmailVerifyExpires   *time.Time `json:"-"`                                            // 邮箱验证过期时间
 	LoginCount           int        `json:"loginCount" gorm:"default:0"`                  // 登录次数
+	RemainQuota          int        `json:"remainQuota" gorm:"default:0"`                 // 用户级剩余额度（与 new-api 用户配额概念对齐；实际扣减仍以凭证为主时可作展示/预留）
+	UsedQuota            int        `json:"usedQuota" gorm:"default:0"`                   // 用户级已用额度
+	UnlimitedQuota       bool       `json:"unlimitedQuota" gorm:"default:false"`          // 用户级无限额度标记
 	LastPasswordChange   *time.Time `json:"lastPasswordChange,omitempty"`                 // 最后密码修改时间
 	ProfileComplete      int        `json:"profileComplete" gorm:"default:0"`             // 资料完整度百分比
 	Role                 string     `json:"role,omitempty" gorm:"size:50;default:'user'"` // 用户角色
@@ -267,46 +268,22 @@ func Logout(c *gin.Context, user *User) {
 	utils.Sig().Emit(constants.SigUserLogout, user, c)
 }
 
+// AuthRequired 依赖 CurrentUser：其中已包含 session cookie 与 Authorization Bearer access JWT 的解析与装库（见 CurrentUser 末尾 jwtauth.ParseAccessToken）。
 func AuthRequired(c *gin.Context) {
-	if CurrentUser(c) != nil {
-		c.Next()
-		return
-	}
-
-	// 检查配置是否存在
-	if config.GlobalConfig == nil {
-		response.AbortWithJSONError(c, http.StatusInternalServerError, errors.New("server configuration not initialized"))
-		return
-	}
-
-	token := c.GetHeader(config.GlobalConfig.Auth.Header)
-	if token == "" {
-		token = c.Query("token")
-	}
-
-	if token == "" {
+	u := CurrentUser(c)
+	if u == nil {
+		if config.GlobalConfig == nil {
+			response.AbortWithJSONError(c, http.StatusInternalServerError, errors.New("server configuration not initialized"))
+			return
+		}
 		response.AbortWithJSONError(c, http.StatusUnauthorized, errors.New("authorization required"))
 		return
 	}
-	db := c.MustGet(constants.DbField).(*gorm.DB)
-	token = strings.TrimPrefix(token, constants.AUTHORIZATION_PREFIX)
-	user, err := DecodeHashToken(db, token, false)
-	if err != nil {
-		response.AbortWithJSONError(c, http.StatusUnauthorized, err)
-		return
-	}
 
-	var fresh User
-	if err := db.Where("id = ? AND is_deleted = ?", user.ID, SoftDeleteStatusActive).First(&fresh).Error; err != nil {
-		response.AbortWithJSONError(c, http.StatusUnauthorized, errors.New("user not found"))
-		return
-	}
-	c.Set(constants.UserField, &fresh)
-
-	if AccountDeletionPending(&fresh) && !authPathExemptWhileAccountDeletionPending(c) {
+	if AccountDeletionPending(u) && !authPathExemptWhileAccountDeletionPending(c) {
 		effective := ""
-		if fresh.AccountDeletionEffectiveAt != nil {
-			effective = fresh.AccountDeletionEffectiveAt.UTC().Format(time.RFC3339)
+		if u.AccountDeletionEffectiveAt != nil {
+			effective = u.AccountDeletionEffectiveAt.UTC().Format(time.RFC3339)
 		}
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 			"code": http.StatusForbidden,
@@ -321,11 +298,27 @@ func AuthRequired(c *gin.Context) {
 	c.Next()
 }
 
+// AdminRequired 须在 AuthRequired 之后注册；仅管理员（admin / superadmin）可继续。
+func AdminRequired(c *gin.Context) {
+	u := CurrentUser(c)
+	if u == nil {
+		response.AbortWithJSONError(c, http.StatusUnauthorized, errors.New("authorization required"))
+		c.Abort()
+		return
+	}
+	if !u.IsAdmin() {
+		response.FailWithCode(c, 403, "需要管理员权限", nil)
+		c.Abort()
+		return
+	}
+	c.Next()
+}
+
 // authPathExemptWhileAccountDeletionPending 冷静期内仍允许访问的认证接口（获取信息、撤销注销）。
 func authPathExemptWhileAccountDeletionPending(c *gin.Context) bool {
 	method := c.Request.Method
 	path := c.Request.URL.Path
-	if method == http.MethodGet && strings.Contains(path, "/auth/info") {
+	if method == http.MethodGet && (strings.Contains(path, "/auth/info") || strings.Contains(path, "/auth/me")) {
 		return true
 	}
 	if method == http.MethodGet && strings.Contains(path, "/account-deletion/eligibility") {
@@ -338,22 +331,57 @@ func authPathExemptWhileAccountDeletionPending(c *gin.Context) bool {
 	return false
 }
 
+// CurrentUser 解析顺序：① Gin 已缓存的 User ② session 中的 user id ③ Header（默认 Authorization）或 ?token= 中的 access JWT → jwtauth.ParseAccessToken → DB 加载并写入缓存。
 func CurrentUser(c *gin.Context) *User {
 	if cachedObj, exists := c.Get(constants.UserField); exists && cachedObj != nil {
 		return cachedObj.(*User)
 	}
+
 	session := sessions.Default(c)
-	userId := session.Get(constants.UserField)
-	if userId == nil {
+	userIDVal := session.Get(constants.UserField)
+	if userIDVal != nil {
+		uid, ok := userIDVal.(uint)
+		if !ok {
+			return nil
+		}
+		db := c.MustGet(constants.DbField).(*gorm.DB)
+		user, err := GetUserByUID(db, uid)
+		if err != nil {
+			return nil
+		}
+		c.Set(constants.UserField, user)
+		return user
+	}
+
+	if config.GlobalConfig == nil {
 		return nil
 	}
-	db := c.MustGet(constants.DbField).(*gorm.DB)
-	user, err := GetUserByUID(db, userId.(uint))
+	raw := strings.TrimSpace(c.GetHeader(config.GlobalConfig.Auth.Header))
+	if raw == "" {
+		raw = strings.TrimSpace(c.Query("Authorization"))
+	}
+	raw = strings.TrimSpace(strings.TrimPrefix(raw, constants.AUTHORIZATION_PREFIX))
+	if raw == "" {
+		raw = strings.TrimSpace(c.Query("token"))
+	}
+	if raw == "" {
+		return nil
+	}
+	payload, err := utils.ParseAccessToken(raw, config.GlobalConfig.Auth.JWTSigningKey())
 	if err != nil {
 		return nil
 	}
-	c.Set(constants.UserField, user)
-	return user
+	db := c.MustGet(constants.DbField).(*gorm.DB)
+	var fresh User
+	// 使用 GORM 默认软删作用域：未删除行为 deleted_at IS NULL，勿与 is_deleted 整型常量混用。
+	if err := db.Where("id = ?", payload.UserID).First(&fresh).Error; err != nil {
+		return nil
+	}
+	if payload.Email != "" && !strings.EqualFold(strings.TrimSpace(payload.Email), strings.TrimSpace(fresh.Email)) {
+		return nil
+	}
+	c.Set(constants.UserField, &fresh)
+	return &fresh
 }
 
 func CheckPassword(user *User, password string) bool {
@@ -448,10 +476,8 @@ func VerifyEncryptedPassword(encryptedPassword, storedPasswordHash string) bool 
 
 func GetUserByUID(db *gorm.DB, userID uint) (*User, error) {
 	var val User
-	result := db.Where("id", userID).Where("status", UserStatusActive).Take(&val)
-
-	if result.Error != nil {
-		return nil, result.Error
+	if err := db.Where("id = ? AND status = ?", userID, UserStatusActive).First(&val).Error; err != nil {
+		return nil, err
 	}
 	return &val, nil
 }
@@ -578,96 +604,6 @@ func SetLastLogin(db *gorm.DB, user *User, lastIp string) error {
 	return result.Error
 }
 
-func EncodeHashToken(user *User, timestamp int64, useLastlogin bool) (hash string) {
-	// ts-uid-token
-	logintimestamp := "0"
-	if useLastlogin && user.LastLogin != nil {
-		logintimestamp = fmt.Sprintf("%d", user.LastLogin.Unix())
-	}
-	t := fmt.Sprintf("%s$%d", user.Email, timestamp)
-	hashVal := sha256.Sum256([]byte(logintimestamp + user.Password + t))
-	hash = base64.RawStdEncoding.EncodeToString([]byte(t)) + "-" + fmt.Sprintf("%x", hashVal)
-	return hash
-}
-
-func DecodeHashToken(db *gorm.DB, hash string, useLastLogin bool) (user *User, err error) {
-	vals := strings.Split(hash, "-")
-	if len(vals) != 2 {
-		return nil, errors.New("bad token")
-	}
-	data, err := base64.RawStdEncoding.DecodeString(vals[0])
-	if err != nil {
-		return nil, errors.New("bad token")
-	}
-
-	vals = strings.Split(string(data), "$")
-	if len(vals) != 2 {
-		return nil, errors.New("bad token")
-	}
-
-	ts, err := strconv.ParseInt(vals[1], 10, 64)
-	if err != nil {
-		return nil, errors.New("bad token")
-	}
-
-	if time.Now().Unix() > ts {
-		return nil, errors.New("token expired")
-	}
-
-	user, err = GetUserByEmail(db, vals[0])
-	if err != nil {
-		return nil, errors.New("bad token")
-	}
-	token := EncodeHashToken(user, ts, useLastLogin)
-	if token != hash {
-		return nil, errors.New("bad token")
-	}
-	return user, nil
-}
-
-func EncodeRefreshToken(user *User, timestamp int64, useLastlogin bool) (hash string) {
-	logintimestamp := "0"
-	if useLastlogin && user.LastLogin != nil {
-		logintimestamp = fmt.Sprintf("%d", user.LastLogin.Unix())
-	}
-	secret := strings.TrimSpace(os.Getenv("REFRESH_TOKEN_SECRET"))
-	t := fmt.Sprintf("%s$%d$rt", user.Email, timestamp)
-	hashVal := sha256.Sum256([]byte(logintimestamp + user.Password + secret + t))
-	hash = base64.RawStdEncoding.EncodeToString([]byte(t)) + "-" + fmt.Sprintf("%x", hashVal)
-	return hash
-}
-
-func DecodeRefreshToken(db *gorm.DB, hash string, useLastLogin bool) (user *User, err error) {
-	vals := strings.Split(hash, "-")
-	if len(vals) != 2 {
-		return nil, errors.New("bad refresh token")
-	}
-	data, err := base64.RawStdEncoding.DecodeString(vals[0])
-	if err != nil {
-		return nil, errors.New("bad refresh token")
-	}
-	parts := strings.Split(string(data), "$")
-	if len(parts) != 3 || parts[2] != "rt" {
-		return nil, errors.New("bad refresh token")
-	}
-	ts, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return nil, errors.New("bad refresh token")
-	}
-	if time.Now().Unix() > ts {
-		return nil, errors.New("refresh token expired")
-	}
-	user, err = GetUserByEmail(db, parts[0])
-	if err != nil {
-		return nil, errors.New("bad refresh token")
-	}
-	token := EncodeRefreshToken(user, ts, useLastLogin)
-	if token != hash {
-		return nil, errors.New("bad refresh token")
-	}
-	return user, nil
-}
-
 func CheckUserAllowLogin(db *gorm.DB, user *User) error {
 	if user == nil {
 		return errors.New("user not allow login")
@@ -711,16 +647,6 @@ func InTimezone(c *gin.Context, timezone string) {
 	session := sessions.Default(c)
 	session.Set(constants.TzField, timezone)
 	session.Save()
-}
-
-func BuildAuthToken(user *User, expired time.Duration, useLoginTime bool) string {
-	n := time.Now().Add(expired)
-	return EncodeHashToken(user, n.Unix(), useLoginTime)
-}
-
-func BuildRefreshToken(user *User, expired time.Duration, useLoginTime bool) string {
-	n := time.Now().Add(expired)
-	return EncodeRefreshToken(user, n.Unix(), useLoginTime)
 }
 
 func UpdateUser(db *gorm.DB, user *User, vals map[string]any) error {
@@ -809,10 +735,10 @@ func VerifyPasswordResetToken(db *gorm.DB, token string) (*User, error) {
 	return &user, nil
 }
 
-// GenerateEmailVerifyToken 生成邮箱验证令牌
+// GenerateEmailVerifyToken 生成邮箱登录用 6 位数字验证码（写入 email_verify_token，短期有效）。
 func GenerateEmailVerifyToken(db *gorm.DB, user *User) (string, error) {
-	token := utils.RandString(32)
-	expires := time.Now().Add(24 * time.Hour) // 24小时过期
+	token := utils.RandNumberText(6)
+	expires := time.Now().Add(10 * time.Minute)
 
 	err := UpdateUserFields(db, user, map[string]any{
 		"EmailVerifyToken":   token,
@@ -827,15 +753,30 @@ func GenerateEmailVerifyToken(db *gorm.DB, user *User) (string, error) {
 	return token, nil
 }
 
-// VerifyEmail 验证邮箱
-func VerifyEmail(db *gorm.DB, token string) (*User, error) {
+func normalizeEmailLoginCode(s string) string {
+	s = strings.TrimSpace(s)
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// VerifyEmailLoginCode 校验邮箱与邮件中的数字验证码，成功后标记邮箱已验证并清除令牌。
+func VerifyEmailLoginCode(db *gorm.DB, email, code string) (*User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	code = normalizeEmailLoginCode(code)
+	if email == "" || len(code) != 6 {
+		return nil, errors.New("验证码无效或已过期")
+	}
 	var user User
-	err := db.Where("email_verify_token = ? AND email_verify_expires > ?", token, time.Now()).First(&user).Error
+	err := db.Where("email = ? AND email_verify_token = ? AND email_verify_expires > ?", email, code, time.Now()).First(&user).Error
 	if err != nil {
-		return nil, errors.New("无效或过期的邮箱验证令牌")
+		return nil, errors.New("验证码无效或已过期")
 	}
 
-	// 更新邮箱验证状态
 	err = UpdateUserFields(db, &user, map[string]any{
 		"EmailVerified":      true,
 		"EmailVerifyToken":   "",
@@ -892,9 +833,6 @@ func UpdateNotificationSettings(db *gorm.DB, user *User, settings map[string]boo
 	if emailNotif, ok := settings["emailNotifications"]; ok {
 		vals["email_notifications"] = emailNotif
 	}
-	if pushNotif, ok := settings["pushNotifications"]; ok {
-		vals["push_notifications"] = pushNotif
-	}
 	if len(vals) == 0 {
 		return nil
 	}
@@ -907,9 +845,6 @@ func UpdateNotificationSettings(db *gorm.DB, user *User, settings map[string]boo
 	// 更新用户对象
 	if emailNotif, ok := settings["emailNotifications"]; ok {
 		user.EmailNotifications = emailNotif
-	}
-	if pushNotif, ok := settings["pushNotifications"]; ok {
-		user.PushNotifications = pushNotif
 	}
 	return nil
 }
