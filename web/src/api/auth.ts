@@ -1,5 +1,5 @@
 import type { ApiResponse } from '@/utils/request'
-import { get, post } from '@/utils/request'
+import { get, post, patch } from '@/utils/request'
 
 export type AuthUser = {
   /** 十进制字符串，兼容超过 JS 安全整数范围的雪花 ID */
@@ -8,6 +8,9 @@ export type AuthUser = {
   displayName?: string
   firstName?: string
   lastName?: string
+  gender?: string
+  city?: string
+  region?: string
   role: string
   status?: string
   source?: string
@@ -73,6 +76,9 @@ export function normalizeAuthUser(raw: unknown): AuthUser {
     displayName: str(u.displayName),
     firstName: str(u.firstName),
     lastName: str(u.lastName),
+    gender: str(u.gender),
+    city: str(u.city),
+    region: str(u.region),
     role: str(u.role) ?? 'user',
     status: str(u.status),
     source: str(u.source),
@@ -203,4 +209,39 @@ export async function fetchAuthMe(): Promise<FetchAuthMeResult> {
   } catch {
     return { kind: 'unavailable', message: '用户信息格式无效' }
   }
+}
+
+export type UpdateUserProfilePayload = {
+  displayName?: string
+  firstName?: string
+  lastName?: string
+  gender?: string
+  city?: string
+  region?: string
+  locale?: string
+  timezone?: string
+}
+
+export async function updateUserProfile(
+  payload: UpdateUserProfilePayload,
+): Promise<AuthUser> {
+  const r = await patch<{ user: unknown }>('/api/user/profile', payload)
+  ensureOk(r)
+  const data = r.data as { user?: unknown }
+  if (!data?.user) {
+    throw new Error('响应缺少 user')
+  }
+  return normalizeAuthUser(data.user)
+}
+
+export async function uploadUserAvatar(file: File): Promise<string> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const r = await post<{ url: string }>('/api/user/avatar', formData)
+  ensureOk(r)
+  const data = r.data as { url?: string }
+  if (!data?.url) {
+    throw new Error('响应缺少 url')
+  }
+  return data.url
 }

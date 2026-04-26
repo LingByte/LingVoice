@@ -21,6 +21,9 @@ type AuthUserResponse struct {
 	DisplayName     string `json:"displayName,omitempty"`
 	FirstName       string `json:"firstName,omitempty"`
 	LastName        string `json:"lastName,omitempty"`
+	Gender          string `json:"gender,omitempty"`
+	City            string `json:"city,omitempty"`
+	Region          string `json:"region,omitempty"`
 	Role            string `json:"role"`
 	Status          string `json:"status"`
 	Source          string `json:"source,omitempty"`
@@ -70,6 +73,9 @@ func newAuthUserResponse(u *models.User) AuthUserResponse {
 		DisplayName:     u.DisplayName,
 		FirstName:       u.FirstName,
 		LastName:        u.LastName,
+		Gender:          u.Gender,
+		City:            u.City,
+		Region:          u.Region,
 		Role:            u.Role,
 		Status:          u.Status,
 		Source:          u.Source,

@@ -25,106 +25,135 @@ import {
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useColorModeStore } from '@/stores/colorMode'
 import { useUiStore } from '@/stores/ui'
+import { useAuthStore } from '@/stores/authStore'
 import { SidebarUserBar } from '@/components/layout/SidebarUserBar'
 import { SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH } from '@/constants/layout'
 
 const { Sider } = Layout
 
-const menu = [
+type MenuItem = {
+  key: string
+  label: string
+  icon: React.ReactNode
+}
+
+type MenuGroup = {
+  title: string
+  adminOnly?: boolean
+  items: MenuItem[]
+}
+
+const menuGroups: MenuGroup[] = [
   {
-    key: '/',
-    label: '聊天',
-    icon: <MessageSquare size={16} strokeWidth={1.85} />,
+    title: '主功能',
+    items: [
+      {
+        key: '/',
+        label: '聊天',
+        icon: <MessageSquare size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/dashboard',
+        label: '数据面板',
+        icon: <LayoutDashboard size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/docs',
+        label: '文档',
+        icon: <FileText size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/about',
+        label: '关于',
+        icon: <Info size={16} strokeWidth={1.85} />,
+      },
+    ],
   },
   {
-    key: '/dashboard',
-    label: '数据面板',
-    icon: <LayoutDashboard size={16} strokeWidth={1.85} />,
+    title: '管理',
+    adminOnly: true,
+    items: [
+      {
+        key: '/channels/llm',
+        label: 'LLM 渠道',
+        icon: <Cpu size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/channels/llm-abilities',
+        label: 'LLM 能力',
+        icon: <Layers size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/channels/llm-model-metas',
+        label: '模型元数据',
+        icon: <BookOpen size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/channels/llm-plaza',
+        label: '模型广场',
+        icon: <Store size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/channels/asr',
+        label: 'ASR 渠道',
+        icon: <Mic size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/channels/tts',
+        label: 'TTS 渠道',
+        icon: <Volume2 size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/notify/channels',
+        label: '通知渠道',
+        icon: <RadioTower size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/notify/mail-templates',
+        label: '邮件模版',
+        icon: <LayoutTemplate size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/notify/mail-logs',
+        label: '邮件日志',
+        icon: <ScrollText size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/notify/llm-usage',
+        label: 'LLM 用量',
+        icon: <BarChart3 size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/notify/speech-usage',
+        label: '语音用量',
+        icon: <Mic2 size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/admin/agent-runs',
+        label: 'Agent 运行',
+        icon: <Bot size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/admin/users',
+        label: '用户管理',
+        icon: <Users size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/admin/announcements',
+        label: '公告管理',
+        icon: <ClipboardList size={16} strokeWidth={1.85} />,
+      },
+    ],
   },
   {
-    key: '/docs',
-    label: '文档',
-    icon: <FileText size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/about',
-    label: '关于',
-    icon: <Info size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/notify/channels',
-    label: '通知渠道',
-    icon: <RadioTower size={16} strokeWidth={1.85} />,
-  },
-  {
-      key: '/channels/llm',
-      label: 'LLM 渠道',
-      icon: <Cpu size={16} strokeWidth={1.85} />,
-  },
-  {
-      key: '/channels/llm-abilities',
-      label: 'LLM 能力',
-      icon: <Layers size={16} strokeWidth={1.85} />,
-  },
-  {
-      key: '/channels/llm-model-metas',
-      label: '模型元数据',
-      icon: <BookOpen size={16} strokeWidth={1.85} />,
-  },
-  {
-      key: '/channels/llm-plaza',
-      label: '模型广场',
-      icon: <Store size={16} strokeWidth={1.85} />,
-  },
-  {
-      key: '/channels/asr',
-      label: 'ASR 渠道',
-      icon: <Mic size={16} strokeWidth={1.85} />,
-  },
-  {
-      key: '/channels/tts',
-      label: 'TTS 渠道',
-      icon: <Volume2 size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/notify/mail-templates',
-    label: '邮件模版',
-    icon: <LayoutTemplate size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/notify/mail-logs',
-    label: '邮件日志',
-    icon: <ScrollText size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/notify/llm-usage',
-    label: 'LLM 用量',
-    icon: <BarChart3 size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/notify/speech-usage',
-    label: '语音用量',
-    icon: <Mic2 size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/admin/agent-runs',
-    label: 'Agent 运行',
-    icon: <Bot size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/admin/users',
-    label: '用户管理',
-    icon: <Users size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/admin/announcements',
-    label: '公告管理',
-    icon: <ClipboardList size={16} strokeWidth={1.85} />,
-  },
-  {
-    key: '/debug/v1',
-    label: 'V1 网关调试',
-    icon: <Braces size={16} strokeWidth={1.85} />,
+    title: '调试',
+    items: [
+      {
+        key: '/debug/v1',
+        label: 'V1 网关调试',
+        icon: <Braces size={16} strokeWidth={1.85} />,
+      },
+    ],
   },
 ] as const
 
@@ -166,6 +195,13 @@ export function AppSidebar() {
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
   const setCollapsed = useUiStore((s) => s.setSidebarCollapsed)
   const colorMode = useColorModeStore((s) => s.mode)
+  const user = useAuthStore((s) => s.user)
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin'
+
+  const visibleGroups = menuGroups.filter(
+    (group) => !group.adminOnly || isAdmin
+  )
+  const visibleItems = visibleGroups.flatMap((group) => group.items)
 
   return (
     <Sider
@@ -227,7 +263,7 @@ export function AppSidebar() {
               className="sidebar-collapsed-nav flex flex-col items-center gap-2 py-2"
               aria-label="主导航"
             >
-              {menu.map((item) => {
+              {visibleItems.map((item) => {
                 const selected = menuPathSelected(location.pathname, item.key)
                 return (
                   <Tooltip key={item.key} content={item.label} position="right" mini>
@@ -247,19 +283,23 @@ export function AppSidebar() {
           ) : (
             <Menu
               selectedKeys={(() => {
-                const hit = menu.find((item) => menuPathSelected(location.pathname, item.key))
+                const hit = visibleItems.find((item) => menuPathSelected(location.pathname, item.key))
                 return hit ? [hit.key] : []
               })()}
               onClickMenuItem={(key) => navigate(key)}
               className="sidebar-frame-menu border-none"
             >
-              {menu.map((item) => (
-                <Menu.Item key={item.key}>
-                  <span className="inline-flex items-center gap-2 [&_svg]:h-4 [&_svg]:w-4">
-                    {item.icon}
-                    {item.label}
-                  </span>
-                </Menu.Item>
+              {visibleGroups.map((group) => (
+                <Menu.ItemGroup key={group.title} title={group.title}>
+                  {group.items.map((item) => (
+                    <Menu.Item key={item.key}>
+                      <span className="inline-flex items-center gap-2 [&_svg]:h-4 [&_svg]:w-4">
+                        {item.icon}
+                        {item.label}
+                      </span>
+                    </Menu.Item>
+                  ))}
+                </Menu.ItemGroup>
               ))}
             </Menu>
           )}

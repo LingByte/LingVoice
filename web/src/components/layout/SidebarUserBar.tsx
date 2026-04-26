@@ -223,10 +223,6 @@ export function SidebarUserBar() {
               </div>
             </button>
           </Dropdown>
-          <div className="flex items-center justify-center gap-0.5">
-            {themeBtn}
-            {announcementsBtn}
-          </div>
         </div>
       ) : (
         <div className="flex min-h-[40px] items-center gap-1 px-1.5 py-1.5">

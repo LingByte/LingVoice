@@ -314,6 +314,15 @@ body {
   padding: 0 8px;
 }
 
+.sidebar-frame-menu.arco-menu .arco-menu-group-title {
+  padding: 2px 8px 2px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-3);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
 /* 收起主导航：与品牌区同一 32px 槽位（不再使用 Sider 内 Menu 的 collapse 模式） */
 .sidebar-collapsed-nav {
   width: 100%;

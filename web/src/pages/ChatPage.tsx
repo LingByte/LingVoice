@@ -108,10 +108,12 @@ function ChatMessageRow({
   message,
   renderMarkdown,
   streaming,
+  userAvatar,
 }: {
   message: ChatMessage
   renderMarkdown?: boolean
   streaming?: boolean
+  userAvatar?: string
 }) {
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
@@ -186,7 +188,11 @@ function ChatMessageRow({
           shape="circle"
           className="chat-msg-avatar chat-msg-avatar--user shrink-0"
         >
-          <img src="/logo.png" alt="我" className="h-full w-full object-cover" />
+          {userAvatar ? (
+            <img src={userAvatar} alt="我" className="h-full w-full object-cover" />
+          ) : (
+            <img src="/logo.png" alt="我" className="h-full w-full object-cover" />
+          )}
         </Avatar>
       )}
     </div>
@@ -860,6 +866,7 @@ export function ChatPage() {
                   <ChatMessageRow
                     key={m.id}
                     message={m}
+                    userAvatar={user?.avatar}
                     renderMarkdown={
                       m.role === 'assistant' && m.content.trimStart().startsWith('**Agent**')
                     }

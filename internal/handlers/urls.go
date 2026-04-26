@@ -210,4 +210,11 @@ func (h *Handlers) registerAuthRoutes(api *gin.RouterGroup) {
 		auth.POST("/refresh", h.postRefresh)
 		auth.POST("/logout", models.AuthRequired, h.postLogout)
 	}
+
+	user := api.Group("/user")
+	user.Use(models.AuthRequired)
+	{
+		user.PATCH("/profile", h.patchUserProfile)
+		user.POST("/avatar", h.postUserAvatar)
+	}
 }

@@ -5,8 +5,12 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
+	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/config"
@@ -14,6 +18,7 @@ import (
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/response"
 	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/lingstorage-sdk-go"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -226,13 +231,13 @@ func (h *Handlers) postRefresh(c *gin.Context) {
 }
 
 type adminPatchUserBody struct {
-	Status           string `json:"status"`
-	Role             string `json:"role"`
-	DisplayName      string `json:"display_name"`
-	Locale           string `json:"locale"`
-	RemainQuota      *int   `json:"remain_quota"`
-	UsedQuota        *int   `json:"used_quota"`
-	UnlimitedQuota   *bool  `json:"unlimited_quota"`
+	Status         string `json:"status"`
+	Role           string `json:"role"`
+	DisplayName    string `json:"display_name"`
+	Locale         string `json:"locale"`
+	RemainQuota    *int   `json:"remain_quota"`
+	UsedQuota      *int   `json:"used_quota"`
+	UnlimitedQuota *bool  `json:"unlimited_quota"`
 }
 
 // listAdminUsers GET /api/admin/users
@@ -415,4 +420,136 @@ func (h *Handlers) patchAdminUser(c *gin.Context) {
 		return
 	}
 	response.Success(c, "已更新", gin.H{"user": adminUserJSON(row)})
+}
+
+type patchUserProfileBody struct {
+	DisplayName string `json:"displayName"`
+	FirstName   string `json:"firstName"`
+	LastName    string `json:"lastName"`
+	Gender      string `json:"gender"`
+	City        string `json:"city"`
+	Region      string `json:"region"`
+	Locale      string `json:"locale"`
+	Timezone    string `json:"timezone"`
+}
+
+// patchUserProfile PATCH /api/user/profile - update current user's profile
+func (h *Handlers) patchUserProfile(c *gin.Context) {
+	u := models.CurrentUser(c)
+	if u == nil {
+		response.FailWithCode(c, 401, "未登录", nil)
+		return
+	}
+	var body patchUserProfileBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.FailWithCode(c, 400, "参数错误", nil)
+		return
+	}
+	vals := map[string]any{}
+	if body.DisplayName != "" {
+		vals["display_name"] = strings.TrimSpace(body.DisplayName)
+	}
+	if body.FirstName != "" {
+		vals["first_name"] = strings.TrimSpace(body.FirstName)
+	}
+	if body.LastName != "" {
+		vals["last_name"] = strings.TrimSpace(body.LastName)
+	}
+	if body.Gender != "" {
+		vals["gender"] = strings.TrimSpace(body.Gender)
+	}
+	if body.City != "" {
+		vals["city"] = strings.TrimSpace(body.City)
+	}
+	if body.Region != "" {
+		vals["region"] = strings.TrimSpace(body.Region)
+	}
+	if body.Locale != "" {
+		vals["locale"] = strings.TrimSpace(body.Locale)
+	}
+	if body.Timezone != "" {
+		vals["timezone"] = strings.TrimSpace(body.Timezone)
+	}
+	if len(vals) == 0 {
+		response.FailWithCode(c, 400, "无可更新字段", nil)
+		return
+	}
+	vals["update_by"] = operatorFromUser(u)
+	if err := models.UpdateUserFields(h.db, u, vals); err != nil {
+		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.db.Where("id = ?", u.ID).First(u).Error; err != nil {
+		response.Success(c, "已更新", nil)
+		return
+	}
+	response.Success(c, "已更新", gin.H{"user": newAuthUserResponse(u)})
+}
+
+type uploadAvatarResponse struct {
+	URL string `json:"url"`
+}
+
+// postUserAvatar POST /api/user/avatar - upload user avatar
+func (h *Handlers) postUserAvatar(c *gin.Context) {
+	u := models.CurrentUser(c)
+	if u == nil {
+		response.FailWithCode(c, 401, "未登录", nil)
+		return
+	}
+	file, err := c.FormFile("file")
+	if err != nil {
+		response.FailWithCode(c, 400, "请上传文件", nil)
+		return
+	}
+	if file.Size > 5*1024*1024 {
+		response.FailWithCode(c, 400, "文件大小不能超过 5MB", nil)
+		return
+	}
+	allowedTypes := []string{"image/jpeg", "image/png", "image/gif", "image/webp"}
+	isAllowed := false
+	for _, t := range allowedTypes {
+		if file.Header.Get("Content-Type") == t {
+			isAllowed = true
+			break
+		}
+	}
+	if !isAllowed {
+		response.FailWithCode(c, 400, "仅支持 JPG、PNG、GIF、WebP 格式", nil)
+		return
+	}
+	src, err := file.Open()
+	if err != nil {
+		response.FailWithCode(c, 500, "文件读取失败", nil)
+		return
+	}
+	defer src.Close()
+	if config.GlobalStore == nil {
+		response.FailWithCode(c, 500, "存储服务未初始化", nil)
+		return
+	}
+	fileBytes, err := io.ReadAll(src)
+	if err != nil {
+		response.FailWithCode(c, 500, "文件读取失败", nil)
+		return
+	}
+	objectKey := fmt.Sprintf("avatars/%d/%d%s", u.ID, time.Now().UnixMilli(), filepath.Ext(file.Filename))
+	up, upErr := config.GlobalStore.UploadBytes(&lingstorage.UploadBytesRequest{
+		Data:     fileBytes,
+		Filename: file.Filename,
+		Bucket:   config.GlobalConfig.Services.Storage.Bucket,
+		Key:      objectKey,
+	})
+	if upErr != nil {
+		logger.Error("avatar.upload_failed", zap.Error(upErr))
+		response.FailWithCode(c, 500, "上传失败", nil)
+		return
+	}
+	if err := models.UpdateUserFields(h.db, u, map[string]any{"avatar": up.URL}); err != nil {
+		logger.Error("avatar.update_failed", zap.Error(err))
+		response.FailWithCode(c, 500, "保存失败", nil)
+		return
+	}
+	u.Avatar = up.URL
+	response.Success(c, "上传成功", uploadAvatarResponse{URL: up.URL})
 }
