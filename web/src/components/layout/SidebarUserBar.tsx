@@ -1,7 +1,9 @@
-import type { ReactNode } from 'react'
+import type { ComponentType, ReactNode } from 'react'
+import { useState } from 'react'
 import { Avatar, Button, Dropdown, Menu, Space, Tooltip } from '@arco-design/web-react'
-import { Key, LogOut, Moon, Settings, Sun, User } from 'lucide-react'
+import { Key, LogOut, Megaphone, Moon, Sun, User } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { AnnouncementsModal } from '@/components/announcements/AnnouncementsModal'
 import { logoutSession } from '@/api/auth'
 import { useAuthStore } from '@/stores/authStore'
 import { useColorModeStore } from '@/stores/colorMode'
@@ -16,7 +18,7 @@ function roleLabel(role: string): string {
   return '用户'
 }
 
-function menuIcon(Icon: typeof User) {
+function menuIcon(Icon: ComponentType<{ size?: number; strokeWidth?: number; className?: string }>) {
   return (
     <Icon size={16} strokeWidth={1.75} className="text-[var(--color-text-2)]" />
   )
@@ -60,6 +62,7 @@ export function SidebarUserBar() {
       : undefined
   const clearUser = useAuthStore((s) => s.clearUser)
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
+  const [announcementsOpen, setAnnouncementsOpen] = useState(false)
 
   const doLogout = () => {
     void (async () => {
@@ -87,6 +90,7 @@ export function SidebarUserBar() {
         onClickMenuItem={(key) => {
           if (key === 'profile') navigate('/profile')
           else if (key === 'credential') navigate('/credential')
+          else if (key === 'announcements') setAnnouncementsOpen(true)
           else if (key === 'logout') doLogout()
         }}
       >
@@ -124,6 +128,7 @@ export function SidebarUserBar() {
   }[] = [
     { label: '个人中心', icon: menuIcon(User), onClick: () => navigate('/profile') },
     { label: '密钥与凭证', icon: menuIcon(Key), onClick: () => navigate('/credential') },
+    { label: '站点公告', icon: menuIcon(Megaphone), onClick: () => setAnnouncementsOpen(true) },
     {
       label: '退出登录',
       icon: <LogOut size={16} strokeWidth={1.75} className="text-[rgb(var(--danger-6))]" />,
@@ -167,15 +172,17 @@ export function SidebarUserBar() {
     />
   )
 
-  const settingsBtn = (
-    <Button
-      type="text"
-      size="mini"
-      className="!h-7 !min-w-7 !shrink-0 !px-0"
-      aria-label="设置"
-      icon={<Settings size={15} strokeWidth={1.75} className="text-[var(--color-text-2)]" />}
-      onClick={() => navigate('/settings')}
-    />
+  const announcementsBtn = (
+    <Tooltip content="站点公告" position="top" mini>
+      <Button
+        type="text"
+        size="mini"
+        className="!h-7 !min-w-7 !shrink-0 !px-0"
+        aria-label="站点公告"
+        icon={<Megaphone size={15} strokeWidth={1.75} className="text-[var(--color-text-2)]" />}
+        onClick={() => setAnnouncementsOpen(true)}
+      />
+    </Tooltip>
   )
 
   const triggerClass = cn(
@@ -186,8 +193,9 @@ export function SidebarUserBar() {
 
   return (
     <div className="sidebar-user shrink-0 border-t border-[var(--color-border-2)] bg-[var(--color-bg-2)]">
+      <AnnouncementsModal visible={announcementsOpen} onClose={() => setAnnouncementsOpen(false)} />
       {collapsed ? (
-        <div className="flex w-full flex-col items-center py-1.5">
+        <div className="flex w-full flex-col items-center gap-1 py-1.5">
           <Dropdown
             droplist={droplistCollapsed}
             trigger="click"
@@ -215,6 +223,10 @@ export function SidebarUserBar() {
               </div>
             </button>
           </Dropdown>
+          <div className="flex items-center justify-center gap-0.5">
+            {themeBtn}
+            {announcementsBtn}
+          </div>
         </div>
       ) : (
         <div className="flex min-h-[40px] items-center gap-1 px-1.5 py-1.5">
@@ -253,7 +265,7 @@ export function SidebarUserBar() {
           </div>
           <div className="flex shrink-0 items-center gap-0.5 self-center">
             {themeBtn}
-            {settingsBtn}
+            {announcementsBtn}
           </div>
         </div>
       )}

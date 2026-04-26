@@ -315,6 +315,7 @@ type LLMUsageSignalPayload struct {
 	InputTokens     int
 	OutputTokens    int
 	TotalTokens     int
+	QuotaDelta      int // 凭证侧扣除的额度单位（HTTP 层按模型策略计算）
 	LatencyMs       int64
 	TTFTMs          int64
 	TPS             float64

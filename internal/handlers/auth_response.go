@@ -30,7 +30,10 @@ type AuthUserResponse struct {
 	EmailVerified   bool   `json:"emailVerified"`
 	PhoneVerified   bool   `json:"phoneVerified"`
 	ProfileComplete int    `json:"profileComplete"`
-	LoginCount      int    `json:"loginCount"`
+	LoginCount       int    `json:"loginCount"`
+	RemainQuota      int    `json:"remainQuota"`
+	UsedQuota        int    `json:"usedQuota"`
+	UnlimitedQuota   bool   `json:"unlimitedQuota"`
 	CreatedAt       string `json:"createdAt,omitempty"` // RFC3339 UTC
 	LastLogin       string `json:"lastLogin,omitempty"` // RFC3339 UTC
 }
@@ -76,7 +79,10 @@ func newAuthUserResponse(u *models.User) AuthUserResponse {
 		EmailVerified:   u.EmailVerified,
 		PhoneVerified:   u.PhoneVerified,
 		ProfileComplete: u.ProfileComplete,
-		LoginCount:      u.LoginCount,
+		LoginCount:       u.LoginCount,
+		RemainQuota:      u.RemainQuota,
+		UsedQuota:        u.UsedQuota,
+		UnlimitedQuota:   u.UnlimitedQuota,
 		CreatedAt:       u.CreatedAt.UTC().Format(time.RFC3339),
 		LastLogin:       authTimeRFC3339UTC(u.LastLogin),
 	}

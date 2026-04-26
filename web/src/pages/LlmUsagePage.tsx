@@ -132,6 +132,7 @@ export function LlmUsagePage() {
       { key: 'input_tokens', label: 'input_tokens', value: String(r.input_tokens) },
       { key: 'output_tokens', label: 'output_tokens', value: String(r.output_tokens) },
       { key: 'total_tokens', label: 'total_tokens', value: String(r.total_tokens) },
+      { key: 'quota_delta', label: 'quota_delta', value: String(r.quota_delta ?? 0) },
       { key: 'latency_ms', label: 'latency_ms', value: String(r.latency_ms) },
       { key: 'ttft_ms', label: 'ttft_ms', value: String(r.ttft_ms) },
       { key: 'tps', label: 'tps', value: String(r.tps) },
@@ -201,6 +202,13 @@ export function LlmUsagePage() {
         <span className="text-[12px] tabular-nums">
           {r.input_tokens}/{r.output_tokens}
         </span>
+      ),
+    },
+    {
+      title: '额度Δ',
+      width: 72,
+      render: (_: unknown, r: LLMUsageRow) => (
+        <span className="tabular-nums text-[12px]">{r.quota_delta ?? 0}</span>
       ),
     },
     {

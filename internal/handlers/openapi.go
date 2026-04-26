@@ -28,8 +28,9 @@ type openapiSendMailBody struct {
 	Params     map[string]any `json:"params"`
 }
 
-func (h *Handlers) registerOpenAPIRoutes(api *gin.RouterGroup) {
-	v1mail := api.Group("/openapi/v1")
+func (h *Handlers) registerV1RelayRoutes(engine *gin.Engine) {
+	// 邮件 OpenAPI（kind=email，LAuthorization + L-Timestamp + L-Nonce）
+	v1mail := engine.Group("/v1")
 	v1mail.Use(middleware.OpenAPIEmailCredential(h.db))
 	{
 		v1mail.GET("/mail-templates", h.listMailTemplates)
@@ -39,8 +40,8 @@ func (h *Handlers) registerOpenAPIRoutes(api *gin.RouterGroup) {
 		v1mail.POST("/mail/send", h.openAPISendMail)
 	}
 
-	// OpenAI 协议：与官方 SDK 一致，使用 Authorization: Bearer（凭证 kind=llm）。
-	v1llm := api.Group("/openapi/v1")
+	// OpenAI 协议：Authorization: Bearer（凭证 kind=llm）
+	v1llm := engine.Group("/v1")
 	v1llm.Use(middleware.OpenAPILLMProxyAuth(h.db, middleware.OpenAPILLMStyleOpenAI))
 	{
 		v1llm.GET("/models", h.openAPIListModels)
@@ -48,22 +49,22 @@ func (h *Handlers) registerOpenAPIRoutes(api *gin.RouterGroup) {
 		v1llm.POST("/agent/chat/stream", h.openAPIAgentChatStream)
 	}
 
-	v1asr := api.Group("/openapi/v1/speech/asr")
+	v1asr := engine.Group("/v1/speech/asr")
 	v1asr.Use(middleware.OpenAPISpeechProxyAuth(h.db, models.CredentialKindASR))
 	{
 		v1asr.POST("/transcribe", h.openAPIASRTranscribe)
 	}
-	v1tts := api.Group("/openapi/v1/speech/tts")
+	v1tts := engine.Group("/v1/speech/tts")
 	v1tts.Use(middleware.OpenAPISpeechProxyAuth(h.db, models.CredentialKindTTS))
 	{
 		v1tts.POST("/synthesize", h.openAPITTSSynthesize)
 	}
 
-	// Anthropic 协议：路径对齐官方 /v1/messages；鉴权可用 x-api-key 或 Bearer（凭证 kind=llm）。
-	v2llm := api.Group("/openapi/v2")
-	v2llm.Use(middleware.OpenAPILLMProxyAuth(h.db, middleware.OpenAPILLMStyleAnthropic))
+	// Anthropic Messages：与官方一致 POST /v1/messages；x-api-key 或 Bearer（凭证 kind=llm）
+	v1anthropic := engine.Group("/v1")
+	v1anthropic.Use(middleware.OpenAPILLMProxyAuth(h.db, middleware.OpenAPILLMStyleAnthropic))
 	{
-		v2llm.POST("/v1/messages", h.openAPIAnthropicMessages)
+		v1anthropic.POST("/messages", h.openAPIAnthropicMessages)
 	}
 }
 

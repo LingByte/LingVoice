@@ -72,6 +72,18 @@ func OpenAPILLMProxyAuth(db *gorm.DB, errStyle OpenAPILLMProxyAuthStyle) gin.Han
 			return
 		}
 
+		if cred.UserId > 0 {
+			var owner models.User
+			if err := db.Select("id", "remain_quota", "unlimited_quota").Where("id = ?", cred.UserId).First(&owner).Error; err != nil {
+				abortLLMAuth(c, errStyle, http.StatusForbidden, "insufficient_quota", "User account not found")
+				return
+			}
+			if !owner.UnlimitedQuota && owner.RemainQuota <= 0 {
+				abortLLMAuth(c, errStyle, http.StatusForbidden, "insufficient_quota", "User quota exceeded")
+				return
+			}
+		}
+
 		_ = db.Model(&models.Credential{}).Where("id = ?", cred.Id).Update("accessed_time", now).Error
 		c.Set(ctxOpenAPILLMCredential, &cred)
 		c.Next()

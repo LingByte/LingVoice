@@ -23,17 +23,57 @@ func NewHandlers(db *gorm.DB) *Handlers {
 func (h *Handlers) Register(engine *gin.Engine) {
 	engine.Use(middleware.InjectDB(h.db))
 
+	// OpenAI 兼容网关：根路径 /v1（与 new-api 一致），不经 /api 前缀
+	h.registerV1RelayRoutes(engine)
+
 	api := engine.Group("/api")
 
-	h.registerOpenAPIRoutes(api)
-
+	llmCat := api.Group("/llm-channels")
+	llmCat.Use(models.AuthRequired)
+	{
+		llmCat.GET("/catalog", h.listLLMChannelsCatalog)
+	}
 	llm := api.Group("/llm-channels")
+	llm.Use(models.AuthRequired, models.AdminRequired)
 	{
 		llm.GET("", h.listLLMChannels)
 		llm.POST("", h.createLLMChannel)
 		llm.GET("/:id", h.getLLMChannel)
 		llm.PUT("/:id", h.updateLLMChannel)
 		llm.DELETE("/:id", h.deleteLLMChannel)
+	}
+	la := api.Group("/llm-abilities")
+	la.Use(models.AuthRequired, models.AdminRequired)
+	{
+		la.GET("", h.listLLMAbilities)
+		la.POST("", h.createLLMAbility)
+		la.PATCH("", h.patchLLMAbility)
+		la.DELETE("", h.deleteLLMAbility)
+		la.POST("/sync-channel/:id", h.postLLMAbilitiesSyncChannel)
+	}
+	lm := api.Group("/llm-model-metas")
+	lm.Use(models.AuthRequired, models.AdminRequired)
+	{
+		lm.GET("", h.listLLMModelMetas)
+		lm.POST("", h.createLLMModelMeta)
+		lm.GET("/:id", h.getLLMModelMeta)
+		lm.PUT("/:id", h.updateLLMModelMeta)
+		lm.DELETE("/:id", h.deleteLLMModelMeta)
+	}
+	ladm := api.Group("/llm-admin")
+	ladm.Use(models.AuthRequired, models.AdminRequired)
+	{
+		ladm.GET("/form-options", h.getLLMAdminFormOptions)
+	}
+	lp := api.Group("/llm-model-plaza")
+	lp.Use(models.AuthRequired)
+	{
+		lp.GET("", h.listLLMModelPlaza)
+	}
+
+	site := api.Group("/site")
+	{
+		site.GET("/announcements", h.listPublicAnnouncements)
 	}
 	asr := api.Group("/asr-channels")
 	{
@@ -101,6 +141,10 @@ func (h *Handlers) Register(engine *gin.Engine) {
 		admin.GET("/users", h.listAdminUsers)
 		admin.GET("/users/:id", h.getAdminUser)
 		admin.PATCH("/users/:id", h.patchAdminUser)
+		admin.GET("/announcements", h.listAdminAnnouncements)
+		admin.POST("/announcements", h.createSiteAnnouncement)
+		admin.PUT("/announcements/:id", h.updateSiteAnnouncement)
+		admin.DELETE("/announcements/:id", h.deleteSiteAnnouncement)
 	}
 
 	ml := api.Group("/mail-logs")
@@ -110,6 +154,12 @@ func (h *Handlers) Register(engine *gin.Engine) {
 		ml.GET("/:id", h.getMailLog)
 		ml.PUT("/:id", h.updateMailLog)
 		ml.DELETE("/:id", h.deleteMailLog)
+	}
+
+	dash := api.Group("/dashboard")
+	dash.Use(models.AuthRequired)
+	{
+		dash.GET("/overview", h.getDashboardOverview)
 	}
 
 	chat := api.Group("/chat")
@@ -129,6 +179,7 @@ func (h *Handlers) Register(engine *gin.Engine) {
 	{
 		cr.GET("", h.listCredentials)
 		cr.GET("/groups", h.listCredentialGroups)
+		cr.GET("/llm-available-models", h.listLLMAvailableModelsForCredentialGroup)
 		cr.POST("", h.createCredential)
 		cr.GET("/:id", h.getCredential)
 		cr.PUT("/:id", h.updateCredential)

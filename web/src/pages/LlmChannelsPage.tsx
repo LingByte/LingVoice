@@ -26,6 +26,7 @@ import {
   type LLMChannelUpsert,
   LLM_CHANNEL_PROTOCOL_OPTIONS,
 } from '@/api/channelsAdmin'
+import { AdminOnly } from '@/components/AdminOnly'
 
 const { Title, Paragraph, Text } = Typography
 const FormItem = Form.Item
@@ -227,6 +228,7 @@ export function LlmChannelsPage() {
   )
 
   return (
+    <AdminOnly title="LLM 渠道">
     <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-auto bg-[var(--color-fill-1)] px-5 py-5">
       <Title heading={5} className="!mb-1 !mt-0 shrink-0">
         LLM 渠道
@@ -450,5 +452,6 @@ export function LlmChannelsPage() {
         </Form>
       </Drawer>
     </div>
+    </AdminOnly>
   )
 }

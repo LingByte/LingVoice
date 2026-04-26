@@ -18,6 +18,9 @@ export type AuthUser = {
   phoneVerified?: boolean
   profileComplete: number
   loginCount?: number
+  remainQuota?: number
+  usedQuota?: number
+  unlimitedQuota?: boolean
   createdAt?: string
   lastLogin?: string
 }
@@ -80,6 +83,9 @@ export function normalizeAuthUser(raw: unknown): AuthUser {
     phoneVerified: Boolean(u.phoneVerified),
     profileComplete: Number(u.profileComplete) || 0,
     loginCount: u.loginCount != null ? Number(u.loginCount) : undefined,
+    remainQuota: Number(u.remainQuota ?? 0) || 0,
+    usedQuota: Number(u.usedQuota ?? 0) || 0,
+    unlimitedQuota: Boolean(u.unlimitedQuota),
     createdAt: str(u.createdAt),
     lastLogin: str(u.lastLogin),
   }

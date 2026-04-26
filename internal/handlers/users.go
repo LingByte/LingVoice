@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/LingByte/LingVoice/internal/models"
@@ -225,10 +226,13 @@ func (h *Handlers) postRefresh(c *gin.Context) {
 }
 
 type adminPatchUserBody struct {
-	Status      string `json:"status"`
-	Role        string `json:"role"`
-	DisplayName string `json:"display_name"`
-	Locale      string `json:"locale"`
+	Status           string `json:"status"`
+	Role             string `json:"role"`
+	DisplayName      string `json:"display_name"`
+	Locale           string `json:"locale"`
+	RemainQuota      *int   `json:"remain_quota"`
+	UsedQuota        *int   `json:"used_quota"`
+	UnlimitedQuota   *bool  `json:"unlimited_quota"`
 }
 
 // listAdminUsers GET /api/admin/users
@@ -276,12 +280,16 @@ func (h *Handlers) listAdminUsers(c *gin.Context) {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
 	}
+	listOut := make([]gin.H, 0, len(list))
+	for _, row := range list {
+		listOut = append(listOut, adminUserJSON(row))
+	}
 	totalPage := int(total) / pageSize
 	if int(total)%pageSize != 0 {
 		totalPage++
 	}
 	response.Success(c, "ok", gin.H{
-		"list":      list,
+		"list":      listOut,
 		"total":     total,
 		"page":      page,
 		"pageSize":  pageSize,
@@ -308,7 +316,7 @@ func (h *Handlers) getAdminUser(c *gin.Context) {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{"user": row})
+	response.Success(c, "ok", gin.H{"user": adminUserJSON(row)})
 }
 
 // patchAdminUser PATCH /api/admin/users/:id
@@ -374,6 +382,25 @@ func (h *Handlers) patchAdminUser(c *gin.Context) {
 	if body.Locale != "" {
 		vals["locale"] = strings.TrimSpace(body.Locale)
 	}
+	if body.RemainQuota != nil {
+		v := *body.RemainQuota
+		if v < 0 {
+			response.FailWithCode(c, 400, "remain_quota 不能为负", nil)
+			return
+		}
+		vals["remain_quota"] = v
+	}
+	if body.UsedQuota != nil {
+		v := *body.UsedQuota
+		if v < 0 {
+			response.FailWithCode(c, 400, "used_quota 不能为负", nil)
+			return
+		}
+		vals["used_quota"] = v
+	}
+	if body.UnlimitedQuota != nil {
+		vals["unlimited_quota"] = *body.UnlimitedQuota
+	}
 	if len(vals) == 0 {
 		response.FailWithCode(c, 400, "无可更新字段", nil)
 		return
@@ -384,8 +411,8 @@ func (h *Handlers) patchAdminUser(c *gin.Context) {
 		return
 	}
 	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
-		response.Success(c, "已更新", gin.H{"user": gin.H{"id": id}})
+		response.Success(c, "已更新", gin.H{"user": gin.H{"id": strconv.FormatUint(uint64(id), 10)}})
 		return
 	}
-	response.Success(c, "已更新", gin.H{"user": row})
+	response.Success(c, "已更新", gin.H{"user": adminUserJSON(row)})
 }

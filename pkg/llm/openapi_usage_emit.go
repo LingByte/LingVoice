@@ -53,7 +53,7 @@ func tpsFromOutputTokens(outTok int, hopMs int64) float64 {
 }
 
 // EmitOpenAPIOpenAIUsageSuccess 非流式 OpenAI 兼容 chat completion 成功后的用量信号。
-func EmitOpenAPIOpenAIUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta) {
+func EmitOpenAPIOpenAIUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta, quotaDelta int) {
 	if res == nil || res.WinChannelID <= 0 || len(res.FinalBody) == 0 {
 		return
 	}
@@ -80,6 +80,9 @@ func EmitOpenAPIOpenAIUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
+		Details          *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	}
 	if u, ok := raw["usage"]; ok {
 		_ = json.Unmarshal(u, &usage)
@@ -100,6 +103,9 @@ func EmitOpenAPIOpenAIUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta
 		}
 	}
 	tps := tpsFromOutputTokens(outTok, res.WinHopMs)
+	if quotaDelta < 0 {
+		quotaDelta = 0
+	}
 	payload := &LLMUsageSignalPayload{
 		RequestID:       idStr,
 		UserID:          strings.TrimSpace(meta.UserIDStr),
@@ -112,6 +118,7 @@ func EmitOpenAPIOpenAIUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta
 		InputTokens:     inTok,
 		OutputTokens:    outTok,
 		TotalTokens:     tot,
+		QuotaDelta:      quotaDelta,
 		LatencyMs:       res.WallLatencyMs,
 		TTFTMs:          res.WinHopMs,
 		TPS:             tps,
@@ -169,6 +176,7 @@ func EmitOpenAPIOpenAIUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta
 		RequestType:     "openapi_openai_chat_completions",
 		ChannelID:       0,
 		ChannelAttempts: atts,
+		QuotaDelta:      0,
 		LatencyMs:       wall,
 		TTFTMs:          0,
 		TPS:             0,
@@ -190,7 +198,7 @@ func EmitOpenAPIOpenAIUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta
 }
 
 // EmitOpenAPIAnthropicUsageSuccess 非流式 Anthropic /v1/messages 成功。
-func EmitOpenAPIAnthropicUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta) {
+func EmitOpenAPIAnthropicUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta, quotaDelta int) {
 	if res == nil || res.WinChannelID <= 0 {
 		return
 	}
@@ -213,6 +221,9 @@ func EmitOpenAPIAnthropicUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, m
 	}
 	ms := time.Now().UnixMilli()
 	tps := tpsFromOutputTokens(outTok, res.WinHopMs)
+	if quotaDelta < 0 {
+		quotaDelta = 0
+	}
 	payload := &LLMUsageSignalPayload{
 		RequestID:       a.ID,
 		UserID:          strings.TrimSpace(meta.UserIDStr),
@@ -225,6 +236,7 @@ func EmitOpenAPIAnthropicUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, m
 		InputTokens:     inTok,
 		OutputTokens:    outTok,
 		TotalTokens:     inTok + outTok,
+		QuotaDelta:      quotaDelta,
 		LatencyMs:       res.WallLatencyMs,
 		TTFTMs:          res.WinHopMs,
 		TPS:             tps,
@@ -282,6 +294,7 @@ func EmitOpenAPIAnthropicUsageFailure(reqBody []byte, res *OpenAPIProxyResult, m
 		RequestType:     "openapi_anthropic_messages",
 		ChannelID:       0,
 		ChannelAttempts: atts,
+		QuotaDelta:      0,
 		LatencyMs:       wall,
 		QueueTimeMs:     queue,
 		RequestContent:  clipForOpenAPIUsageStore(string(reqBody)),
@@ -301,7 +314,7 @@ func EmitOpenAPIAnthropicUsageFailure(reqBody []byte, res *OpenAPIProxyResult, m
 }
 
 // EmitOpenAPIOpenAIUsageStreamSuccess 流式 chat completion 成功后的用量（建议请求体含 stream_options.include_usage）。
-func EmitOpenAPIOpenAIUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMeta, cap *OpenAIStreamCapture, channelID int, baseURL string, attempts []UsageChannelAttempt) {
+func EmitOpenAPIOpenAIUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMeta, cap *OpenAIStreamCapture, channelID int, baseURL string, attempts []UsageChannelAttempt, quotaDelta int) {
 	if cap == nil || strings.TrimSpace(meta.UserIDStr) == "" {
 		return
 	}
@@ -315,6 +328,9 @@ func EmitOpenAPIOpenAIUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMe
 	if reqMs <= 0 {
 		reqMs = time.Now().UnixMilli()
 	}
+	if quotaDelta < 0 {
+		quotaDelta = 0
+	}
 	payload := &LLMUsageSignalPayload{
 		RequestID:       rid,
 		UserID:          strings.TrimSpace(meta.UserIDStr),
@@ -327,6 +343,7 @@ func EmitOpenAPIOpenAIUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMe
 		InputTokens:     cap.PromptTokens,
 		OutputTokens:    cap.CompletionTokens,
 		TotalTokens:     cap.TotalTokens,
+		QuotaDelta:      quotaDelta,
 		LatencyMs:       cap.WallLatencyMs,
 		TTFTMs:          ttft,
 		TPS:             tps,
@@ -346,7 +363,7 @@ func EmitOpenAPIOpenAIUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMe
 }
 
 // EmitOpenAPIAnthropicUsageStreamSuccess Anthropic 流式 messages 成功。
-func EmitOpenAPIAnthropicUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMeta, cap *AnthropicStreamCapture, channelID int, baseURL string, attempts []UsageChannelAttempt) {
+func EmitOpenAPIAnthropicUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMeta, cap *AnthropicStreamCapture, channelID int, baseURL string, attempts []UsageChannelAttempt, quotaDelta int) {
 	if cap == nil || strings.TrimSpace(meta.UserIDStr) == "" {
 		return
 	}
@@ -364,6 +381,9 @@ func EmitOpenAPIAnthropicUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmi
 	if tot == 0 {
 		tot = cap.PromptTokens + cap.CompletionTokens
 	}
+	if quotaDelta < 0 {
+		quotaDelta = 0
+	}
 	payload := &LLMUsageSignalPayload{
 		RequestID:       rid,
 		UserID:          strings.TrimSpace(meta.UserIDStr),
@@ -376,6 +396,7 @@ func EmitOpenAPIAnthropicUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmi
 		InputTokens:     cap.PromptTokens,
 		OutputTokens:    cap.CompletionTokens,
 		TotalTokens:     tot,
+		QuotaDelta:      quotaDelta,
 		LatencyMs:       cap.WallLatencyMs,
 		TTFTMs:          ttft,
 		TPS:             tps,

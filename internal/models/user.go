@@ -213,6 +213,9 @@ type User struct {
 	PasswordResetExpires *time.Time `json:"-"`                                            // 密码重置过期时间
 	EmailVerifyExpires   *time.Time `json:"-"`                                            // 邮箱验证过期时间
 	LoginCount           int        `json:"loginCount" gorm:"default:0"`                  // 登录次数
+	RemainQuota          int        `json:"remainQuota" gorm:"default:0"`                 // 用户级剩余额度（与 new-api 用户配额概念对齐；实际扣减仍以凭证为主时可作展示/预留）
+	UsedQuota            int        `json:"usedQuota" gorm:"default:0"`                   // 用户级已用额度
+	UnlimitedQuota       bool       `json:"unlimitedQuota" gorm:"default:false"`          // 用户级无限额度标记
 	LastPasswordChange   *time.Time `json:"lastPasswordChange,omitempty"`                 // 最后密码修改时间
 	ProfileComplete      int        `json:"profileComplete" gorm:"default:0"`             // 资料完整度百分比
 	Role                 string     `json:"role,omitempty" gorm:"size:50;default:'user'"` // 用户角色
@@ -290,6 +293,22 @@ func AuthRequired(c *gin.Context) {
 				"accountDeletionEffectiveAt": effective,
 			},
 		})
+		return
+	}
+	c.Next()
+}
+
+// AdminRequired 须在 AuthRequired 之后注册；仅管理员（admin / superadmin）可继续。
+func AdminRequired(c *gin.Context) {
+	u := CurrentUser(c)
+	if u == nil {
+		response.AbortWithJSONError(c, http.StatusUnauthorized, errors.New("authorization required"))
+		c.Abort()
+		return
+	}
+	if !u.IsAdmin() {
+		response.FailWithCode(c, 403, "需要管理员权限", nil)
+		c.Abort()
 		return
 	}
 	c.Next()

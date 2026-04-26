@@ -302,6 +302,29 @@ func (h *Handlers) updateCredential(c *gin.Context) {
 	response.Success(c, "更新成功", credentialToPublic(&row))
 }
 
+// listLLMAvailableModelsForCredentialGroup GET /api/credentials/llm-available-models?group=
+// 返回当前分组下可用于 OpenAPI 模型目录勾选的模型 id（与 /v1/models 无 catalog 时同源）。
+func (h *Handlers) listLLMAvailableModelsForCredentialGroup(c *gin.Context) {
+	if models.CurrentUser(c) == nil {
+		response.FailWithCode(c, 401, "未登录", nil)
+		return
+	}
+	g := strings.TrimSpace(c.Query("group"))
+	eff := g
+	if eff == "" {
+		eff = "default"
+	}
+	ids, err := CollectOpenAILLMModelIDsForGroup(h.db, g)
+	if err != nil {
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+	if ids == nil {
+		ids = []string{}
+	}
+	response.Success(c, "ok", gin.H{"group": eff, "models": ids})
+}
+
 func (h *Handlers) deleteCredential(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {

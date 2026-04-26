@@ -25,7 +25,7 @@ import {
   listChatSessions,
   patchChatSessionTitle,
 } from '@/api/chat'
-import { fetchOpenAPIModels, streamOpenAPIAgentChat, streamOpenAIChatCompletion } from '@/api/openapiLlm'
+import { fetchV1Models, streamV1AgentChat, streamV1ChatCompletion } from '@/api/v1Llm'
 import { useAuthStore } from '@/stores/authStore'
 import {
   Bot,
@@ -55,7 +55,8 @@ type ChatSession = {
 
 type ChatMessage = { id: string; role: 'user' | 'assistant' | 'system'; content: string }
 
-const LS_OPENAPI_KEY = 'lingvoice_openapi_llm_key'
+const LS_V1_LLM_KEY = 'lingvoice_v1_llm_key'
+const LS_LEGACY_OPENAPI_LLM_KEY = 'lingvoice_openapi_llm_key'
 const LS_CHAT_MODEL = 'lingvoice_chat_model'
 const LS_CHAT_MODE = 'lingvoice_chat_mode'
 
@@ -67,6 +68,12 @@ function readLocal(key: string) {
   } catch {
     return ''
   }
+}
+
+function readStoredV1LlmKey(): string {
+  const cur = readLocal(LS_V1_LLM_KEY)
+  if (cur) return cur
+  return readLocal(LS_LEGACY_OPENAPI_LLM_KEY)
 }
 
 function formatTimeLabel() {
@@ -200,7 +207,7 @@ export function ChatPage() {
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [sessionPanelOpen, setSessionPanelOpen] = useState(true)
-  const [apiKey, setApiKeyState] = useState(() => readLocal(LS_OPENAPI_KEY))
+  const [apiKey, setApiKeyState] = useState(() => readStoredV1LlmKey())
   const [model, setModelState] = useState(() => readLocal(LS_CHAT_MODEL))
   const [chatMode, setChatModeState] = useState<ChatInteractionMode>(() => {
     const v = readLocal(LS_CHAT_MODE)
@@ -210,7 +217,7 @@ export function ChatPage() {
   const setApiKey = (v: string) => {
     setApiKeyState(v)
     try {
-      localStorage.setItem(LS_OPENAPI_KEY, v)
+      localStorage.setItem(LS_V1_LLM_KEY, v)
     } catch {
       /* 隐私模式等可能失败 */
     }
@@ -309,7 +316,7 @@ export function ChatPage() {
     setModelsError(null)
     void (async () => {
       try {
-        const list = await fetchOpenAPIModels(k)
+        const list = await fetchV1Models(k)
         if (cancelled) return
         const opts = list.map((m) => ({ label: m.id, value: m.id }))
         setModelOptions(opts)
@@ -402,7 +409,7 @@ export function ChatPage() {
     const text = draft.trim()
     if (!text) return
     if (!apiKey.trim()) {
-      Message.warning('请先在左侧会话栏最下方填写「OpenAPI 密钥」后再发送（密钥保存在本机浏览器）。')
+      Message.warning('请先在左侧会话栏最下方填写「V1 LLM 密钥」后再发送（密钥保存在本机浏览器）。')
       return
     }
     if (!model.trim()) {
@@ -508,7 +515,7 @@ export function ChatPage() {
             })
           }
           bumpAgent()
-          await streamOpenAPIAgentChat({
+          await streamV1AgentChat({
             apiKey: apiKey.trim(),
             model: model.trim(),
             input: text,
@@ -570,7 +577,7 @@ export function ChatPage() {
           assistantBody = agentTextRef.current
           bumpAgent()
         } else {
-          await streamOpenAIChatCompletion({
+          await streamV1ChatCompletion({
             apiKey: apiKey.trim(),
             model: model.trim(),
             messages: apiMessages,
@@ -633,7 +640,7 @@ export function ChatPage() {
         <div className="chat-model-dropdown-empty">
           <p className="chat-model-dropdown-empty__title">暂无可用模型</p>
           <p className="chat-model-dropdown-empty__hint">
-            请确认 OpenAPI 密钥正确，或在控制台为该凭证配置「OpenAPI 模型目录」、并为分组配置 LLM 渠道的模型列表。
+            请确认 V1 LLM 密钥正确，或在控制台为该凭证配置「OpenAPI 模型目录」、并为分组配置 LLM 渠道的模型列表。
           </p>
         </div>
       ),
@@ -769,7 +776,7 @@ export function ChatPage() {
             <Footer className="!h-auto !flex-none !border-t !border-[var(--color-border-2)] !bg-[var(--color-bg-1)] !px-3 !py-2.5">
               <Space direction="vertical" size={6} className="!w-full">
                 <Text type="secondary" className="!block !text-[11px] !leading-snug">
-                  OpenAPI 密钥（Bearer）仅保存在本机，刷新后仍保留
+                  V1 LLM 密钥（Bearer，/v1/models）仅保存在本机，刷新后仍保留
                 </Text>
                 <Input.Password
                   size="small"
@@ -893,7 +900,7 @@ export function ChatPage() {
                 <Alert
                   type="warning"
                   className="!mb-2"
-                  content="请先在左侧会话栏最底部填写 OpenAPI 密钥后再对话。"
+                  content="请先在左侧会话栏最底部填写 V1 LLM 密钥后再对话。"
                 />
               ) : null}
               <Space direction="vertical" size={6} className="!w-full">

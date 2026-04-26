@@ -14,6 +14,7 @@ import (
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/agent/exec"
 	"github.com/LingByte/LingVoice/pkg/agent/plan"
+	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/llm"
 	"github.com/LingByte/LingVoice/pkg/middleware"
 	"github.com/gin-gonic/gin"
@@ -76,7 +77,7 @@ func writeNDJSONLine(c *gin.Context, fl http.Flusher, v any) bool {
 	return true
 }
 
-// openAPIAgentChatStream POST /api/openapi/v1/agent/chat/stream
+// openAPIAgentChatStream POST /v1/agent/chat/stream
 // 按行 NDJSON：{"event":"...","data":{...}}；使用凭证分组下 OpenAI 协议 LLM 渠道执行 pkg/agent 规划与执行。
 func (h *Handlers) openAPIAgentChatStream(c *gin.Context) {
 	cred, ok := middleware.OpenAPILLMCredentialFromContext(c)
@@ -105,14 +106,9 @@ func (h *Handlers) openAPIAgentChatStream(c *gin.Context) {
 		maxTasks = 32
 	}
 
-	channels, err := listLLMChannelsOrdered(h.db, cred.Group, models.LLMChannelProtocolOpenAI)
+	channels, err := listLLMChannelsForRelay(h.db, cred, models.LLMChannelProtocolOpenAI, model)
 	if err != nil || len(channels) == 0 {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": gin.H{
-				"message": "No active OpenAI-protocol LLM channel for credential group",
-				"type":    "api_error",
-			},
-		})
+		c.JSON(http.StatusServiceUnavailable, openAINoLLMChannelResponse(cred))
 		return
 	}
 	ch := channels[0]
@@ -224,7 +220,12 @@ func (h *Handlers) openAPIAgentChatStream(c *gin.Context) {
 
 	runOK := runErr == nil
 	if runOK {
-		llmCredDecrementQuota(h.db, cred)
+		gr := float64(1)
+		if config.GlobalConfig != nil {
+			gr = config.GlobalConfig.OpenAPIQuotaGroupRatio(cred.Group)
+		}
+		d := QuotaDeltaForAgentRun(h.db, model, gr)
+		llmCredAndUserDecrementQuota(h.db, cred, d)
 	}
 	errMsg := ""
 	if runErr != nil {

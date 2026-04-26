@@ -1,6 +1,6 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { MainLayout } from '@/layouts/MainLayout'
-import { BlankPage } from '@/pages/BlankPage'
+import { DashboardPage } from '@/pages/DashboardPage'
 import { CredentialsPage } from '@/pages/CredentialsPage'
 import { ChatPage } from '@/pages/ChatPage'
 import { LoginPage } from '@/pages/LoginPage'
@@ -12,19 +12,26 @@ import { MailTemplateEditPage } from '@/pages/MailTemplateEditPage'
 import { MailTemplatesPage } from '@/pages/MailTemplatesPage'
 import { NotificationChannelEditPage } from '@/pages/NotificationChannelEditPage'
 import { NotificationChannelsPage } from '@/pages/NotificationChannelsPage'
-import { OpenApiDebugPage } from '@/pages/OpenApiDebugPage'
+import { V1ApiDebugPage } from '@/pages/V1ApiDebugPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { LlmAbilitiesPage } from '@/pages/LlmAbilitiesPage'
 import { LlmChannelsPage } from '@/pages/LlmChannelsPage'
+import { LlmModelMetasPage } from '@/pages/LlmModelMetasPage'
+import { ModelPlazaPage } from '@/pages/ModelPlazaPage'
 import { LlmUsagePage } from '@/pages/LlmUsagePage'
 import { SpeechUsagePage } from '@/pages/SpeechUsagePage'
 import { AsrChannelsPage } from '@/pages/AsrChannelsPage'
 import { TtsChannelsPage } from '@/pages/TtsChannelsPage'
 import { AgentRunsPage } from '@/pages/AgentRunsPage'
 import { AdminUsersPage } from '@/pages/AdminUsersPage'
+import { AdminAnnouncementsPage } from '@/pages/AdminAnnouncementsPage'
+import { AboutPage } from '@/pages/AboutPage'
+import { AnnouncementsPage } from '@/pages/AnnouncementsPage'
+import { DocsPage } from '@/pages/DocsPage'
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
@@ -32,7 +39,8 @@ export default function App() {
           <Route index element={<ChatPage />} />
           <Route path="profile" element={<ProfilePage />} />
           <Route path="credential" element={<CredentialsPage />} />
-          <Route path="quotas" element={<BlankPage />} />
+          <Route path="dashboard" element={<DashboardPage />} />
+          <Route path="quotas" element={<DashboardPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="notify/channels" element={<NotificationChannelsPage />} />
           <Route path="notify/channels/:channelId" element={<NotificationChannelEditPage />} />
@@ -43,10 +51,17 @@ export default function App() {
           <Route path="notify/speech-usage" element={<SpeechUsagePage />} />
           <Route path="admin/agent-runs" element={<AgentRunsPage />} />
           <Route path="admin/users" element={<AdminUsersPage />} />
+          <Route path="admin/announcements" element={<AdminAnnouncementsPage />} />
+          <Route path="docs" element={<DocsPage />} />
+          <Route path="about" element={<AboutPage />} />
+          <Route path="announcements" element={<AnnouncementsPage />} />
           <Route path="channels/llm" element={<LlmChannelsPage />} />
+          <Route path="channels/llm-abilities" element={<LlmAbilitiesPage />} />
+          <Route path="channels/llm-model-metas" element={<LlmModelMetasPage />} />
+          <Route path="channels/llm-plaza" element={<ModelPlazaPage />} />
           <Route path="channels/asr" element={<AsrChannelsPage />} />
           <Route path="channels/tts" element={<TtsChannelsPage />} />
-          <Route path="debug/openapi" element={<OpenApiDebugPage />} />
+          <Route path="debug/v1" element={<V1ApiDebugPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>

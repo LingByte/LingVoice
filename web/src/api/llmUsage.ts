@@ -26,6 +26,8 @@ export interface LLMUsageRow {
   input_tokens: number
   output_tokens: number
   total_tokens: number
+  /** 本次从 OpenAPI 凭证扣除的额度单位 */
+  quota_delta?: number
   latency_ms: number
   ttft_ms: number
   tps: number

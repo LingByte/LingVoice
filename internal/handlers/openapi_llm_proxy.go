@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/internal/models"
+	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/llm"
 	"github.com/LingByte/LingVoice/pkg/middleware"
 	"github.com/gin-gonic/gin"
@@ -25,6 +26,13 @@ func credentialUserIDString(userID int) string {
 		return ""
 	}
 	return strconv.Itoa(userID)
+}
+
+func openapiQuotaGroupRatio(cred *models.Credential) float64 {
+	if cred == nil || config.GlobalConfig == nil {
+		return 1
+	}
+	return config.GlobalConfig.OpenAPIQuotaGroupRatio(cred.Group)
 }
 
 func listLLMChannelsOrdered(db *gorm.DB, group, protocol string) ([]models.LLMChannel, error) {
@@ -52,6 +60,83 @@ func listLLMChannelsOrdered(db *gorm.DB, group, protocol string) ([]models.LLMCh
 		return nil, errors.New("no_llm_channel")
 	}
 	return out, nil
+}
+
+func extractRelayModelFromJSONBody(body []byte) string {
+	var v struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(v.Model)
+}
+
+// listLLMChannelsForRelay 若凭证分组 + model 在 llm_abilities 中有启用行，则按能力优先级选渠道；否则回退为分组下全量渠道列表。
+// model 为空时直接回退。若存在能力定义但无可用渠道（协议/key 等），返回 no_llm_channel。
+func listLLMChannelsForRelay(db *gorm.DB, cred *models.Credential, protocol, model string) ([]models.LLMChannel, error) {
+	model = strings.TrimSpace(model)
+	g := effectiveCredentialLLMGroup(cred)
+	proto := strings.ToLower(strings.TrimSpace(protocol))
+	if proto == "" {
+		proto = models.LLMChannelProtocolOpenAI
+	}
+	if model == "" {
+		return listLLMChannelsOrdered(db, cred.Group, proto)
+	}
+	var cnt int64
+	if err := db.Model(&models.LLMAbility{}).
+		Where("`group` = ? AND model = ? AND enabled = ?", g, model, true).
+		Count(&cnt).Error; err != nil {
+		return nil, err
+	}
+	if cnt == 0 {
+		return listLLMChannelsOrdered(db, cred.Group, proto)
+	}
+	var chs []models.LLMChannel
+	q := db.Model(&models.LLMChannel{}).
+		Joins("INNER JOIN llm_abilities ON llm_abilities.channel_id = llm_channels.id AND llm_abilities.`group` = ? AND llm_abilities.model = ? AND llm_abilities.enabled = ?", g, model, true).
+		Where("llm_channels.status = ? AND llm_channels.protocol = ?", 1, proto).
+		Order("llm_abilities.priority DESC, llm_abilities.weight DESC, llm_channels.id ASC")
+	if err := q.Find(&chs).Error; err != nil {
+		return nil, err
+	}
+	var out []models.LLMChannel
+	for i := range chs {
+		if strings.TrimSpace(chs[i].Key) != "" {
+			out = append(out, chs[i])
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("no_llm_channel")
+	}
+	return out, nil
+}
+
+// effectiveCredentialLLMGroup 与 listLLMChannelsOrdered 一致：空分组按 default 选渠道。
+func effectiveCredentialLLMGroup(cred *models.Credential) string {
+	if cred == nil {
+		return "default"
+	}
+	g := strings.TrimSpace(cred.Group)
+	if g == "" {
+		return "default"
+	}
+	return g
+}
+
+// openAINoLLMChannelResponse 503：凭证能鉴权，但当前分组下没有可用的 OpenAI 协议 LLM 渠道。
+func openAINoLLMChannelResponse(cred *models.Credential) gin.H {
+	g := effectiveCredentialLLMGroup(cred)
+	return gin.H{
+		"error": gin.H{
+			"message": "No active OpenAI-protocol LLM channel for credential group",
+			"type":    "api_error",
+			"code":    "model_not_found",
+			"param":   g,
+		},
+		"credential_group": g,
+	}
 }
 
 func llmChannelsToUpstream(chs []models.LLMChannel) []llm.UpstreamChannel {
@@ -121,19 +206,50 @@ func anthropicStreamAttempts(ch models.LLMChannel, cap *llm.AnthropicStreamCaptu
 	}}
 }
 
-func llmCredDecrementQuota(db *gorm.DB, cred *models.Credential) {
+func llmCredDecrementQuota(db *gorm.DB, cred *models.Credential, delta int) {
 	if cred == nil || db == nil {
+		return
+	}
+	if delta < 1 {
 		return
 	}
 	if cred.UnlimitedQuota {
 		_ = db.Model(&models.Credential{}).Where("id = ?", cred.Id).
-			Update("used_quota", gorm.Expr("used_quota + ?", 1)).Error
+			Update("used_quota", gorm.Expr("used_quota + ?", delta)).Error
 		return
 	}
 	_ = db.Model(&models.Credential{}).Where("id = ? AND remain_quota > ?", cred.Id, 0).
-		Update("remain_quota", gorm.Expr("remain_quota - ?", 1)).Error
+		Update("remain_quota", gorm.Expr("remain_quota - ?", delta)).Error
 	_ = db.Model(&models.Credential{}).Where("id = ?", cred.Id).
-		Update("used_quota", gorm.Expr("used_quota + ?", 1)).Error
+		Update("used_quota", gorm.Expr("used_quota + ?", delta)).Error
+}
+
+// llmUserQuotaApply OpenAPI 成功扣减凭证额度后，同步用户表 remain_quota / used_quota（与凭证相同 delta、相同无限策略）。
+func llmUserQuotaApply(db *gorm.DB, userID int, delta int) {
+	if db == nil || userID <= 0 {
+		return
+	}
+	if delta < 1 {
+		return
+	}
+	var row models.User
+	if err := db.Select("id", "unlimited_quota").Where("id = ?", userID).First(&row).Error; err != nil {
+		return
+	}
+	if row.UnlimitedQuota {
+		_ = db.Model(&models.User{}).Where("id = ?", userID).
+			Update("used_quota", gorm.Expr("used_quota + ?", delta)).Error
+		return
+	}
+	_ = db.Model(&models.User{}).Where("id = ? AND remain_quota > ?", userID, 0).
+		Update("remain_quota", gorm.Expr("remain_quota - ?", delta)).Error
+	_ = db.Model(&models.User{}).Where("id = ?", userID).
+		Update("used_quota", gorm.Expr("used_quota + ?", delta)).Error
+}
+
+func llmCredAndUserDecrementQuota(db *gorm.DB, cred *models.Credential, delta int) {
+	llmCredDecrementQuota(db, cred, delta)
+	llmUserQuotaApply(db, cred.UserId, delta)
 }
 
 // openAPIOpenAIChatCompletions 透明转发；非流式按渠道优先级重试并记录 channel_attempts。
@@ -155,15 +271,9 @@ func (h *Handlers) openAPIOpenAIChatCompletions(c *gin.Context) {
 	meta := openapiUsageEmitMeta(c, cred)
 
 	if probe.Stream {
-		channels, err := listLLMChannelsOrdered(h.db, cred.Group, models.LLMChannelProtocolOpenAI)
+		channels, err := listLLMChannelsForRelay(h.db, cred, models.LLMChannelProtocolOpenAI, extractRelayModelFromJSONBody(body))
 		if err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"error": gin.H{
-					"message": "No active OpenAI-protocol LLM channel for credential group",
-					"type":    "api_error",
-					"code":    "model_not_found",
-				},
-			})
+			c.JSON(http.StatusServiceUnavailable, openAINoLLMChannelResponse(cred))
 			llm.EmitOpenAPIOpenAIUsageFailure(body, nil, meta, "No active OpenAI-protocol LLM channel for credential group")
 			return
 		}
@@ -188,8 +298,19 @@ func (h *Handlers) openAPIOpenAIChatCompletions(c *gin.Context) {
 			return
 		}
 		if streamOK {
-			llmCredDecrementQuota(h.db, cred)
-			llm.EmitOpenAPIOpenAIUsageStreamSuccess(streamBody, meta, cap, ch.Id, channelBaseURLString(&ch), openAIStreamAttempts(ch, cap, true))
+			u := OpenAIUsageNumbers{
+				Model:            strings.TrimSpace(cap.Model),
+				PromptTokens:     cap.PromptTokens,
+				CompletionTokens: cap.CompletionTokens,
+				TotalTokens:      cap.TotalTokens,
+				CachedPrompt:     cap.CachedPrompt,
+			}
+			if u.Model == "" {
+				u.Model = extractRelayModelFromJSONBody(streamBody)
+			}
+			d := QuotaDeltaOpenAI(h.db, u.Model, u, openapiQuotaGroupRatio(cred))
+			llmCredAndUserDecrementQuota(h.db, cred, d)
+			llm.EmitOpenAPIOpenAIUsageStreamSuccess(streamBody, meta, cap, ch.Id, channelBaseURLString(&ch), openAIStreamAttempts(ch, cap, true), d)
 		} else {
 			extra := "upstream_http"
 			if cap != nil && cap.StatusCode > 0 {
@@ -204,15 +325,9 @@ func (h *Handlers) openAPIOpenAIChatCompletions(c *gin.Context) {
 		return
 	}
 
-	channels, err := listLLMChannelsOrdered(h.db, cred.Group, models.LLMChannelProtocolOpenAI)
+	channels, err := listLLMChannelsForRelay(h.db, cred, models.LLMChannelProtocolOpenAI, extractRelayModelFromJSONBody(body))
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error": gin.H{
-				"message": "No active OpenAI-protocol LLM channel for credential group",
-				"type":    "api_error",
-				"code":    "model_not_found",
-			},
-		})
+		c.JSON(http.StatusServiceUnavailable, openAINoLLMChannelResponse(cred))
 		llm.EmitOpenAPIOpenAIUsageFailure(body, nil, meta, "No active OpenAI-protocol LLM channel for credential group")
 		return
 	}
@@ -222,8 +337,13 @@ func (h *Handlers) openAPIOpenAIChatCompletions(c *gin.Context) {
 	_, _ = c.Writer.Write(res.FinalBody)
 
 	if !res.AllFailed && res.FinalStatus >= 200 && res.FinalStatus < 300 {
-		llmCredDecrementQuota(h.db, cred)
-		llm.EmitOpenAPIOpenAIUsageSuccess(body, res, meta)
+		u := parseOpenAIUsageFromResponseJSON(res.FinalBody)
+		if strings.TrimSpace(u.Model) == "" {
+			u.Model = extractRelayModelFromJSONBody(body)
+		}
+		d := QuotaDeltaOpenAI(h.db, u.Model, u, openapiQuotaGroupRatio(cred))
+		llmCredAndUserDecrementQuota(h.db, cred, d)
+		llm.EmitOpenAPIOpenAIUsageSuccess(body, res, meta, d)
 	} else {
 		llm.EmitOpenAPIOpenAIUsageFailure(body, res, meta, "")
 	}
@@ -249,7 +369,7 @@ func (h *Handlers) openAPIAnthropicMessages(c *gin.Context) {
 	meta := openapiUsageEmitMeta(c, cred)
 
 	if probe.Stream {
-		channels, err := listLLMChannelsOrdered(h.db, cred.Group, models.LLMChannelProtocolAnthropic)
+		channels, err := listLLMChannelsForRelay(h.db, cred, models.LLMChannelProtocolAnthropic, extractRelayModelFromJSONBody(body))
 		if err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{
 				"type":  "error",
@@ -278,8 +398,22 @@ func (h *Handlers) openAPIAnthropicMessages(c *gin.Context) {
 			return
 		}
 		if streamOK {
-			llmCredDecrementQuota(h.db, cred)
-			llm.EmitOpenAPIAnthropicUsageStreamSuccess(body, meta, cap, ch.Id, channelBaseURLString(&ch), anthropicStreamAttempts(ch, cap, true))
+			tot := cap.TotalTokens
+			if tot == 0 {
+				tot = cap.PromptTokens + cap.CompletionTokens
+			}
+			u := OpenAIUsageNumbers{
+				Model:            strings.TrimSpace(cap.Model),
+				PromptTokens:     cap.PromptTokens,
+				CompletionTokens: cap.CompletionTokens,
+				TotalTokens:      tot,
+			}
+			if u.Model == "" {
+				u.Model = extractRelayModelFromJSONBody(body)
+			}
+			d := QuotaDeltaOpenAI(h.db, u.Model, u, openapiQuotaGroupRatio(cred))
+			llmCredAndUserDecrementQuota(h.db, cred, d)
+			llm.EmitOpenAPIAnthropicUsageStreamSuccess(body, meta, cap, ch.Id, channelBaseURLString(&ch), anthropicStreamAttempts(ch, cap, true), d)
 		} else {
 			extra := "upstream_http"
 			if cap != nil && cap.StatusCode > 0 {
@@ -294,7 +428,7 @@ func (h *Handlers) openAPIAnthropicMessages(c *gin.Context) {
 		return
 	}
 
-	channels, err := listLLMChannelsOrdered(h.db, cred.Group, models.LLMChannelProtocolAnthropic)
+	channels, err := listLLMChannelsForRelay(h.db, cred, models.LLMChannelProtocolAnthropic, extractRelayModelFromJSONBody(body))
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"type":  "error",
@@ -309,8 +443,10 @@ func (h *Handlers) openAPIAnthropicMessages(c *gin.Context) {
 	_, _ = c.Writer.Write(res.FinalBody)
 
 	if !res.AllFailed && res.FinalStatus >= 200 && res.FinalStatus < 300 {
-		llmCredDecrementQuota(h.db, cred)
-		llm.EmitOpenAPIAnthropicUsageSuccess(body, res, meta)
+		u := ParseAnthropicUsageFromResponseJSON(res.FinalBody, extractRelayModelFromJSONBody(body))
+		d := QuotaDeltaOpenAI(h.db, u.Model, u, openapiQuotaGroupRatio(cred))
+		llmCredAndUserDecrementQuota(h.db, cred, d)
+		llm.EmitOpenAPIAnthropicUsageSuccess(body, res, meta, d)
 	} else {
 		llm.EmitOpenAPIAnthropicUsageFailure(body, res, meta, "")
 	}

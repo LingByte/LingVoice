@@ -37,8 +37,12 @@ func parseUintParam(c *gin.Context, name string) (uint, bool) {
 	if s == "" {
 		return 0, false
 	}
-	n, err := strconv.ParseUint(s, 10, 32)
+	n, err := strconv.ParseUint(s, 10, 64)
 	if err != nil || n == 0 {
+		return 0, false
+	}
+	max := uint64(^uint(0))
+	if n > max {
 		return 0, false
 	}
 	return uint(n), true
@@ -97,8 +101,12 @@ func parseQueryUint(c *gin.Context, name string) (uint, bool) {
 	if s == "" {
 		return 0, false
 	}
-	n, err := strconv.ParseUint(s, 10, 32)
+	n, err := strconv.ParseUint(s, 10, 64)
 	if err != nil || n == 0 {
+		return 0, false
+	}
+	max := uint64(^uint(0))
+	if n > max {
 		return 0, false
 	}
 	return uint(n), true

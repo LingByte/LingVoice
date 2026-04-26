@@ -7,9 +7,9 @@ export type OpenAIModelRow = {
   owned_by?: string
 }
 
-export async function fetchOpenAPIModels(apiKey: string): Promise<OpenAIModelRow[]> {
+export async function fetchV1Models(apiKey: string): Promise<OpenAIModelRow[]> {
   const base = getApiBaseURL().replace(/\/$/, '')
-  const r = await fetch(`${base}/api/openapi/v1/models`, {
+  const r = await fetch(`${base}/v1/models`, {
     headers: { Authorization: `Bearer ${apiKey.trim()}` },
   })
   if (!r.ok) {
@@ -22,7 +22,7 @@ export async function fetchOpenAPIModels(apiKey: string): Promise<OpenAIModelRow
 
 export type AgentStreamEvent = { event: string; data: Record<string, unknown> }
 
-export async function streamOpenAPIAgentChat(params: {
+export async function streamV1AgentChat(params: {
   apiKey: string
   model: string
   input: string
@@ -33,7 +33,7 @@ export async function streamOpenAPIAgentChat(params: {
   onEvent: (ev: AgentStreamEvent) => void
 }): Promise<void> {
   const base = getApiBaseURL().replace(/\/$/, '')
-  const r = await fetch(`${base}/api/openapi/v1/agent/chat/stream`, {
+  const r = await fetch(`${base}/v1/agent/chat/stream`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${params.apiKey.trim()}`,
@@ -76,7 +76,7 @@ export async function streamOpenAPIAgentChat(params: {
   }
 }
 
-export async function streamOpenAIChatCompletion(params: {
+export async function streamV1ChatCompletion(params: {
   apiKey: string
   model: string
   messages: { role: 'user' | 'assistant' | 'system'; content: string }[]
@@ -84,7 +84,7 @@ export async function streamOpenAIChatCompletion(params: {
   onDelta: (chunk: string) => void
 }): Promise<void> {
   const base = getApiBaseURL().replace(/\/$/, '')
-  const r = await fetch(`${base}/api/openapi/v1/chat/completions`, {
+  const r = await fetch(`${base}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${params.apiKey.trim()}`,

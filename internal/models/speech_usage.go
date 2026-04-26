@@ -31,6 +31,7 @@ type SpeechUsage struct {
 	AudioInputBytes  int64     `json:"audio_input_bytes"`
 	AudioOutputBytes int64     `json:"audio_output_bytes"`
 	TextInputChars   int       `json:"text_input_chars"`
+	QuotaDelta       int       `json:"quota_delta" gorm:"default:0"` // 本次从凭证扣除的额度单位（OpenAPI 语音计费）
 	UserAgent        string    `json:"user_agent" gorm:"type:varchar(500)"`
 	IPAddress        string    `json:"ip_address" gorm:"type:varchar(45)"`
 	RequestedAt      time.Time `json:"requested_at" gorm:"not null;index"`

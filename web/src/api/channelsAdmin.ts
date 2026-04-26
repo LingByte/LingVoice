@@ -34,6 +34,16 @@ export type LLMChannelInfo = {
   multi_key_mode: 'random' | 'polling' | string
 }
 
+/** GET /api/llm-channels/catalog 脱敏项（无 key） */
+export type LLMChannelCatalogRow = {
+  id: number
+  name: string
+  group: string
+  protocol?: string
+  models: string
+  status: number
+}
+
 export type LLMChannelRow = {
   id: number
   protocol?: string
@@ -85,6 +95,14 @@ export type LLMChannelUpsert = {
 
 export async function listLLMChannels(page: number, pageSize: number, group?: string) {
   const r = await get<Paginated<LLMChannelRow>>(llm, {
+    params: { page, pageSize, ...(group ? { group } : {}) },
+  })
+  return assertOk(r)
+}
+
+/** 已登录任意用户：不含 API Key，供凭证配置等 */
+export async function listLLMChannelCatalog(page: number, pageSize: number, group?: string) {
+  const r = await get<Paginated<LLMChannelCatalogRow>>(`${llm}/catalog`, {
     params: { page, pageSize, ...(group ? { group } : {}) },
   })
   return assertOk(r)

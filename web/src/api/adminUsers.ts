@@ -1,9 +1,9 @@
 import { assertOk, type Paginated } from '@/api/mailAdmin'
 import { get, patch } from '@/utils/request'
 
-/** 与后端 models.User JSON 对齐（camelCase） */
+/** 与后端管理端用户 JSON 对齐；id 为十进制字符串，避免大整数精度丢失 */
 export interface AdminUserRow {
-  id: number
+  id: string
   email: string
   displayName?: string
   status: string
@@ -12,6 +12,9 @@ export interface AdminUserRow {
   source?: string
   emailVerified?: boolean
   loginCount?: number
+  remainQuota?: number
+  usedQuota?: number
+  unlimitedQuota?: boolean
   createdAt?: string
   updatedAt?: string
   lastLogin?: string
@@ -41,8 +44,8 @@ export async function listAdminUsers(params: AdminUserListParams): Promise<Pagin
   return assertOk(r)
 }
 
-export async function getAdminUser(id: number): Promise<AdminUserRow> {
-  const r = await get<{ user: AdminUserRow }>(`/api/admin/users/${id}`)
+export async function getAdminUser(id: string): Promise<AdminUserRow> {
+  const r = await get<{ user: AdminUserRow }>(`/api/admin/users/${encodeURIComponent(id)}`)
   const d = assertOk(r)
   return d.user
 }
@@ -52,10 +55,13 @@ export type AdminPatchUserBody = {
   role?: string
   display_name?: string
   locale?: string
+  remain_quota?: number
+  used_quota?: number
+  unlimited_quota?: boolean
 }
 
-export async function patchAdminUser(id: number, body: AdminPatchUserBody): Promise<AdminUserRow> {
-  const r = await patch<{ user: AdminUserRow }>(`/api/admin/users/${id}`, body)
+export async function patchAdminUser(id: string, body: AdminPatchUserBody): Promise<AdminUserRow> {
+  const r = await patch<{ user: AdminUserRow }>(`/api/admin/users/${encodeURIComponent(id)}`, body)
   const d = assertOk(r)
   return d.user
 }

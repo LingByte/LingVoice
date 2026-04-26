@@ -90,6 +90,10 @@ func (h *Handlers) recordOpenAPIASRUsage(c *gin.Context, started time.Time, cred
 	if audioInBytes > 0 {
 		reqH["audio_bytes"] = audioInBytes
 	}
+	latMs := time.Since(started).Milliseconds()
+	cfg := speechQuotaCfg()
+	bill := speechBillableSeconds(latMs, audioInBytes, cfg.ASRInputBytesPerSec)
+	delta := speechOpenAPIQuotaDelta(success, cred.Group, bill, cfg.ASRUnitsPerBillableSecond, cfg.MinDeltaOnSuccess)
 	row := models.SpeechUsage{
 		ID:               newSpeechUsageRowID(),
 		RequestID:        newSpeechUsageRowID(),
@@ -102,17 +106,23 @@ func (h *Handlers) recordOpenAPIASRUsage(c *gin.Context, started time.Time, cred
 		RequestType:      "openapi_asr_transcribe",
 		RequestContent:   speechUsageSnapJSON(reqH),
 		ResponseContent:  speechUsageSnapJSON(respPayload),
-		LatencyMs:        time.Since(started).Milliseconds(),
+		LatencyMs:        latMs,
 		StatusCode:       httpCode,
 		Success:          success,
 		ErrorMessage:     strings.TrimSpace(errMsg),
 		AudioInputBytes:  audioInBytes,
+		QuotaDelta:       delta,
 		UserAgent:        c.Request.UserAgent(),
 		IPAddress:        c.ClientIP(),
 		RequestedAt:      started,
 		CompletedAt:      time.Now(),
 	}
-	_ = h.db.Create(&row).Error
+	if err := h.db.Create(&row).Error; err != nil {
+		return
+	}
+	if delta >= 1 {
+		llmCredAndUserDecrementQuota(h.db, cred, delta)
+	}
 }
 
 func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred *models.Credential, ch *models.TTSChannel, httpCode int, success bool, errMsg string, body *openAPITTSSynthesizeBody, respPayload gin.H, audioOutBytes int64, textChars int) {
@@ -126,6 +136,10 @@ func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred
 		grp = ch.Group
 		chid = int(ch.ID)
 	}
+	latMs := time.Since(started).Milliseconds()
+	cfg := speechQuotaCfg()
+	bill := speechBillableSeconds(latMs, audioOutBytes, cfg.TTSOutputBytesPerSec)
+	delta := speechOpenAPIQuotaDelta(success, cred.Group, bill, cfg.TTSUnitsPerBillableSecond, cfg.MinDeltaOnSuccess)
 	row := models.SpeechUsage{
 		ID:               newSpeechUsageRowID(),
 		RequestID:        newSpeechUsageRowID(),
@@ -138,18 +152,24 @@ func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred
 		RequestType:      "openapi_tts_synthesize",
 		RequestContent:   speechUsageSnapJSON(summarizeTTSRequestForUsage(body)),
 		ResponseContent:  speechUsageSnapJSON(respPayload),
-		LatencyMs:        time.Since(started).Milliseconds(),
+		LatencyMs:        latMs,
 		StatusCode:       httpCode,
 		Success:          success,
 		ErrorMessage:     strings.TrimSpace(errMsg),
 		AudioOutputBytes: audioOutBytes,
 		TextInputChars:   textChars,
+		QuotaDelta:       delta,
 		UserAgent:        c.Request.UserAgent(),
 		IPAddress:        c.ClientIP(),
 		RequestedAt:      started,
 		CompletedAt:      time.Now(),
 	}
-	_ = h.db.Create(&row).Error
+	if err := h.db.Create(&row).Error; err != nil {
+		return
+	}
+	if delta >= 1 {
+		llmCredAndUserDecrementQuota(h.db, cred, delta)
+	}
 }
 
 // listSpeechUsage 分页查询语音用量（管理员）。

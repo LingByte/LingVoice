@@ -1,11 +1,13 @@
 import {
   Button,
   Input,
+  InputNumber,
   Message,
   Modal,
   Pagination,
   Select,
   Spin,
+  Switch,
   Table,
   Typography,
 } from '@arco-design/web-react'
@@ -85,6 +87,9 @@ export function AdminUsersPage() {
   const [fRole, setFRole] = useState('user')
   const [fDisplay, setFDisplay] = useState('')
   const [fLocale, setFLocale] = useState('')
+  const [fRemainQuota, setFRemainQuota] = useState(0)
+  const [fUsedQuota, setFUsedQuota] = useState(0)
+  const [fUnlimitedQuota, setFUnlimitedQuota] = useState(false)
 
   const listParams = useMemo(
     () => ({
@@ -137,6 +142,9 @@ export function AdminUsersPage() {
     setFRole(row.role || 'user')
     setFDisplay(row.displayName ?? '')
     setFLocale(row.locale ?? '')
+    setFRemainQuota(row.remainQuota ?? 0)
+    setFUsedQuota(row.usedQuota ?? 0)
+    setFUnlimitedQuota(Boolean(row.unlimitedQuota))
     setEditOpen(true)
   }
 
@@ -149,6 +157,9 @@ export function AdminUsersPage() {
     if (disp && disp !== (editRow.displayName ?? '').trim()) body.display_name = disp
     const loc = fLocale.trim()
     if (loc && loc !== (editRow.locale ?? '').trim()) body.locale = loc
+    if (fRemainQuota !== (editRow.remainQuota ?? 0)) body.remain_quota = fRemainQuota
+    if (fUsedQuota !== (editRow.usedQuota ?? 0)) body.used_quota = fUsedQuota
+    if (fUnlimitedQuota !== Boolean(editRow.unlimitedQuota)) body.unlimited_quota = fUnlimitedQuota
 
     if (Object.keys(body).length === 0) {
       Message.warning('没有修改任何字段')
@@ -173,7 +184,7 @@ export function AdminUsersPage() {
       title: 'ID',
       dataIndex: 'id',
       width: 120,
-      render: (v: number) => <CellEllipsis className="font-mono text-[12px] tabular-nums" text={String(v)} />,
+      render: (v: string) => <CellEllipsis className="font-mono text-[12px] tabular-nums" text={v || '—'} />,
     },
     {
       title: '邮箱',
@@ -198,6 +209,18 @@ export function AdminUsersPage() {
       dataIndex: 'status',
       width: 88,
       render: (v: string) => <CellEllipsis text={v ?? ''} />,
+    },
+    {
+      title: '额度',
+      width: 120,
+      render: (_: unknown, r: AdminUserRow) =>
+        r.unlimitedQuota ? (
+          <span className="whitespace-nowrap text-[12px]">无限</span>
+        ) : (
+          <span className="font-mono text-[12px] tabular-nums">
+            余 {r.remainQuota ?? 0} / 用 {r.usedQuota ?? 0}
+          </span>
+        ),
     },
     {
       title: '验证',
@@ -237,7 +260,7 @@ export function AdminUsersPage() {
         </Title>
       </div>
       <Paragraph type="secondary" className="!mb-4 !mt-0 max-w-3xl text-[13px]">
-        管理员可检索用户并修改状态、显示名与语言；变更角色仅超级管理员可用，且不能在前端修改超级管理员账号（由后端校验）。
+        管理员可检索用户并修改状态、显示名、语言及用户级额度（与 new-api 用户配额字段对齐；OpenAPI 实际扣减仍以密钥凭证为准）。变更角色仅超级管理员可用。
       </Paragraph>
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
@@ -325,6 +348,29 @@ export function AdminUsersPage() {
                 语言 locale
               </Text>
               <Input value={fLocale} onChange={setFLocale} placeholder="如 zh-CN" />
+            </div>
+            <div className="rounded border border-[var(--color-border-2)] p-3">
+              <Text className="mb-2 block text-[13px] font-medium">用户额度（展示/预留）</Text>
+              <div className="mb-2 flex items-center gap-2">
+                <Text type="secondary" className="shrink-0 text-[12px]">
+                  无限额度
+                </Text>
+                <Switch checked={fUnlimitedQuota} onChange={setFUnlimitedQuota} />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Text type="secondary" className="mb-1 block text-[12px]">
+                    remain_quota
+                  </Text>
+                  <InputNumber min={0} value={fRemainQuota} onChange={(v) => setFRemainQuota(Number(v) || 0)} />
+                </div>
+                <div>
+                  <Text type="secondary" className="mb-1 block text-[12px]">
+                    used_quota
+                  </Text>
+                  <InputNumber min={0} value={fUsedQuota} onChange={(v) => setFUsedQuota(Number(v) || 0)} />
+                </div>
+              </div>
             </div>
           </div>
         ) : null}

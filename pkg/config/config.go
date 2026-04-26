@@ -4,6 +4,7 @@ package config
 // SPDX-License-Identifier: AGPL-3.0
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
 	"os"
@@ -80,6 +81,21 @@ type ServicesConfig struct {
 	LLM         LLMConfig         `mapstructure:"llm"`
 	Storage     StorageConfig     `mapstructure:"storage"`
 	Translation TranslationConfig `mapstructure:"translation"`
+	// OpenAPIQuotaGroupRatios maps credential `group` (see models.Credential.Group) to a billing multiplier, same role as new-api 分组倍率. Loaded from OPENAPI_QUOTA_GROUP_RATIOS JSON; unknown group falls back to key "default" or 1.0.
+	OpenAPIQuotaGroupRatios map[string]float64 `mapstructure:"-"`
+	// SpeechQuota OpenAPI ASR/TTS 成功调用后的额度扣减（与 LLM 相同整数额度单位；按「墙钟 + 字节估算时长」取 max 再乘 rate，再乘分组倍率）。
+	SpeechQuota SpeechQuotaConfig `mapstructure:"-"`
+}
+
+// SpeechQuotaConfig 语音 OpenAPI 扣费；时长单位为秒；rate 为每「计费秒」扣多少额度单位。
+type SpeechQuotaConfig struct {
+	ASRUnitsPerBillableSecond float64 `mapstructure:"-"` // OPENAPI_SPEECH_ASR_UNITS_PER_SEC，默认 1
+	TTSUnitsPerBillableSecond float64 `mapstructure:"-"` // OPENAPI_SPEECH_TTS_UNITS_PER_SEC，默认 1
+	// ASRInputBytesPerSec 由输入音频字节估算时长（如 32000≈16kHz 单声道 16bit PCM）；0 表示不用字节只用墙钟。
+	ASRInputBytesPerSec int64 `mapstructure:"-"` // OPENAPI_SPEECH_ASR_BYTES_PER_SEC 默认 32000
+	// TTSOutputBytesPerSec 由输出音频字节估算播放时长；0 表示不用输出字节只用墙钟。
+	TTSOutputBytesPerSec int64 `mapstructure:"-"` // OPENAPI_SPEECH_TTS_BYTES_PER_SEC 默认 16000
+	MinDeltaOnSuccess int `mapstructure:"-"` // OPENAPI_SPEECH_QUOTA_MIN_ON_SUCCESS 默认 1
 }
 
 // TranslationConfig optional third-party translation (MyMemory).
@@ -214,6 +230,14 @@ func Load() error {
 			Translation: TranslationConfig{
 				MyMemoryEmail: getStringOrDefault("MYMEMORY_EMAIL", ""),
 			},
+			OpenAPIQuotaGroupRatios: parseOpenAPIQuotaGroupRatiosJSON(getStringOrDefault("OPENAPI_QUOTA_GROUP_RATIOS", "")),
+			SpeechQuota: SpeechQuotaConfig{
+				ASRUnitsPerBillableSecond:  getFloatOrDefault("OPENAPI_SPEECH_ASR_UNITS_PER_SEC", 1),
+				TTSUnitsPerBillableSecond:  getFloatOrDefault("OPENAPI_SPEECH_TTS_UNITS_PER_SEC", 1),
+				ASRInputBytesPerSec:        getInt64EnvParsed("OPENAPI_SPEECH_ASR_BYTES_PER_SEC", 32000),
+				TTSOutputBytesPerSec:       getInt64EnvParsed("OPENAPI_SPEECH_TTS_BYTES_PER_SEC", 16000),
+				MinDeltaOnSuccess:          getIntOrDefault("OPENAPI_SPEECH_QUOTA_MIN_ON_SUCCESS", 1),
+			},
 		},
 		Middleware: loadMiddlewareConfig(),
 	}
@@ -266,6 +290,19 @@ func getIntOrDefault(key string, defaultValue int) int {
 		return defaultValue
 	}
 	return int(value)
+}
+
+// getInt64EnvParsed parses int64 from env; empty string returns default; allows explicit 0 (unlike getIntOrDefault).
+func getInt64EnvParsed(key string, defaultValue int64) int64 {
+	s := strings.TrimSpace(utils.GetEnv(key))
+	if s == "" {
+		return defaultValue
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return defaultValue
+	}
+	return n
 }
 
 // getFloatOrDefault gets float environment variable value, returns default if empty
@@ -449,5 +486,40 @@ func (a *AuthConfig) RefreshTokenTTL() time.Duration {
 		h = 720
 	}
 	return time.Duration(h) * time.Hour
+}
+
+func parseOpenAPIQuotaGroupRatiosJSON(raw string) map[string]float64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var m map[string]float64
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		log.Printf("OPENAPI_QUOTA_GROUP_RATIOS: invalid JSON, ignored: %v", err)
+		return nil
+	}
+	return m
+}
+
+// OpenAPIQuotaGroupRatio returns the billing multiplier for an API credential group (new-api-style 分组倍率). Defaults to 1.
+func (c *Config) OpenAPIQuotaGroupRatio(group string) float64 {
+	if c == nil {
+		return 1
+	}
+	m := c.Services.OpenAPIQuotaGroupRatios
+	if len(m) == 0 {
+		return 1
+	}
+	g := strings.TrimSpace(group)
+	if g == "" {
+		g = "default"
+	}
+	if v, ok := m[g]; ok && v > 0 {
+		return v
+	}
+	if v, ok := m["default"]; ok && v > 0 {
+		return v
+	}
+	return 1
 }
 

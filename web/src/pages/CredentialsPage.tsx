@@ -20,12 +20,12 @@ import {
 import dayjs, { type Dayjs } from 'dayjs'
 import type { CSSProperties } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { listLLMChannels, type LLMChannelRow } from '@/api/channelsAdmin'
 import {
   createCredential,
   deleteCredential,
   listCredentialGroups,
   listCredentials,
+  listLlmAvailableModelsForGroup,
   updateCredential,
   type CredentialCreateBody,
   type CredentialCreateResult,
@@ -69,18 +69,6 @@ function dayjsToExpiredUnix(d: unknown): number {
   return x.endOf('day').unix()
 }
 
-function splitModelsFromChannelField(s: string): string[] {
-  const t = String(s || '')
-    .replace(/\r/g, '')
-    .replace(/；/g, ',')
-    .replace(/，/g, ',')
-    .replace(/\n/g, ',')
-  return t
-    .split(',')
-    .map((x) => x.trim())
-    .filter(Boolean)
-}
-
 /** 从凭证 openapi_model_catalog 解析出已选模型 id 列表 */
 function parseCatalogToModelIds(cat: unknown): string[] {
   if (cat == null || cat === '') return []
@@ -107,17 +95,6 @@ function parseCatalogToModelIds(cat: unknown): string[] {
   return []
 }
 
-function openAIChannelModelOptions(channels: LLMChannelRow[]): { label: string; value: string }[] {
-  const set = new Set<string>()
-  for (const ch of channels) {
-    if (String(ch.protocol || 'openai').toLowerCase() !== 'openai') continue
-    for (const id of splitModelsFromChannelField(ch.models || '')) {
-      set.add(id)
-    }
-  }
-  return [...set].sort().map((id) => ({ label: id, value: id }))
-}
-
 export function CredentialsPage() {
   const [loading, setLoading] = useState(false)
   const [rows, setRows] = useState<CredentialRow[]>([])
@@ -134,33 +111,41 @@ export function CredentialsPage() {
   const [editForm] = Form.useForm()
   const [editSaving, setEditSaving] = useState(false)
   const [editing, setEditing] = useState<CredentialRow | null>(null)
-  const [catalogOptions, setCatalogOptions] = useState<{ label: string; value: string }[]>([])
-  const [catalogOptionsLoading, setCatalogOptionsLoading] = useState(false)
+  const [apiCatalogModels, setApiCatalogModels] = useState<string[]>([])
+  const [apiCatalogLoading, setApiCatalogLoading] = useState(false)
+  const [manualModelIdDraft, setManualModelIdDraft] = useState('')
   const catalogIdsWatch = Form.useWatch('openapi_model_catalog_ids', editForm) as string[] | undefined
-  const catalogSelectMerged = useMemo(() => {
-    const map = new Map<string, { label: string; value: string }>()
-    for (const o of catalogOptions) {
-      map.set(o.value, o)
-    }
+
+  const catalogSelectOptions = useMemo(() => {
+    const apiSet = new Set(apiCatalogModels)
+    const opts: { label: string; value: string }[] = apiCatalogModels.map((id) => ({ label: id, value: id }))
     for (const id of catalogIdsWatch ?? []) {
       const t = String(id).trim()
-      if (t && !map.has(t)) {
-        map.set(t, { label: t, value: t })
+      if (!t) continue
+      if (!apiSet.has(t)) {
+        opts.push({ label: `${t}（未在接口列表）`, value: t })
       }
     }
-    return [...map.values()].sort((a, b) => a.value.localeCompare(b.value))
-  }, [catalogOptions, catalogIdsWatch])
+    const seen = new Set<string>()
+    const dedup: { label: string; value: string }[] = []
+    for (const o of opts) {
+      if (seen.has(o.value)) continue
+      seen.add(o.value)
+      dedup.push(o)
+    }
+    return dedup.sort((a, b) => a.value.localeCompare(b.value))
+  }, [apiCatalogModels, catalogIdsWatch])
 
-  const loadCatalogOptionsForGroup = useCallback(async (group: string | undefined) => {
-    setCatalogOptionsLoading(true)
+  const loadApiCatalogModelsForGroup = useCallback(async (group: string | undefined) => {
+    setApiCatalogLoading(true)
     try {
       const g = group != null && String(group).trim() !== '' ? String(group).trim() : undefined
-      const p = await listLLMChannels(1, 500, g)
-      setCatalogOptions(openAIChannelModelOptions(p.list ?? []))
+      const { models } = await listLlmAvailableModelsForGroup(g)
+      setApiCatalogModels(models)
     } catch {
-      setCatalogOptions([])
+      setApiCatalogModels([])
     } finally {
-      setCatalogOptionsLoading(false)
+      setApiCatalogLoading(false)
     }
   }, [])
 
@@ -241,11 +226,12 @@ export function CredentialsPage() {
       openapi_model_catalog_ids:
         row.kind === 'llm' ? parseCatalogToModelIds(row.openapi_model_catalog) : [],
     })
+    setManualModelIdDraft('')
     setEditOpen(true)
     if (row.kind === 'llm') {
-      void loadCatalogOptionsForGroup(row.group || undefined)
+      void loadApiCatalogModelsForGroup(row.group || undefined)
     } else {
-      setCatalogOptions([])
+      setApiCatalogModels([])
     }
   }
 
@@ -453,7 +439,8 @@ export function CredentialsPage() {
               onClick={() => {
                 setEditOpen(false)
                 setEditing(null)
-                setCatalogOptions([])
+                setApiCatalogModels([])
+                setManualModelIdDraft('')
               }}
             >
               取消
@@ -466,7 +453,8 @@ export function CredentialsPage() {
         onCancel={() => {
           setEditOpen(false)
           setEditing(null)
-          setCatalogOptions([])
+          setApiCatalogModels([])
+          setManualModelIdDraft('')
         }}
         unmountOnExit
         className="credential-drawer"
@@ -481,7 +469,7 @@ export function CredentialsPage() {
               if (!editing || editing.kind !== 'llm') return
               if ('group' in changed) {
                 const g = String(values.group ?? '').trim()
-                void loadCatalogOptionsForGroup(g || undefined)
+                void loadApiCatalogModelsForGroup(g || undefined)
               }
             }}
           >
@@ -523,22 +511,42 @@ export function CredentialsPage() {
               <Switch size="small" />
             </FormItem>
             {editing.kind === 'llm' ? (
-              <FormItem
-                label="OpenAPI 模型目录"
-                field="openapi_model_catalog_ids"
-                className="!mb-0"
-                extra="多选下方候选（来自同分组 OpenAI 协议渠道的模型列表）；可输入新模型 id 回车添加。全部清空则走渠道汇总。"
-              >
-                <Select
-                  mode="multiple"
-                  allowCreate
-                  showSearch
-                  loading={catalogOptionsLoading}
-                  options={catalogSelectMerged}
-                  placeholder="选择或输入模型 id"
-                  size="small"
-                />
-              </FormItem>
+              <>
+                <FormItem
+                  label="OpenAPI 模型目录"
+                  field="openapi_model_catalog_ids"
+                  className="!mb-2"
+                  extra="候选来自接口 GET /api/credentials/llm-available-models（与 /v1/models 无目录时同源：能力表优先）。全部清空则仍走自动汇总。可选手动添加未出现在列表中的上游模型名。"
+                >
+                  <Select
+                    mode="multiple"
+                    showSearch
+                    loading={apiCatalogLoading}
+                    options={catalogSelectOptions}
+                    placeholder="从列表勾选模型"
+                    size="small"
+                  />
+                </FormItem>
+                <FormItem label="手动添加模型 ID" className="!mb-0">
+                  <Input
+                    size="small"
+                    value={manualModelIdDraft}
+                    onChange={setManualModelIdDraft}
+                    placeholder="输入后回车加入已选"
+                    onPressEnter={() => {
+                      const v = manualModelIdDraft.trim()
+                      if (!v) return
+                      const cur = (editForm.getFieldValue('openapi_model_catalog_ids') as string[]) ?? []
+                      if (cur.includes(v)) {
+                        Message.info('已在已选列表中')
+                        return
+                      }
+                      editForm.setFieldsValue({ openapi_model_catalog_ids: [...cur, v] })
+                      setManualModelIdDraft('')
+                    }}
+                  />
+                </FormItem>
+              </>
             ) : null}
           </Form>
         ) : null}

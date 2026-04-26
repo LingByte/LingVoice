@@ -111,6 +111,60 @@ func collectOpenAPIModelIDsFromChannels(chs []models.LLMChannel) []string {
 	return order
 }
 
+// collectOpenAPIAbilityModelsFromGroup 按凭证分组从 llm_abilities × 启用渠道 推导可用模型 id（与 new-api 能力表思路一致）；无行时返回空切片。
+func collectOpenAPIAbilityModelsFromGroup(db *gorm.DB, group, protocol string) ([]string, error) {
+	if db == nil {
+		return nil, nil
+	}
+	group = strings.TrimSpace(group)
+	if group == "" {
+		group = "default"
+	}
+	protocol = strings.TrimSpace(protocol)
+	if protocol == "" {
+		protocol = models.LLMChannelProtocolOpenAI
+	}
+	var out []string
+	err := db.Raw(
+		"SELECT DISTINCT a.model FROM llm_abilities a "+
+			"INNER JOIN llm_channels c ON c.id = a.channel_id AND c.status = 1 AND c.protocol = ? "+
+			"WHERE a.enabled = 1 AND a.`"+"group`"+"` = ? ORDER BY a.model",
+		protocol, group,
+	).Scan(&out).Error
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out, nil
+}
+
+// CollectOpenAILLMModelIDsForGroup 返回某分组下 OpenAPI 可用的模型 id（llm_abilities 优先，否则 OpenAI 渠道 models 汇总）。
+func CollectOpenAILLMModelIDsForGroup(db *gorm.DB, group string) ([]string, error) {
+	if db == nil {
+		return nil, nil
+	}
+	g := strings.TrimSpace(group)
+	if g == "" {
+		g = "default"
+	}
+	var chs []models.LLMChannel
+	q := db.Where("status = ? AND protocol = ? AND `group` = ?", 1, models.LLMChannelProtocolOpenAI, g).
+		Order("(CASE WHEN priority IS NULL THEN 0 ELSE priority END) DESC").Order("id ASC")
+	if err := q.Find(&chs).Error; err != nil {
+		return nil, err
+	}
+	abilityIDs, err := collectOpenAPIAbilityModelsFromGroup(db, g, models.LLMChannelProtocolOpenAI)
+	if err != nil {
+		return nil, err
+	}
+	if len(abilityIDs) > 0 {
+		return abilityIDs, nil
+	}
+	return collectOpenAPIModelIDsFromChannels(chs), nil
+}
+
 func buildOpenAPIModelListForCredential(db *gorm.DB, cred *models.Credential) ([]gin.H, error) {
 	if cred == nil {
 		return nil, nil
@@ -119,17 +173,11 @@ func buildOpenAPIModelListForCredential(db *gorm.DB, cred *models.Credential) ([
 	if cat := parseCredentialOpenAPIModelCatalog(cred.OpenAPIModelCatalogJSON); len(cat) > 0 {
 		ids = cat
 	} else {
-		var chs []models.LLMChannel
-		g := strings.TrimSpace(cred.Group)
-		if g == "" {
-			g = "default"
-		}
-		q := db.Where("status = ? AND protocol = ? AND `group` = ?", 1, models.LLMChannelProtocolOpenAI, g).
-			Order("(CASE WHEN priority IS NULL THEN 0 ELSE priority END) DESC").Order("id ASC")
-		if err := q.Find(&chs).Error; err != nil {
+		var err error
+		ids, err = CollectOpenAILLMModelIDsForGroup(db, cred.Group)
+		if err != nil {
 			return nil, err
 		}
-		ids = collectOpenAPIModelIDsFromChannels(chs)
 	}
 	lim := modelLimitSet(cred)
 	if lim != nil {

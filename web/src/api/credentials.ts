@@ -84,6 +84,15 @@ export async function listCredentialGroups(): Promise<string[]> {
   return d.groups ?? []
 }
 
+/** 与 OpenAPI 无 catalog 时同源：分组下能力表或渠道汇总的模型 id，供编辑 LLM 密钥模型目录勾选 */
+export async function listLlmAvailableModelsForGroup(group?: string): Promise<{ group: string; models: string[] }> {
+  const r = await get<{ group: string; models: string[] }>('/api/credentials/llm-available-models', {
+    params: group != null && String(group).trim() !== '' ? { group: String(group).trim() } : undefined,
+  })
+  const d = ensureOk(r)
+  return { group: d.group ?? 'default', models: Array.isArray(d.models) ? d.models : [] }
+}
+
 export async function createCredential(body: CredentialCreateBody): Promise<CredentialCreateResult> {
   const r = await post<CredentialCreateResult>('/api/credentials', body)
   return ensureOk(r)

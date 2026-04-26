@@ -57,6 +57,7 @@ type OpenAIStreamCapture struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	CachedPrompt     int // prompt_tokens_details.cached_tokens
 	// assistantBuf 从 SSE delta 拼接的助手文本（有字节上限），用于用量表 response_content 近似非流式形态。
 	assistantBuf []byte
 }
@@ -113,6 +114,9 @@ func (cap *OpenAIStreamCapture) streamResponseContentForUsage() string {
 			"prompt_tokens":     cap.PromptTokens,
 			"completion_tokens": cap.CompletionTokens,
 			"total_tokens":      tot,
+			"prompt_tokens_details": map[string]any{
+				"cached_tokens": cap.CachedPrompt,
+			},
 		},
 		"_stream_reconstructed": true,
 	}
@@ -201,6 +205,9 @@ func parseOpenAISSELine(line []byte, cap *OpenAIStreamCapture, firstTokenRecorde
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 			TotalTokens      int `json:"total_tokens"`
+			Details          *struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 		Choices []struct {
 			Delta struct {
@@ -221,6 +228,9 @@ func parseOpenAISSELine(line []byte, cap *OpenAIStreamCapture, firstTokenRecorde
 		cap.PromptTokens = chunk.Usage.PromptTokens
 		cap.CompletionTokens = chunk.Usage.CompletionTokens
 		cap.TotalTokens = chunk.Usage.TotalTokens
+		if chunk.Usage.Details != nil && chunk.Usage.Details.CachedTokens > 0 {
+			cap.CachedPrompt = chunk.Usage.Details.CachedTokens
+		}
 		if cap.TotalTokens == 0 {
 			cap.TotalTokens = cap.PromptTokens + cap.CompletionTokens
 		}

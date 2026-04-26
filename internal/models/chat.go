@@ -45,7 +45,8 @@ type LLMUsage struct {
 	InputTokens     int     `json:"input_tokens" gorm:"default:0"`
 	OutputTokens    int     `json:"output_tokens" gorm:"default:0"`
 	TotalTokens     int     `json:"total_tokens" gorm:"default:0"`
-	LatencyMs       int64   `json:"latency_ms" gorm:"default:0"`         // 总延迟（毫秒）
+	QuotaDelta      int     `json:"quota_delta" gorm:"default:0"` // 本次从凭证扣除的额度单位（倍率/按次/按 token 汇总）
+	LatencyMs       int64   `json:"latency_ms" gorm:"default:0"`  // 总延迟（毫秒）
 	TTFTMs          int64   `json:"ttft_ms" gorm:"default:0"`            // Time To First Token（毫秒）
 	TPS             float64 `json:"tps" gorm:"default:0"`                // Tokens Per Second
 	QueueTimeMs     int64   `json:"queue_time_ms" gorm:"default:0"`      // 排队时间（毫秒）

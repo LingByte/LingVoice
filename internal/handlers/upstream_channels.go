@@ -125,6 +125,71 @@ func (h *Handlers) listLLMChannels(c *gin.Context) {
 	})
 }
 
+// llmChannelCatalogItem 脱敏渠道摘要（不含 key），供凭证页等已登录用户使用。
+type llmChannelCatalogItem struct {
+	Id       int    `json:"id"`
+	Name     string `json:"name"`
+	Group    string `json:"group"`
+	Protocol string `json:"protocol"`
+	Models   string `json:"models"`
+	Status   int    `json:"status"`
+}
+
+// listLLMChannelsCatalog GET /api/llm-channels/catalog 与 list 相同筛选与分页，但不返回 API Key 等敏感字段。
+func (h *Handlers) listLLMChannelsCatalog(c *gin.Context) {
+	q := h.db.Model(&models.LLMChannel{})
+	if g := strings.TrimSpace(c.Query("group")); g != "" {
+		q = q.Where("`group` = ?", g)
+	}
+	page := parseQueryInt(c, "page", 1)
+	if page < 1 {
+		page = 1
+	}
+	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	if pageSize > 500 {
+		pageSize = 500
+	}
+	offset := (page - 1) * pageSize
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+	var list []models.LLMChannel
+	listQ := h.db.Model(&models.LLMChannel{})
+	if g := strings.TrimSpace(c.Query("group")); g != "" {
+		listQ = listQ.Where("`group` = ?", g)
+	}
+	if err := listQ.Order("id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+	out := make([]llmChannelCatalogItem, 0, len(list))
+	for i := range list {
+		ch := list[i]
+		out = append(out, llmChannelCatalogItem{
+			Id:       ch.Id,
+			Name:     ch.Name,
+			Group:    ch.Group,
+			Protocol: ch.Protocol,
+			Models:   ch.Models,
+			Status:   ch.Status,
+		})
+	}
+	totalPage := int(total) / pageSize
+	if int(total)%pageSize != 0 {
+		totalPage++
+	}
+	response.Success(c, "ok", gin.H{
+		"list":      out,
+		"total":     total,
+		"page":      page,
+		"pageSize":  pageSize,
+		"totalPage": totalPage,
+	})
+}
+
 func (h *Handlers) getLLMChannel(c *gin.Context) {
 	id, ok := parseIntParam(c, "id")
 	if !ok {
@@ -167,7 +232,12 @@ func (h *Handlers) createLLMChannel(c *gin.Context) {
 		response.FailWithCode(c, 400, "无效的 protocol，可选: openai, anthropic, coze, ollama, lmstudio", nil)
 		return
 	}
-	if err := h.db.Create(&row).Error; err != nil {
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&row).Error; err != nil {
+			return err
+		}
+		return models.SyncLLMAbilitiesFromChannel(tx, &row)
+	}); err != nil {
 		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
 		return
 	}
@@ -206,7 +276,12 @@ func (h *Handlers) updateLLMChannel(c *gin.Context) {
 	if !models.IsLLMChannelProtocolKnown(row.Protocol) {
 		row.Protocol = models.LLMChannelProtocolOpenAI
 	}
-	if err := h.db.Save(&row).Error; err != nil {
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&row).Error; err != nil {
+			return err
+		}
+		return models.SyncLLMAbilitiesFromChannel(tx, &row)
+	}); err != nil {
 		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
 		return
 	}
@@ -219,13 +294,22 @@ func (h *Handlers) deleteLLMChannel(c *gin.Context) {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
 	}
-	res := h.db.Delete(&models.LLMChannel{}, id)
-	if res.Error != nil {
-		response.Fail(c, "删除失败", gin.H{"error": res.Error.Error()})
+	var probe models.LLMChannel
+	if err := h.db.First(&probe, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.FailWithCode(c, 404, "渠道不存在", nil)
+			return
+		}
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
 	}
-	if res.RowsAffected == 0 {
-		response.FailWithCode(c, 404, "渠道不存在", nil)
+	if err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("channel_id = ?", id).Delete(&models.LLMAbility{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&models.LLMChannel{}, id).Error
+	}); err != nil {
+		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
 		return
 	}
 	response.Success(c, "删除成功", gin.H{"id": id})

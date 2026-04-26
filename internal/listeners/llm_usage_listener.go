@@ -75,6 +75,7 @@ func InitLLMUsageListener(db *gorm.DB, lg *zap.Logger) {
 			InputTokens:     p.InputTokens,
 			OutputTokens:    p.OutputTokens,
 			TotalTokens:     p.TotalTokens,
+			QuotaDelta:      p.QuotaDelta,
 			LatencyMs:       p.LatencyMs,
 			TTFTMs:          p.TTFTMs,
 			TPS:             p.TPS,
@@ -96,6 +97,8 @@ func InitLLMUsageListener(db *gorm.DB, lg *zap.Logger) {
 		}
 		if err := db.Create(&row).Error; err != nil && lg != nil {
 			lg.Warn("llm usage listener: create failed", zap.Error(err), zap.String("request_id", p.RequestID))
+			return
 		}
+		upsertLLMUsageRollupsFromPayload(db, lg, p, row.CompletedAt)
 	})
 }

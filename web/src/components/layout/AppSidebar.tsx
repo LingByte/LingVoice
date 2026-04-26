@@ -3,8 +3,14 @@ import {
   BarChart3,
   Bot,
   Braces,
+  ClipboardList,
   Cpu,
+  BookOpen,
+  FileText,
+  Info,
+  LayoutDashboard,
   LayoutTemplate,
+  Layers,
   MessageSquare,
   Mic,
   Mic2,
@@ -12,6 +18,7 @@ import {
   PanelLeftClose,
   RadioTower,
   ScrollText,
+  Store,
   Users,
   Volume2,
 } from 'lucide-react'
@@ -30,6 +37,21 @@ const menu = [
     icon: <MessageSquare size={16} strokeWidth={1.85} />,
   },
   {
+    key: '/dashboard',
+    label: '数据面板',
+    icon: <LayoutDashboard size={16} strokeWidth={1.85} />,
+  },
+  {
+    key: '/docs',
+    label: '文档',
+    icon: <FileText size={16} strokeWidth={1.85} />,
+  },
+  {
+    key: '/about',
+    label: '关于',
+    icon: <Info size={16} strokeWidth={1.85} />,
+  },
+  {
     key: '/notify/channels',
     label: '通知渠道',
     icon: <RadioTower size={16} strokeWidth={1.85} />,
@@ -38,6 +60,21 @@ const menu = [
       key: '/channels/llm',
       label: 'LLM 渠道',
       icon: <Cpu size={16} strokeWidth={1.85} />,
+  },
+  {
+      key: '/channels/llm-abilities',
+      label: 'LLM 能力',
+      icon: <Layers size={16} strokeWidth={1.85} />,
+  },
+  {
+      key: '/channels/llm-model-metas',
+      label: '模型元数据',
+      icon: <BookOpen size={16} strokeWidth={1.85} />,
+  },
+  {
+      key: '/channels/llm-plaza',
+      label: '模型广场',
+      icon: <Store size={16} strokeWidth={1.85} />,
   },
   {
       key: '/channels/asr',
@@ -80,23 +117,42 @@ const menu = [
     icon: <Users size={16} strokeWidth={1.85} />,
   },
   {
-    key: '/debug/openapi',
-    label: 'OpenAPI 调试',
+    key: '/admin/announcements',
+    label: '公告管理',
+    icon: <ClipboardList size={16} strokeWidth={1.85} />,
+  },
+  {
+    key: '/debug/v1',
+    label: 'V1 网关调试',
     icon: <Braces size={16} strokeWidth={1.85} />,
   },
 ] as const
 
 function menuPathSelected(pathname: string, itemKey: string): boolean {
+  if (itemKey === '/dashboard') return pathname === '/dashboard' || pathname === '/quotas'
   if (itemKey === '/notify/channels') return pathname.startsWith('/notify/channels')
   if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
   if (itemKey === '/notify/llm-usage') return pathname === '/notify/llm-usage'
   if (itemKey === '/notify/speech-usage') return pathname === '/notify/speech-usage'
   if (itemKey === '/admin/agent-runs') return pathname === '/admin/agent-runs'
   if (itemKey === '/admin/users') return pathname === '/admin/users'
-  if (itemKey === '/channels/llm') return pathname.startsWith('/channels/llm')
+  if (itemKey === '/admin/announcements') return pathname === '/admin/announcements'
+  if (itemKey === '/docs') return pathname === '/docs'
+  if (itemKey === '/about') return pathname === '/about'
+  if (itemKey === '/channels/llm') {
+    return (
+      pathname.startsWith('/channels/llm') &&
+      !pathname.startsWith('/channels/llm-abilities') &&
+      !pathname.startsWith('/channels/llm-model-metas') &&
+      !pathname.startsWith('/channels/llm-plaza')
+    )
+  }
+  if (itemKey === '/channels/llm-abilities') return pathname.startsWith('/channels/llm-abilities')
+  if (itemKey === '/channels/llm-model-metas') return pathname.startsWith('/channels/llm-model-metas')
+  if (itemKey === '/channels/llm-plaza') return pathname === '/channels/llm-plaza'
   if (itemKey === '/channels/asr') return pathname.startsWith('/channels/asr')
   if (itemKey === '/channels/tts') return pathname.startsWith('/channels/tts')
-  if (itemKey === '/debug/openapi') return pathname === '/debug/openapi'
+  if (itemKey === '/debug/v1') return pathname === '/debug/v1'
   return pathname === itemKey
 }
 

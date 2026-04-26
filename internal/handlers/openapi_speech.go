@@ -221,7 +221,7 @@ func resolveASRAudioInput(body *openAPIASRTranscribeBody) (source string, err er
 	return "url", nil
 }
 
-// openAPIASRTranscribe POST /api/openapi/v1/speech/asr/transcribe
+// openAPIASRTranscribe POST /v1/speech/asr/transcribe
 func (h *Handlers) openAPIASRTranscribe(c *gin.Context) {
 	cred, ok := middleware.OpenAPISpeechCredentialFromContext(c)
 	if !ok || cred == nil {
@@ -299,7 +299,7 @@ func normalizeTTSResponseType(responseType, output string) string {
 	}
 }
 
-// openAPITTSSynthesize POST /api/openapi/v1/speech/tts/synthesize
+// openAPITTSSynthesize POST /v1/speech/tts/synthesize
 func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 	cred, ok := middleware.OpenAPISpeechCredentialFromContext(c)
 	if !ok || cred == nil {

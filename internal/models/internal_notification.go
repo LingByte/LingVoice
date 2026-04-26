@@ -10,6 +10,7 @@ import (
 )
 
 // InternalNotification 站内通知（非邮件）；邮件通道仍使用 pkg/notification 与 MailTemplate。
+// 前台与站点公告（SiteAnnouncement）同置于「系统消息」弹窗的「通知」页签，需登录后拉取 /api/internal-notifications。
 // 字段与 BaseModel 对齐，并对 DeletedAt 使用 json:"deletedAt" 便于前端展示/同步。
 type InternalNotification struct {
 	ID        uint           `json:"id" gorm:"primaryKey"`
