@@ -62,10 +62,11 @@ function TabPill(props: {
       type="button"
       onClick={props.onClick}
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors',
+        'relative inline-flex min-h-[32px] items-center gap-1.5 rounded-[10px] px-3.5 py-1.5 text-[13px] font-medium transition-all duration-200',
+        'border-0 outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-5),0.45)] focus-visible:ring-offset-1 focus-visible:ring-offset-[var(--color-fill-3)]',
         props.active
-          ? 'bg-[var(--color-bg-1)] text-[rgb(var(--primary-6))] shadow-sm'
-          : 'text-[var(--color-text-2)] hover:text-[var(--color-text-1)]',
+          ? 'bg-[var(--color-bg-1)] text-[rgb(var(--primary-6))] shadow-[0_1px_4px_rgba(0,0,0,0.07)]'
+          : 'text-[var(--color-text-2)] hover:bg-[var(--color-fill-2)] hover:text-[var(--color-text-1)]',
       )}
     >
       {props.icon}
@@ -196,11 +197,13 @@ export function AnnouncementsModal(props: Props) {
     }
   }, [isLoggedIn])
 
+  // 打开时预拉两路数据，切换页签不再触发加载，避免 Spin 闪屏
   useEffect(() => {
     if (!visible) return
-    if (tab === 'announcements') void loadAnnouncements()
-    else void loadNotifications()
-  }, [visible, tab, loadAnnouncements, loadNotifications])
+    void loadAnnouncements()
+    if (isLoggedIn) void loadNotifications()
+    else setNotifList([])
+  }, [visible, isLoggedIn, loadAnnouncements, loadNotifications])
 
   useEffect(() => {
     if (!visible) setTab('announcements')
@@ -223,20 +226,24 @@ export function AnnouncementsModal(props: Props) {
   }
 
   const modalTitle = (
-    <div className="flex w-full min-w-0 flex-wrap items-center justify-between gap-3 pr-1">
-      <Text bold className="shrink-0 text-[16px] text-[var(--color-text-1)]">
+    <div className="flex w-full min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:pr-1">
+      <Text bold className="shrink-0 text-[16px] tracking-tight text-[var(--color-text-1)]">
         系统消息
       </Text>
-      <div className="flex shrink-0 items-center gap-0.5 rounded-[10px] bg-[var(--color-fill-2)] p-0.5">
+      <div
+        className="inline-flex w-fit max-w-full shrink-0 items-center gap-0.5 rounded-2xl bg-[var(--color-fill-3)] p-1 shadow-[inset_0_1px_2px_rgba(0,0,0,0.04)] dark:shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]"
+        role="tablist"
+        aria-label="消息类型"
+      >
         <TabPill
           active={tab === 'notifications'}
-          icon={<Bell size={14} strokeWidth={2} />}
+          icon={<Bell size={14} strokeWidth={2} className={tab === 'notifications' ? '' : 'opacity-70'} />}
           label="通知"
           onClick={() => setTab('notifications')}
         />
         <TabPill
           active={tab === 'announcements'}
-          icon={<Megaphone size={14} strokeWidth={2} />}
+          icon={<Megaphone size={14} strokeWidth={2} className={tab === 'announcements' ? '' : 'opacity-70'} />}
           label="系统公告"
           onClick={() => setTab('announcements')}
         />
@@ -260,17 +267,24 @@ export function AnnouncementsModal(props: Props) {
       onCancel={onClose}
       footer={footer}
       maskClosable
+      closable={false}
       unmountOnExit
       style={{ width: 'min(880px, 94vw)' }}
       className="message-center-modal"
     >
-      <div className="max-h-[min(560px,68vh)] overflow-y-auto pr-1">
-        {tab === 'announcements' ? (
-          <>
-            <Paragraph type="secondary" className="!mb-4 !mt-0 !text-[13px]">
-              维护通知、功能更新与使用说明（公开接口，未登录也可查看）。
-            </Paragraph>
-            <Spin loading={loadingAnn} className="block min-h-[120px]">
+      <div className="max-h-[min(560px,68vh)] overflow-y-auto overflow-x-hidden pr-1">
+        {/* 同格叠层 + 透明度过渡，避免切换时整段 DOM 挂载/卸载造成闪屏 */}
+        <div className="relative grid grid-cols-1">
+          <div
+            className={cn(
+              'col-start-1 row-start-1 min-w-0 transition-[opacity,visibility] duration-300 ease-in-out motion-reduce:transition-none',
+              tab === 'announcements'
+                ? 'visible z-[1] opacity-100'
+                : 'invisible z-0 opacity-0 pointer-events-none',
+            )}
+            aria-hidden={tab !== 'announcements'}
+          >
+            <Spin loading={loadingAnn && annList.length === 0} className="block min-h-[120px]">
               {!loadingAnn && annList.length === 0 ? (
                 <EmptyAnnouncements />
               ) : annList.length > 0 ? (
@@ -311,16 +325,21 @@ export function AnnouncementsModal(props: Props) {
                 </TimelineList>
               ) : null}
             </Spin>
-          </>
-        ) : (
-          <>
-            <Paragraph type="secondary" className="!mb-4 !mt-0 !text-[13px]">
-              个人站内通知（需登录）；点击未读条目可标记为已读。
-            </Paragraph>
+          </div>
+
+          <div
+            className={cn(
+              'col-start-1 row-start-1 min-w-0 transition-[opacity,visibility] duration-300 ease-in-out motion-reduce:transition-none',
+              tab === 'notifications'
+                ? 'visible z-[1] opacity-100'
+                : 'invisible z-0 opacity-0 pointer-events-none',
+            )}
+            aria-hidden={tab !== 'notifications'}
+          >
             {!isLoggedIn ? (
               <EmptyNotificationsGuest />
             ) : (
-              <Spin loading={loadingNotif} className="block min-h-[120px]">
+              <Spin loading={loadingNotif && notifList.length === 0} className="block min-h-[120px]">
                 {!loadingNotif && notifList.length === 0 ? (
                   <EmptyNotificationsInbox />
                 ) : notifList.length > 0 ? (
@@ -367,8 +386,8 @@ export function AnnouncementsModal(props: Props) {
                 ) : null}
               </Spin>
             )}
-          </>
-        )}
+          </div>
+        </div>
       </div>
     </Modal>
   )

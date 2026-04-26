@@ -1,4 +1,4 @@
-import { Button, Message, Modal, Table, Tag, Typography } from '@arco-design/web-react'
+import { Button, Message, Modal, Table, Tag, Tooltip, Typography } from '@arco-design/web-react'
 import type { ColumnProps } from '@arco-design/web-react/es/Table'
 import { Coins, Copy, Info, Link2 } from 'lucide-react'
 import { Fragment, useMemo } from 'react'
@@ -155,7 +155,7 @@ export function ModelPlazaDetailModal(props: Props) {
   const icon = resolveModelCardIcon(item.model_name, item.vendor, item.icon_url)
 
   const titleNode = (
-    <div className="flex min-w-0 flex-1 items-center gap-3 pr-2">
+    <div className="flex min-w-0 w-full items-center gap-3">
       <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[var(--color-fill-2)]">
         {icon ? (
           <img src={icon} alt="" className="max-h-7 max-w-[90%] object-contain" />
@@ -165,29 +165,42 @@ export function ModelPlazaDetailModal(props: Props) {
           </Text>
         )}
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 pr-2">
         <div className="truncate text-[16px] font-semibold text-[var(--color-text-1)]">{item.model_name}</div>
       </div>
-      <Button
-        type="text"
-        size="mini"
-        className="!shrink-0"
-        icon={<Copy size={16} className="text-[rgb(var(--primary-6))]" />}
-        aria-label="复制模型名"
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(item.model_name)
-            Message.success('已复制模型名')
-          } catch {
-            Message.error('复制失败')
-          }
-        }}
-      />
+      <div className="ml-auto shrink-0 pr-14 sm:pr-16">
+        <Tooltip content="复制模型名" mini position="bottom">
+          <Button
+            type="text"
+            size="small"
+            className="!h-9 !min-w-9 !rounded-lg !text-[rgb(var(--primary-6))] hover:!bg-[var(--color-fill-2)]"
+            icon={<Copy size={18} strokeWidth={2} />}
+            aria-label="复制模型名"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(item.model_name)
+                Message.success('已复制模型名')
+              } catch {
+                Message.error('复制失败')
+              }
+            }}
+          />
+        </Tooltip>
+      </div>
     </div>
   )
 
   return (
-    <Modal title={titleNode} visible={visible} onCancel={onClose} footer={null} maskClosable style={{ width: 'min(720px, 94vw)' }} unmountOnExit>
+    <Modal
+      title={titleNode}
+      visible={visible}
+      onCancel={onClose}
+      footer={null}
+      maskClosable
+      style={{ width: 'min(720px, 94vw)' }}
+      unmountOnExit
+      className="model-plaza-detail-modal"
+    >
       <div className="max-h-[min(72vh,780px)] overflow-y-auto pr-1">
         <Section
           icon={<Info size={18} strokeWidth={2} />}

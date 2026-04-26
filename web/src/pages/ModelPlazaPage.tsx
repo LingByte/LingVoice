@@ -87,21 +87,38 @@ function errMsg(e: unknown): string {
 type FilterChipProps = {
   active: boolean
   label: string
+  count?: number
   onClick: () => void
 }
 
 function FilterChip(props: FilterChipProps) {
+  const { active, label, onClick } = props
+  const match = label.match(/^(.+?)(\s*\(\d+\))?$/)
+  const text = match?.[1] ?? label
+  const countStr = match?.[2] ?? ''
+
   return (
     <button
       type="button"
-      onClick={props.onClick}
-      className={`mb-1.5 mr-1.5 inline-flex max-w-full items-center rounded-md border px-2 py-1 text-left text-[12px] transition-colors ${
-        props.active
-          ? 'border-[rgb(59,130,246)] bg-[rgb(239,246,255)] text-[rgb(30,64,175)]'
-          : 'border-[var(--color-border-2)] bg-[var(--color-bg-2)] text-[var(--color-text-2)] hover:border-[var(--color-border-3)]'
-      }`}
+      onClick={onClick}
+      className={`mb-2 mr-2 inline-flex max-w-full items-center gap-1.5 rounded-xl px-3 py-1.5 text-left text-[12px] font-medium transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-5),0.35)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg-2)] ${
+        active
+          ? 'bg-[rgb(var(--primary-1))] text-[rgb(var(--primary-6))] shadow-[0_1px_3px_rgba(var(--primary-4),0.12)]'
+          : 'bg-[var(--color-fill-2)] text-[var(--color-text-2)] shadow-none hover:bg-[var(--color-fill-3)] hover:text-[var(--color-text-1)]'
+      } border-0`}
     >
-      <span className="truncate">{props.label}</span>
+      <span className="truncate">{text}</span>
+      {countStr && (
+        <span
+          className={`shrink-0 rounded-full px-1.5 py-px text-[10px] leading-tight ${
+            active
+              ? 'bg-[rgba(var(--primary-2),0.6)] text-[rgb(var(--primary-6))] shadow-sm'
+              : 'bg-[var(--color-fill-4)] text-[var(--color-text-3)]'
+          }`}
+        >
+          {countStr.replace(/^\s*\(/, '').replace(/\)$/, '')}
+        </span>
+      )}
     </button>
   )
 }
@@ -312,17 +329,20 @@ export function ModelPlazaPage() {
       />
       {/* 左侧筛选 */}
       <aside className="hidden w-[260px] shrink-0 flex-col border-r border-[var(--color-border-2)] bg-[var(--color-bg-2)] md:flex">
-        <div className="flex items-center justify-between border-b border-[var(--color-border-2)] px-3 py-2.5">
+        <div className="flex items-center justify-between border-b border-[var(--color-border-2)] px-4 py-3">
           <Text bold className="text-[13px]">
             筛选
           </Text>
-          <Button type="text" size="mini" onClick={resetFilters}>
+          <Button type="text" size="mini" className="!text-[rgb(var(--primary-6))]" onClick={resetFilters}>
             重置
           </Button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-          <div className="mb-4">
-            <Text className="mb-2 block text-[12px] text-[var(--color-text-3)]">供应商</Text>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          <div className="mb-5">
+            <div className="mb-2.5 flex items-center gap-1.5">
+              <span className="h-3 w-0.5 rounded-full bg-[rgb(var(--primary-6))]" />
+              <Text className="block text-[12px] font-semibold text-[var(--color-text-2)]">供应商</Text>
+            </div>
             <div className="flex flex-wrap">
               <FilterChip
                 active={!vendor}
@@ -339,14 +359,17 @@ export function ModelPlazaPage() {
               ))}
             </div>
             {vendorCounts.length > VENDOR_PREVIEW ? (
-              <Button type="text" size="mini" className="!px-0" onClick={() => setVendorExpanded((x) => !x)}>
+              <Button type="text" size="mini" className="!px-0 !text-[rgb(var(--primary-6))]" onClick={() => setVendorExpanded((x) => !x)}>
                 {vendorExpanded ? '收起' : '展开更多'}
               </Button>
             ) : null}
           </div>
 
-          <div className="mb-4">
-            <Text className="mb-2 block text-[12px] text-[var(--color-text-3)]">可用令牌分组</Text>
+          <div className="mb-5 border-t border-[var(--color-border-1)] pt-4">
+            <div className="mb-2.5 flex items-center gap-1.5">
+              <span className="h-3 w-0.5 rounded-full bg-[rgb(var(--primary-6))]" />
+              <Text className="block text-[12px] font-semibold text-[var(--color-text-2)]">可用令牌分组</Text>
+            </div>
             <div className="flex flex-wrap">
               <FilterChip active={!group} label={`全部 (${totalMeta})`} onClick={() => setGroup('')} />
               {groupCounts.map((gc: PlazaGroupCount) => (
@@ -360,8 +383,11 @@ export function ModelPlazaPage() {
             </div>
           </div>
 
-          <div>
-            <Text className="mb-2 block text-[12px] text-[var(--color-text-3)]">计费类型</Text>
+          <div className="border-t border-[var(--color-border-1)] pt-4">
+            <div className="mb-2.5 flex items-center gap-1.5">
+              <span className="h-3 w-0.5 rounded-full bg-[rgb(var(--primary-6))]" />
+              <Text className="block text-[12px] font-semibold text-[var(--color-text-2)]">计费类型</Text>
+            </div>
             <div className="flex flex-wrap">
               <FilterChip active={!billing} label={`全部类型 (${totalMeta})`} onClick={() => setBilling('')} />
               <FilterChip
@@ -380,8 +406,20 @@ export function ModelPlazaPage() {
       </aside>
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="shrink-0 border-b border-[var(--color-border-2)] bg-[var(--color-bg-1)] px-6 py-5">
-          <div className="min-w-0 max-w-[900px]">
+        <div className="relative shrink-0 overflow-hidden border-b border-[var(--color-border-2)] px-6 py-5">
+          {/* 渐变背景 */}
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background:
+                'linear-gradient(135deg, rgb(var(--primary-1)) 0%, rgb(var(--primary-2)) 40%, rgba(var(--primary-3), 0.35) 100%)',
+            }}
+          />
+          {/* 装饰圆 */}
+          <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-[rgb(var(--primary-3))] opacity-20 blur-2xl" />
+          <div className="pointer-events-none absolute -left-8 bottom-0 h-32 w-32 rounded-full bg-[rgb(var(--primary-2))] opacity-25 blur-xl" />
+
+          <div className="relative min-w-0 max-w-[900px]">
             <Title heading={5} className="!mb-2 !mt-0 !text-[20px] !font-semibold !tracking-tight text-[var(--color-text-1)]">
               {bannerTitle}
             </Title>
@@ -392,13 +430,13 @@ export function ModelPlazaPage() {
             ) : null}
             <Space size={10} wrap className="!items-center">
               {showAllSuppliersHero ? (
-                <Tag size="medium" color="arcoblue" className="!m-0 font-medium">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-[rgb(var(--primary-6))] px-3 py-1 text-[12px] font-medium text-white shadow-[0_2px_8px_rgba(var(--primary-5),0.35)]">
                   全部模型
-                </Tag>
+                </span>
               ) : null}
-              <Tag size="medium" className="!m-0 border-[var(--color-border-2)] bg-[var(--color-fill-2)] text-[var(--color-text-2)]">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[rgba(var(--primary-1),0.6)] px-3 py-1 text-[12px] font-medium text-[rgb(var(--primary-6))] backdrop-blur-sm">
                 共 {totalFiltered} 个模型
-              </Tag>
+              </span>
             </Space>
           </div>
         </div>
