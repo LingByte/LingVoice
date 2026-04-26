@@ -1,0 +1,762 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "LingVoice API",
+    "description": "多模态与 OpenAI 兼容网关的一体化控制台 API",
+    "version": "1.0.0",
+    "contact": {
+      "name": "LingVoice"
+    }
+  },
+  "servers": [
+    {
+      "url": "/v1",
+      "description": "OpenAI 兼容网关"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Chat",
+      "description": "聊天相关接口"
+    },
+    {
+      "name": "Models",
+      "description": "模型相关接口"
+    },
+    {
+      "name": "Completions",
+      "description": "文本补全接口"
+    },
+    {
+      "name": "Embeddings",
+      "description": "嵌入向量接口"
+    },
+    {
+      "name": "Agent",
+      "description": "Agent 规划与推理（流式 NDJSON）"
+    },
+    {
+      "name": "Anthropic",
+      "description": "Anthropic Messages 兼容"
+    },
+    {
+      "name": "Speech",
+      "description": "语音识别与合成"
+    },
+    {
+      "name": "Mail",
+      "description": "邮件模版与发送（OpenAPI 凭证 kind=email）"
+    }
+  ],
+  "paths": {
+    "/chat/completions": {
+      "post": {
+        "tags": ["Chat"],
+        "summary": "创建聊天补全",
+        "description": "基于消息列表创建模型响应",
+        "operationId": "createChatCompletion",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCompletionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/models": {
+      "get": {
+        "tags": ["Models"],
+        "summary": "列出可用模型",
+        "description": "获取当前可用的模型列表",
+        "operationId": "listModels",
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/completions": {
+      "post": {
+        "tags": ["Completions"],
+        "summary": "创建文本补全",
+        "description": "为给定提示创建补全",
+        "operationId": "createCompletion",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompletionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/embeddings": {
+      "post": {
+        "tags": ["Embeddings"],
+        "summary": "创建嵌入向量",
+        "description": "获取给定输入的嵌入向量表示",
+        "operationId": "createEmbedding",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbeddingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmbeddingResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent/chat/stream": {
+      "post": {
+        "tags": ["Agent"],
+        "summary": "Agent 推理流（NDJSON）",
+        "description": "按行输出 NDJSON：{\"event\":\"...\",\"data\":{...}}；使用凭证分组下 OpenAI 协议 LLM 渠道执行规划与工具调用。",
+        "operationId": "createAgentChatStream",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentChatStreamRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "流式 NDJSON（非 application/json 单对象）",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "type": "string",
+                  "description": "每行一条 JSON"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/messages": {
+      "post": {
+        "tags": ["Anthropic"],
+        "summary": "Anthropic Messages",
+        "description": "与 Anthropic Messages API 对齐；鉴权推荐 x-api-key 或 Bearer（凭证 kind=llm）。",
+        "operationId": "createAnthropicMessage",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnthropicMessagesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Anthropic message 响应"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/speech/asr/transcribe": {
+      "post": {
+        "tags": ["Speech"],
+        "summary": "语音识别（ASR）",
+        "description": "audio_base64 与 audio_url 二选一；凭证 kind=asr。",
+        "operationId": "createAsrTranscribe",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AsrTranscribeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "识别结果（结构随厂商）"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/speech/tts/synthesize": {
+      "post": {
+        "tags": ["Speech"],
+        "summary": "语音合成（TTS）",
+        "description": "response_type 为 audio_base64（默认）或 url；凭证 kind=tts。",
+        "operationId": "createTtsSynthesize",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TtsSynthesizeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "合成结果"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mail-templates": {
+      "get": {
+        "tags": ["Mail"],
+        "summary": "列出邮件模版",
+        "operationId": "listMailTemplates",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": { "type": "integer", "default": 1 }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": { "type": "integer", "default": 10 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "分页列表"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Mail"],
+        "summary": "创建邮件模版",
+        "operationId": "createMailTemplate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MailTemplateCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mail-logs": {
+      "get": {
+        "tags": ["Mail"],
+        "summary": "列出邮件发送日志",
+        "operationId": "listMailLogs",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": { "type": "integer", "default": 1 }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": { "type": "integer", "default": 10 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mail-logs/{id}": {
+      "get": {
+        "tags": ["Mail"],
+        "summary": "获取单条邮件日志",
+        "operationId": "getMailLog",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mail/send": {
+      "post": {
+        "tags": ["Mail"],
+        "summary": "按模版发送邮件",
+        "operationId": "sendMail",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MailSendRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ChatCompletionRequest": {
+        "type": "object",
+        "required": ["model", "messages"],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "要使用的模型 ID"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            },
+            "description": "聊天消息列表"
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2,
+            "default": 1,
+            "description": "采样温度"
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "生成的最大 token 数"
+          },
+          "stream": {
+            "type": "boolean",
+            "default": false,
+            "description": "是否流式返回"
+          }
+        }
+      },
+      "ChatMessage": {
+        "type": "object",
+        "required": ["role", "content"],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["system", "user", "assistant"],
+            "description": "消息角色"
+          },
+          "content": {
+            "type": "string",
+            "description": "消息内容"
+          }
+        }
+      },
+      "ChatCompletionResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "补全 ID"
+          },
+          "object": {
+            "type": "string",
+            "description": "对象类型"
+          },
+          "created": {
+            "type": "integer",
+            "description": "创建时间戳"
+          },
+          "model": {
+            "type": "string",
+            "description": "使用的模型"
+          },
+          "choices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatChoice"
+            }
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        }
+      },
+      "ChatChoice": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer"
+          },
+          "message": {
+            "$ref": "#/components/schemas/ChatMessage"
+          },
+          "finish_reason": {
+            "type": "string"
+          }
+        }
+      },
+      "Usage": {
+        "type": "object",
+        "properties": {
+          "prompt_tokens": {
+            "type": "integer"
+          },
+          "completion_tokens": {
+            "type": "integer"
+          },
+          "total_tokens": {
+            "type": "integer"
+          }
+        }
+      },
+      "ModelsResponse": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Model"
+            }
+          }
+        }
+      },
+      "Model": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "owned_by": {
+            "type": "string"
+          }
+        }
+      },
+      "CompletionRequest": {
+        "type": "object",
+        "required": ["model", "prompt"],
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "max_tokens": {
+            "type": "integer"
+          },
+          "temperature": {
+            "type": "number"
+          }
+        }
+      },
+      "CompletionResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "created": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "choices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Choice"
+            }
+          }
+        }
+      },
+      "Choice": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "finish_reason": {
+            "type": "string"
+          }
+        }
+      },
+      "EmbeddingRequest": {
+        "type": "object",
+        "required": ["model", "input"],
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "input": {
+            "type": "string"
+          }
+        }
+      },
+      "EmbeddingResponse": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Embedding"
+            }
+          },
+          "model": {
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        }
+      },
+      "Embedding": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "embedding": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "index": {
+            "type": "integer"
+          }
+        }
+      },
+      "AgentChatStreamRequest": {
+        "type": "object",
+        "required": ["input"],
+        "properties": {
+          "input": {
+            "type": "string",
+            "description": "用户任务描述"
+          },
+          "model": {
+            "type": "string",
+            "description": "模型 ID，默认 gpt-4o-mini"
+          },
+          "max_tasks": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32,
+            "description": "最大子任务数，默认 6"
+          },
+          "session_id": {
+            "type": "string",
+            "description": "可选会话 ID"
+          }
+        }
+      },
+      "AnthropicMessagesRequest": {
+        "type": "object",
+        "required": ["model", "max_tokens", "messages"],
+        "properties": {
+          "model": { "type": "string" },
+          "max_tokens": { "type": "integer" },
+          "messages": {
+            "type": "array",
+            "items": { "type": "object" },
+            "description": "Anthropic 消息数组"
+          },
+          "system": { "type": "string" },
+          "stream": { "type": "boolean" }
+        }
+      },
+      "AsrTranscribeRequest": {
+        "type": "object",
+        "properties": {
+          "group": { "type": "string", "description": "渠道分组" },
+          "audio_base64": { "type": "string" },
+          "audio_url": { "type": "string" },
+          "format": { "type": "string", "example": "wav" },
+          "language": { "type": "string", "example": "zh-CN" },
+          "extra": { "type": "object" }
+        }
+      },
+      "TtsSynthesizeRequest": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "group": { "type": "string" },
+          "text": { "type": "string" },
+          "voice": { "type": "string" },
+          "response_type": {
+            "type": "string",
+            "enum": ["audio_base64", "url"],
+            "description": "与 output 二选一"
+          },
+          "output": { "type": "string" },
+          "audio_format": { "type": "string" },
+          "sample_rate": { "type": "integer" },
+          "tts_options": { "type": "object" },
+          "upload_bucket": { "type": "string" },
+          "upload_key": { "type": "string" },
+          "upload_filename": { "type": "string" },
+          "extra": { "type": "object" }
+        }
+      },
+      "MailTemplateCreateRequest": {
+        "type": "object",
+        "required": ["code", "name", "htmlBody"],
+        "properties": {
+          "code": { "type": "string" },
+          "name": { "type": "string" },
+          "htmlBody": { "type": "string" },
+          "description": { "type": "string" },
+          "locale": { "type": "string" },
+          "enabled": { "type": "boolean" }
+        }
+      },
+      "MailSendRequest": {
+        "type": "object",
+        "required": ["template_id", "to"],
+        "properties": {
+          "template_id": { "type": "integer" },
+          "to": { "type": "string", "format": "email" },
+          "subject": { "type": "string" },
+          "params": { "type": "object", "additionalProperties": true }
+        }
+      }
+    }
+  }
+}

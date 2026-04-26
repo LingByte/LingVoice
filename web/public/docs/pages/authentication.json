@@ -1,0 +1,22 @@
+{
+  "title": "认证与密钥",
+  "subtitle": "说明不同接口类型所采用的鉴权方式及密钥配置要求。",
+  "blocks": [
+    {
+      "type": "callout",
+      "variant": "warning",
+      "title": "安全提示",
+      "content": "生产环境密钥不得写入版本库或通过截图等途径外泄。调试台仅在浏览器内存中暂存您输入的密钥，关闭页面后应视为已失效。"
+    },
+    {
+      "type": "markdown",
+      "content": "## LLM / OpenAI 兼容接口\n\n调用时请使用 **Bearer**，或（Anthropic Messages）**x-api-key**。密钥须在控制台创建为 **kind=llm** 的 API 凭证后方可使用。\n\n## 邮件类接口\n\n须使用 **LAuthorization**、**L-Timestamp**、**L-Nonce** 等请求头，具体算法与示例请参阅控制台内 **V1 网关调试** 页面说明。\n\n## 语音 ASR / TTS\n\n须使用 **Bearer**，并分别对应 **kind=asr** 与 **kind=tts** 的 API 凭证。"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "title": "curl 示例（LLM）",
+      "code": "curl -sS \"$API_BASE/v1/models\" \\\n  -H \"Authorization: Bearer $LINGVOICE_LLM_KEY\""
+    }
+  ]
+}

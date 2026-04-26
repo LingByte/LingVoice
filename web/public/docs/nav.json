@@ -1,0 +1,220 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "id": "start",
+      "title": "快速开始",
+      "defaultExpanded": true,
+      "items": [
+        {
+          "id": "introduction",
+          "label": "简介",
+          "page": "introduction",
+          "icon": "Info",
+          "keywords": "overview 概览 开始"
+        },
+        {
+          "id": "authentication",
+          "label": "认证与密钥",
+          "page": "authentication",
+          "icon": "Key",
+          "badge": "必读",
+          "badgeColor": "orangered",
+          "keywords": "api key bearer token LAuthorization"
+        }
+      ]
+    },
+    {
+      "id": "llm",
+      "title": "LLM 与推理",
+      "defaultExpanded": true,
+      "items": [
+        {
+          "id": "op-chat-completions",
+          "label": "聊天补全",
+          "page": "op-chat-completions",
+          "icon": "Cpu",
+          "badge": "POST",
+          "badgeColor": "arcoblue",
+          "openApiKey": "POST:/chat/completions",
+          "keywords": "chat completions 对话"
+        },
+        {
+          "id": "op-agent-chat-stream",
+          "label": "Agent 推理流",
+          "page": "op-agent-chat-stream",
+          "icon": "Bot",
+          "badge": "POST",
+          "badgeColor": "purple",
+          "openApiKey": "POST:/agent/chat/stream",
+          "keywords": "agent ndjson 流式 推理 stream"
+        },
+        {
+          "id": "op-anthropic-messages",
+          "label": "Anthropic Messages",
+          "page": "op-anthropic-messages",
+          "icon": "Sparkles",
+          "badge": "POST",
+          "badgeColor": "magenta",
+          "openApiKey": "POST:/messages",
+          "keywords": "claude anthropic x-api-key"
+        },
+        {
+          "id": "op-list-models",
+          "label": "列出模型",
+          "page": "op-list-models",
+          "icon": "LayoutDashboard",
+          "badge": "GET",
+          "badgeColor": "green",
+          "openApiKey": "GET:/models",
+          "keywords": "models"
+        },
+        {
+          "id": "op-create-completion",
+          "label": "文本补全",
+          "page": "op-create-completion",
+          "icon": "FileText",
+          "badge": "POST",
+          "badgeColor": "arcoblue",
+          "openApiKey": "POST:/completions",
+          "keywords": "completions legacy prompt"
+        },
+        {
+          "id": "op-create-embedding",
+          "label": "嵌入向量",
+          "page": "op-create-embedding",
+          "icon": "Zap",
+          "badge": "POST",
+          "badgeColor": "arcoblue",
+          "openApiKey": "POST:/embeddings",
+          "keywords": "embeddings 向量"
+        }
+      ]
+    },
+    {
+      "id": "speech",
+      "title": "语音",
+      "defaultExpanded": true,
+      "items": [
+        {
+          "id": "op-asr-transcribe",
+          "label": "语音识别 ASR",
+          "page": "op-asr-transcribe",
+          "icon": "Mic",
+          "badge": "POST",
+          "badgeColor": "cyan",
+          "openApiKey": "POST:/speech/asr/transcribe",
+          "keywords": "asr transcribe 转写"
+        },
+        {
+          "id": "op-tts-synthesize",
+          "label": "语音合成 TTS",
+          "page": "op-tts-synthesize",
+          "icon": "Volume2",
+          "badge": "POST",
+          "badgeColor": "cyan",
+          "openApiKey": "POST:/speech/tts/synthesize",
+          "keywords": "tts synthesize 合成"
+        }
+      ]
+    },
+    {
+      "id": "mail",
+      "title": "邮件 OpenAPI",
+      "defaultExpanded": false,
+      "items": [
+        {
+          "id": "op-mail-templates-list",
+          "label": "列出邮件模版",
+          "page": "op-mail-templates-list",
+          "icon": "Mail",
+          "badge": "GET",
+          "badgeColor": "green",
+          "openApiKey": "GET:/mail-templates",
+          "keywords": "mail templates 列表"
+        },
+        {
+          "id": "op-mail-templates-create",
+          "label": "创建邮件模版",
+          "page": "op-mail-templates-create",
+          "icon": "Mail",
+          "badge": "POST",
+          "badgeColor": "arcoblue",
+          "openApiKey": "POST:/mail-templates",
+          "keywords": "mail template 创建"
+        },
+        {
+          "id": "op-mail-logs-list",
+          "label": "邮件发送日志",
+          "page": "op-mail-logs-list",
+          "icon": "Inbox",
+          "badge": "GET",
+          "badgeColor": "green",
+          "openApiKey": "GET:/mail-logs",
+          "keywords": "mail logs"
+        },
+        {
+          "id": "op-mail-log-get",
+          "label": "单条邮件日志",
+          "page": "op-mail-log-get",
+          "icon": "Inbox",
+          "badge": "GET",
+          "badgeColor": "green",
+          "openApiKey": "GET:/mail-logs/{id}",
+          "keywords": "mail log 详情"
+        },
+        {
+          "id": "op-mail-send",
+          "label": "按模版发信",
+          "page": "op-mail-send",
+          "icon": "Mail",
+          "badge": "POST",
+          "badgeColor": "arcoblue",
+          "openApiKey": "POST:/mail/send",
+          "keywords": "send mail 发送"
+        }
+      ]
+    },
+    {
+      "id": "console",
+      "title": "概念与工具",
+      "defaultExpanded": false,
+      "items": [
+        {
+          "id": "channels-overview",
+          "label": "渠道与路由",
+          "page": "channels-overview",
+          "icon": "RadioTower",
+          "badge": "概念",
+          "badgeColor": "gray",
+          "keywords": "channel 路由 网关"
+        },
+        {
+          "id": "quota-billing",
+          "label": "额度与计费",
+          "page": "quota-billing",
+          "icon": "Users",
+          "badge": "概念",
+          "badgeColor": "gray",
+          "keywords": "quota 计费 用量"
+        },
+        {
+          "id": "playground",
+          "label": "接口调试台",
+          "page": "playground",
+          "icon": "Braces",
+          "badge": "Try",
+          "badgeColor": "purple",
+          "keywords": "调试 apidog postman fetch"
+        },
+        {
+          "id": "logs-guide",
+          "label": "日志与排错",
+          "page": "logs-guide",
+          "icon": "Settings",
+          "keywords": "logs 日志 排错"
+        }
+      ]
+    }
+  ]
+}

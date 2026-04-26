@@ -297,29 +297,56 @@ body {
   justify-content: center;
 }
 
-/* 主框架：侧栏菜单更紧凑 */
+/* 主导航滚动区（仅展开态）：整体与侧栏左右缘拉开，分组与菜单项不再贴死边框 */
+.sidebar-frame-nav-scroll {
+  padding-left: 14px;
+  padding-right: 12px;
+  box-sizing: border-box;
+}
+
+/* 主框架：侧栏菜单内边距与条目对齐 */
+.sidebar-frame-menu.arco-menu {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .sidebar-frame-menu.arco-menu .arco-menu-inner {
-  padding: 4px 0;
+  padding: 6px 0 12px;
 }
 
 .sidebar-frame-menu.arco-menu .arco-menu-item {
   height: 32px;
   line-height: 32px;
-  margin: 0 4px;
+  margin: 1px 0;
   border-radius: 6px;
   font-size: 13px;
 }
 
 .sidebar-frame-menu.arco-menu .arco-menu-item-inner {
-  padding: 0 8px;
+  padding: 0 8px 0 6px;
 }
 
 .sidebar-frame-menu.arco-menu .arco-menu-group-title {
-  padding: 2px 8px 2px;
+  padding: 8px 4px 4px 2px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--color-text-3);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* 「调试」等分组：与上方区块留出间距；分隔线左右内缩，与文案对齐 */
+.sidebar-frame-menu.arco-menu .arco-menu-group-title .sidebar-menu-group-title--section {
+  display: block;
+  margin-top: 12px;
+  margin-left: 2px;
+  margin-right: 2px;
+  padding: 12px 2px 4px 2px;
+  border-top: 1px solid var(--color-border-2);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-3);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 

@@ -11,7 +11,13 @@ import {
 } from '@arco-design/web-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BarChart3 } from 'lucide-react'
-import { type LLMUsageRow, getLLMUsage, listLLMUsage } from '@/api/llmUsage'
+import {
+  type LLMUsageRow,
+  getLLMUsage,
+  getMyLLMUsage,
+  listLLMUsage,
+  listMyLLMUsage,
+} from '@/api/llmUsage'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -32,7 +38,12 @@ function previewText(s: string, max = 80): string {
   return t.length > max ? `${t.slice(0, max)}…` : t
 }
 
-export function LlmUsagePage() {
+export type LlmUsagePageProps = {
+  /** admin：全量查询（可按 user_id 筛选）；user：仅当前登录用户自己的记录 */
+  variant?: 'admin' | 'user'
+}
+
+export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
   const [loading, setLoading] = useState(false)
   const [list, setList] = useState<LLMUsageRow[]>([])
   const [total, setTotal] = useState(0)
@@ -65,19 +76,20 @@ export function LlmUsagePage() {
     return {
       page,
       pageSize,
-      ...(aUser.trim() ? { user_id: aUser.trim() } : {}),
+      ...(variant === 'admin' && aUser.trim() ? { user_id: aUser.trim() } : {}),
       ...(Number.isFinite(ch) && ch > 0 ? { channel_id: ch } : {}),
       ...(aRequest.trim() ? { request_id: aRequest.trim() } : {}),
       ...(aProvider.trim() ? { provider: aProvider.trim() } : {}),
       ...(aModel.trim() ? { model: aModel.trim() } : {}),
       ...(success !== undefined ? { success } : {}),
     }
-  }, [page, pageSize, aUser, aChannel, aRequest, aProvider, aModel, aSuccess])
+  }, [variant, page, pageSize, aUser, aChannel, aRequest, aProvider, aModel, aSuccess])
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await listLLMUsage(listParams)
+      const data =
+        variant === 'user' ? await listMyLLMUsage(listParams) : await listLLMUsage(listParams)
       setList(data.list)
       setTotal(data.total)
     } catch (e) {
@@ -85,7 +97,7 @@ export function LlmUsagePage() {
     } finally {
       setLoading(false)
     }
-  }, [listParams])
+  }, [listParams, variant])
 
   useEffect(() => {
     void load()
@@ -157,7 +169,7 @@ export function LlmUsagePage() {
     setDetailLoading(true)
     void (async () => {
       try {
-        const full = await getLLMUsage(row.id)
+        const full = variant === 'user' ? await getMyLLMUsage(row.id) : await getLLMUsage(row.id)
         setDetailRow(full)
       } catch (e) {
         Message.error(e instanceof Error ? e.message : '加载详情失败')
@@ -246,21 +258,25 @@ export function LlmUsagePage() {
       <div className="mb-3 flex shrink-0 items-center gap-2">
         <BarChart3 size={20} strokeWidth={1.85} className="text-[var(--color-text-2)]" />
         <Title heading={5} className="!mb-0 !mt-0">
-          LLM 用量
+          {variant === 'user' ? '使用日志' : 'LLM 用量'}
         </Title>
       </div>
       <Paragraph type="secondary" className="!mb-4 !mt-0 max-w-3xl text-[13px]">
-        管理员可见：分页查询与详情查看（含渠道 id、多渠道路由尝试 channel_attempts、请求/响应正文）。不提供编辑与删除。
+        {variant === 'user'
+          ? '本页展示当前登录账号的 LLM 调用记录，支持按渠道、模型、请求标识与时间范围筛选；详情含请求与响应正文。数据仅供查阅。'
+          : '管理员可分页查询全部用户的 LLM 用量，并按用户、渠道、模型等条件筛选；详情含渠道 id、多渠道路由尝试 channel_attempts、请求与响应正文。不提供编辑与删除。'}
       </Paragraph>
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
-        <Input
-          addBefore="用户"
-          style={{ width: 160 }}
-          value={qUser}
-          onChange={setQUser}
-          placeholder="user_id"
-        />
+        {variant === 'admin' ? (
+          <Input
+            addBefore="用户"
+            style={{ width: 160 }}
+            value={qUser}
+            onChange={setQUser}
+            placeholder="user_id"
+          />
+        ) : null}
         <Input
           addBefore="渠道ID"
           style={{ width: 120 }}

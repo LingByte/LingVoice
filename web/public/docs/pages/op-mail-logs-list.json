@@ -1,0 +1,16 @@
+{
+  "title": "邮件发送日志",
+  "subtitle": "GET /v1/mail-logs：分页查询邮件发送历史记录。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "本接口用于按条件分页检索邮件发送日志，须使用与邮件能力对应的业务凭证及鉴权请求头。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "GET",
+      "path": "/mail-logs",
+      "showTry": true
+    }
+  ]
+}

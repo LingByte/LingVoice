@@ -1,0 +1,18 @@
+{
+  "title": "Anthropic Messages",
+  "subtitle": "POST /v1/messages：Claude 等模型（凭证 kind=llm）。",
+  "blocks": [
+    {
+      "type": "callout",
+      "variant": "info",
+      "title": "鉴权说明",
+      "content": "与 Anthropic 官方约定一致，可使用 **x-api-key** 或 **Bearer**。当调试路径为 `/v1/messages` 时，调试台将优先采用 x-api-key 请求头。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "POST",
+      "path": "/messages",
+      "showTry": true
+    }
+  ]
+}

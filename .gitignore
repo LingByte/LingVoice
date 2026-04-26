@@ -45,7 +45,9 @@ lerna-debug.log*
 node_modules
 web/.npm-cache/
 .gocache/
-dist
+# Vite output: ignore build artifacts but keep web/dist/index.html for go:embed (assets.go)
+web/dist/*
+!web/dist/index.html
 dist-ssr
 *.local
 

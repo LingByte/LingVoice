@@ -1,0 +1,16 @@
+{
+  "title": "语音合成（TTS）",
+  "subtitle": "POST /v1/speech/tts/synthesize：根据文本生成语音输出。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "本接口须使用 **kind=tts** 的 API 凭证，并采用 **Bearer** 鉴权。`response_type` 可取 `audio_base64` 或 `url`；若选择 `url`，须于部署侧正确配置对象存储等相关参数。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "POST",
+      "path": "/speech/tts/synthesize",
+      "showTry": true
+    }
+  ]
+}

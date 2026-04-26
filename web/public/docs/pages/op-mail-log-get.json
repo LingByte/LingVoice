@@ -1,0 +1,16 @@
+{
+  "title": "获取单条邮件日志",
+  "subtitle": "GET /v1/mail-logs/{id}：按主键读取单条发送记录详情。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "调试面板中路径内的 `{id}` 可能已替换为示例值（如 `1`）；在生产调用时，请将其修改为实际的日志主键标识。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "GET",
+      "path": "/mail-logs/{id}",
+      "showTry": true
+    }
+  ]
+}

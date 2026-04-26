@@ -87,9 +87,23 @@ export async function listLLMUsage(params: LLMUsageListParams): Promise<Paginate
   return assertOk(r)
 }
 
+/** 当前登录用户本人的用量（GET /api/me/llm-usage，仅登录即可，不要求管理员） */
+export async function listMyLLMUsage(params: LLMUsageListParams): Promise<Paginated<LLMUsageRow>> {
+  const r = await get<Paginated<LLMUsageRow>>(`/api/user/llm-usage${toQuery(params)}`)
+  return assertOk(r)
+}
+
 export async function getLLMUsage(id: string): Promise<LLMUsageRow> {
   const enc = encodeURIComponent(id)
   const r = await get<{ usage: LLMUsageRow }>(`/api/llm-usage/${enc}`)
+  const d = assertOk(r)
+  return d.usage
+}
+
+/** 当前用户本人单条用量详情（GET /api/me/llm-usage/:id） */
+export async function getMyLLMUsage(id: string): Promise<LLMUsageRow> {
+  const enc = encodeURIComponent(id)
+  const r = await get<{ usage: LLMUsageRow }>(`/api/user/llm-usage/${enc}`)
   const d = assertOk(r)
   return d.usage
 }

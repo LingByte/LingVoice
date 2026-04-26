@@ -1,0 +1,17 @@
+{
+  "title": "日志与排错",
+  "subtitle": "从客户端与服务端两侧定位请求失败及上游异常的方法说明。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "## 客户端\n\n调试台将展示 **HTTP 状态码**、耗时及原始响应体（在可行范围内格式化为 JSON），便于初步判断失败原因。\n\n## 服务端\n\n请在部署环境中检索网关与渠道适配器日志。若已启用 **请求 ID** 透传，可将该标识提供给运维人员以贯通全链路。"
+    },
+    {
+      "type": "code",
+      "language": "json",
+      "title": "典型错误体（示意）",
+      "readOnly": true,
+      "code": "{\n  \"error\": {\n    \"message\": \"invalid_api_key\",\n    \"type\": \"authentication_error\"\n  }\n}"
+    }
+  ]
+}

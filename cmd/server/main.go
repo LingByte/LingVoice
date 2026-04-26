@@ -5,8 +5,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/LingByte/LingVoice"
 	"github.com/LingByte/LingVoice/cmd/bootstrap"
 	"github.com/LingByte/LingVoice/internal/handlers"
 	"github.com/LingByte/LingVoice/internal/listeners"
@@ -112,7 +115,7 @@ func main() {
 	// 8. Load Base Configs
 	var addr = config.GlobalConfig.Server.Addr
 	if addr == "" {
-		addr = ":8082"
+		addr = ":7070"
 	}
 
 	var DBDriver = config.GlobalConfig.Database.Driver
@@ -136,18 +139,12 @@ func main() {
 	r.RedirectTrailingSlash = false
 	r.RedirectFixedPath = false
 	r.MaxMultipartMemory = 32 << 20 // 32 MB
-
-	// Cookie Register
-	secret := utils.GetEnv(constants.ENV_SESSION_SECRET)
-	if secret != "" {
-		expireDays := utils.GetIntEnv(constants.ENV_SESSION_EXPIRE_DAYS)
-		if expireDays <= 0 {
-			expireDays = 7
-		}
-		r.Use(middleware.WithCookieSession(secret, int(expireDays)*24*3600))
-	} else {
-		r.Use(middleware.WithMemSession(utils.RandText(32)))
+	secret := strings.TrimSpace(config.GlobalConfig.Auth.SessionSecret)
+	expireDays, _ := strconv.Atoi(strings.TrimSpace(config.GlobalConfig.Auth.SecretExpireDays))
+	if expireDays <= 0 {
+		expireDays = 7
 	}
+	r.Use(middleware.WithCookieSession(secret, expireDays*24*3600))
 
 	// Cors Handle Middleware
 	r.Use(middleware.CorsMiddleware())
@@ -158,14 +155,21 @@ func main() {
 	// 18. Register Routes
 	app.RegisterRoutes(r)
 
-	// 21. Emit system initialization signal
+	webAssets := LingVoice.NewCombineEmbedFS(
+		LingVoice.HintAssetsRoot("web/dist"),
+		LingVoice.EmbedFS{EmbedRoot: "web/dist", Embedfs: LingVoice.EmbedWebAssets},
+	)
+	LingVoice.Mount(r, webAssets)
+	logger.Info("already embed static resource for CombineEmbedFS")
+
+	// 19. Emit system initialization signal
 	utils.Sig().Emit(constants.SigInitSystemConfig, nil)
 
 	httpServer := &http.Server{
 		Addr:           addr,
 		Handler:        r,
 		ReadTimeout:    120 * time.Second,
-		WriteTimeout:   300 * time.Second, // LLM / OpenAPI 流式响应需较长写窗口
+		WriteTimeout:   300 * time.Second,
 		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
@@ -184,16 +188,16 @@ func main() {
 	}
 
 	if httpServer.TLSConfig != nil {
-		logger.Info("user-service HTTPS", zap.String("addr", addr))
-		if err := httpServer.ListenAndServeTLS("", ""); err != nil {
+		logger.Info("LingVoice HTTPS", zap.String("addr", addr))
+		if err := httpServer.ListenAndServeTLS(config.GlobalConfig.Server.SSLKeyFile, config.GlobalConfig.Server.SSLCertFile); err != nil {
 			logger.Error("user-service failed", zap.Error(err))
 		}
 		return
 	}
 
-	logger.Info("user-service HTTP", zap.String("addr", addr))
+	logger.Info("LingVoice HTTP", zap.String("addr", addr))
 	if err := httpServer.ListenAndServe(); err != nil {
-		logger.Error("user-service failed", zap.Error(err))
+		logger.Error("LingVoice failed", zap.Error(err))
 	}
 
 }

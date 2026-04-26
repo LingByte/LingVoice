@@ -231,13 +231,24 @@ func (h *Handlers) postRefresh(c *gin.Context) {
 }
 
 type adminPatchUserBody struct {
-	Status         string `json:"status"`
-	Role           string `json:"role"`
-	DisplayName    string `json:"display_name"`
-	Locale         string `json:"locale"`
-	RemainQuota    *int   `json:"remain_quota"`
-	UsedQuota      *int   `json:"used_quota"`
-	UnlimitedQuota *bool  `json:"unlimited_quota"`
+	Status             string  `json:"status"`
+	Role               string  `json:"role"`
+	DisplayName        *string `json:"display_name"`
+	Locale             *string `json:"locale"`
+	Phone              *string `json:"phone"`
+	FirstName          *string `json:"first_name"`
+	LastName           *string `json:"last_name"`
+	Avatar             *string `json:"avatar"`
+	Timezone           *string `json:"timezone"`
+	Gender             *string `json:"gender"`
+	City               *string `json:"city"`
+	Region             *string `json:"region"`
+	EmailNotifications *bool   `json:"email_notifications"`
+	PhoneVerified      *bool   `json:"phone_verified"`
+	EmailVerified      *bool   `json:"email_verified"`
+	RemainQuota        *int    `json:"remain_quota"`
+	UsedQuota          *int    `json:"used_quota"`
+	UnlimitedQuota     *bool   `json:"unlimited_quota"`
 }
 
 // listAdminUsers GET /api/admin/users
@@ -381,11 +392,49 @@ func (h *Handlers) patchAdminUser(c *gin.Context) {
 			vals["role"] = r
 		}
 	}
-	if body.DisplayName != "" {
-		vals["display_name"] = strings.TrimSpace(body.DisplayName)
+	if body.DisplayName != nil {
+		vals["display_name"] = strings.TrimSpace(*body.DisplayName)
 	}
-	if body.Locale != "" {
-		vals["locale"] = strings.TrimSpace(body.Locale)
+	if body.Locale != nil {
+		vals["locale"] = strings.TrimSpace(*body.Locale)
+	}
+	if body.Phone != nil {
+		p := strings.TrimSpace(*body.Phone)
+		if len(p) > 64 {
+			response.FailWithCode(c, 400, "phone 过长", nil)
+			return
+		}
+		vals["phone"] = p
+	}
+	if body.FirstName != nil {
+		vals["first_name"] = strings.TrimSpace(*body.FirstName)
+	}
+	if body.LastName != nil {
+		vals["last_name"] = strings.TrimSpace(*body.LastName)
+	}
+	if body.Avatar != nil {
+		vals["avatar"] = strings.TrimSpace(*body.Avatar)
+	}
+	if body.Timezone != nil {
+		vals["timezone"] = strings.TrimSpace(*body.Timezone)
+	}
+	if body.Gender != nil {
+		vals["gender"] = strings.TrimSpace(*body.Gender)
+	}
+	if body.City != nil {
+		vals["city"] = strings.TrimSpace(*body.City)
+	}
+	if body.Region != nil {
+		vals["region"] = strings.TrimSpace(*body.Region)
+	}
+	if body.EmailNotifications != nil {
+		vals["email_notifications"] = *body.EmailNotifications
+	}
+	if body.PhoneVerified != nil {
+		vals["phone_verified"] = *body.PhoneVerified
+	}
+	if body.EmailVerified != nil {
+		vals["email_verified"] = *body.EmailVerified
 	}
 	if body.RemainQuota != nil {
 		v := *body.RemainQuota
@@ -420,6 +469,41 @@ func (h *Handlers) patchAdminUser(c *gin.Context) {
 		return
 	}
 	response.Success(c, "已更新", gin.H{"user": adminUserJSON(row)})
+}
+
+// deleteAdminUser DELETE /api/admin/users/:id（软删除；不可删除本人；非超管不可删超级管理员）
+func (h *Handlers) deleteAdminUser(c *gin.Context) {
+	op := models.CurrentUser(c)
+	if !requireAdmin(c) {
+		return
+	}
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		response.FailWithCode(c, 400, "无效的用户 id", nil)
+		return
+	}
+	if op.ID == id {
+		response.FailWithCode(c, 400, "不能删除本人账号", nil)
+		return
+	}
+	var row models.User
+	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.FailWithCode(c, 404, "用户不存在", nil)
+			return
+		}
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+	if row.IsSuperAdmin() && !op.IsSuperAdmin() {
+		response.FailWithCode(c, 403, "无权删除超级管理员账号", nil)
+		return
+	}
+	if err := h.db.Delete(&row).Error; err != nil {
+		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
+		return
+	}
+	response.Success(c, "已删除", gin.H{"id": strconv.FormatUint(uint64(id), 10)})
 }
 
 type patchUserProfileBody struct {

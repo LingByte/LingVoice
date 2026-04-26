@@ -1,0 +1,16 @@
+{
+  "title": "创建邮件模版",
+  "subtitle": "POST /v1/mail-templates：新建邮件 HTML 模版及元数据。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "创建成功后，模版可在控制台或后续接口中用于审核、发布及发信编排；字段约束以 OpenAPI 模式为准。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "POST",
+      "path": "/mail-templates",
+      "showTry": true
+    }
+  ]
+}

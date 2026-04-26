@@ -1,0 +1,16 @@
+{
+  "title": "按模版发送邮件",
+  "subtitle": "POST /v1/mail/send：基于已发布邮件模版触达发送。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "请求体中 `params` 的键须与模版 HTML 内 `{{.Key}}` 占位符一致；`subject` 为可选项，亦可包含模版变量。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "POST",
+      "path": "/mail/send",
+      "showTry": true
+    }
+  ]
+}

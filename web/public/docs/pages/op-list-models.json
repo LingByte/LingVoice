@@ -1,0 +1,16 @@
+{
+  "title": "列出可用模型",
+  "subtitle": "GET /v1/models：返回当前凭证可见的模型集合。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "本接口返回当前 API 凭证可见范围内的模型列表，其整体结构与 OpenAI **Models** 列表响应相类似。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "GET",
+      "path": "/models",
+      "showTry": true
+    }
+  ]
+}

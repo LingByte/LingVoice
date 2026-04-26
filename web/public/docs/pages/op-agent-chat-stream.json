@@ -1,0 +1,16 @@
+{
+  "title": "Agent 推理流",
+  "subtitle": "POST /v1/agent/chat/stream：以 NDJSON 形式流式返回推理事件。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "在凭证分组下选用 **OpenAI 协议** LLM 渠道时，由服务端执行多步规划与工具调用编排；响应正文为 **NDJSON**，每行一个 JSON 对象，并包含 `event` 与 `data` 等字段。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "POST",
+      "path": "/agent/chat/stream",
+      "showTry": true
+    }
+  ]
+}

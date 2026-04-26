@@ -1,7 +1,7 @@
-import type { ComponentType, ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { Avatar, Button, Dropdown, Menu, Space, Tooltip } from '@arco-design/web-react'
-import { Key, LogOut, Megaphone, Moon, Sun, User } from 'lucide-react'
+import { type LucideIcon, Key, LogOut, Megaphone, Moon, Sun, User } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { AnnouncementsModal } from '@/components/announcements/AnnouncementsModal'
 import { logoutSession } from '@/api/auth'
@@ -18,7 +18,7 @@ function roleLabel(role: string): string {
   return '用户'
 }
 
-function menuIcon(Icon: ComponentType<{ size?: number; strokeWidth?: number; className?: string }>) {
+function menuIcon(Icon: LucideIcon) {
   return (
     <Icon size={16} strokeWidth={1.75} className="text-[var(--color-text-2)]" />
   )

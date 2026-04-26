@@ -1,0 +1,16 @@
+{
+  "title": "创建文本补全",
+  "subtitle": "POST /v1/completions：传统 prompt 式文本补全（非对话形态）。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "本接口适用于传统 **prompt** 式补全场景（非 chat）。请求体须提供 `model` 与 `prompt` 等必填项。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "POST",
+      "path": "/completions",
+      "showTry": true
+    }
+  ]
+}

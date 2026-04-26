@@ -37,16 +37,16 @@ type Config struct {
 
 // ServerConfig server configuration
 type ServerConfig struct {
-	Name        string `env:"SERVER_NAME"`
-	Desc        string `env:"SERVER_DESC"`
-	URL         string `env:"SERVER_URL"`
-	Logo        string `env:"SERVER_LOGO"`
-	TermsURL    string `env:"SERVER_TERMS_URL"`
-	Version     string `env:"SERVER_VERSION"`
-	Addr        string `env:"ADDR"`
-	Mode        string `env:"MODE"`
-	DocsPrefix  string `env:"DOCS_PREFIX"`
-	APIPrefix   string `env:"API_PREFIX"`
+	Name       string `env:"SERVER_NAME"`
+	Desc       string `env:"SERVER_DESC"`
+	URL        string `env:"SERVER_URL"`
+	Logo       string `env:"SERVER_LOGO"`
+	TermsURL   string `env:"SERVER_TERMS_URL"`
+	Version    string `env:"SERVER_VERSION"`
+	Addr       string `env:"ADDR"`
+	Mode       string `env:"MODE"`
+	DocsPrefix string `env:"DOCS_PREFIX"`
+	APIPrefix  string `env:"API_PREFIX"`
 	// WebAppURL is the browser origin for the SPA (e.g. http://localhost:5173). Used in magic-link emails; falls back to URL when empty.
 	WebAppURL   string `env:"WEB_APP_URL"`
 	SSLEnabled  bool   `env:"SSL_ENABLED"`
@@ -95,7 +95,7 @@ type SpeechQuotaConfig struct {
 	ASRInputBytesPerSec int64 `mapstructure:"-"` // OPENAPI_SPEECH_ASR_BYTES_PER_SEC 默认 32000
 	// TTSOutputBytesPerSec 由输出音频字节估算播放时长；0 表示不用输出字节只用墙钟。
 	TTSOutputBytesPerSec int64 `mapstructure:"-"` // OPENAPI_SPEECH_TTS_BYTES_PER_SEC 默认 16000
-	MinDeltaOnSuccess int `mapstructure:"-"` // OPENAPI_SPEECH_QUOTA_MIN_ON_SUCCESS 默认 1
+	MinDeltaOnSuccess    int   `mapstructure:"-"` // OPENAPI_SPEECH_QUOTA_MIN_ON_SUCCESS 默认 1
 }
 
 // TranslationConfig optional third-party translation (MyMemory).
@@ -206,10 +206,10 @@ func Load() error {
 			Daily:      getBoolOrDefault("LOG_DAILY", true),
 		},
 		Auth: AuthConfig{
-			Header:           getStringOrDefault("AUTH_HEADER", "Authorization"),
-			SessionSecret:    getStringOrDefault("SESSION_SECRET", generateDefaultSessionSecret()),
-			SecretExpireDays: getStringOrDefault("SESSION_EXPIRE_DAYS", "7"),
-			APISecretKey:     getStringOrDefault("API_SECRET_KEY", generateDefaultSessionSecret()),
+			Header:                getStringOrDefault("AUTH_HEADER", "Authorization"),
+			SessionSecret:         getStringOrDefault("SESSION_SECRET", generateDefaultSessionSecret()),
+			SecretExpireDays:      getStringOrDefault("SESSION_EXPIRE_DAYS", "7"),
+			APISecretKey:          getStringOrDefault("API_SECRET_KEY", generateDefaultSessionSecret()),
 			JWTSecret:             getStringOrDefault("JWT_SECRET", ""),
 			JWTExpireHours:        getIntOrDefault("JWT_EXPIRE_HOURS", 24),
 			JWTRefreshSecret:      getStringOrDefault("JWT_REFRESH_SECRET", ""),
@@ -232,11 +232,11 @@ func Load() error {
 			},
 			OpenAPIQuotaGroupRatios: parseOpenAPIQuotaGroupRatiosJSON(getStringOrDefault("OPENAPI_QUOTA_GROUP_RATIOS", "")),
 			SpeechQuota: SpeechQuotaConfig{
-				ASRUnitsPerBillableSecond:  getFloatOrDefault("OPENAPI_SPEECH_ASR_UNITS_PER_SEC", 1),
-				TTSUnitsPerBillableSecond:  getFloatOrDefault("OPENAPI_SPEECH_TTS_UNITS_PER_SEC", 1),
-				ASRInputBytesPerSec:        getInt64EnvParsed("OPENAPI_SPEECH_ASR_BYTES_PER_SEC", 32000),
-				TTSOutputBytesPerSec:       getInt64EnvParsed("OPENAPI_SPEECH_TTS_BYTES_PER_SEC", 16000),
-				MinDeltaOnSuccess:          getIntOrDefault("OPENAPI_SPEECH_QUOTA_MIN_ON_SUCCESS", 1),
+				ASRUnitsPerBillableSecond: getFloatOrDefault("OPENAPI_SPEECH_ASR_UNITS_PER_SEC", 1),
+				TTSUnitsPerBillableSecond: getFloatOrDefault("OPENAPI_SPEECH_TTS_UNITS_PER_SEC", 1),
+				ASRInputBytesPerSec:       getInt64EnvParsed("OPENAPI_SPEECH_ASR_BYTES_PER_SEC", 32000),
+				TTSOutputBytesPerSec:      getInt64EnvParsed("OPENAPI_SPEECH_TTS_BYTES_PER_SEC", 16000),
+				MinDeltaOnSuccess:         getIntOrDefault("OPENAPI_SPEECH_QUOTA_MIN_ON_SUCCESS", 1),
 			},
 		},
 		Middleware: loadMiddlewareConfig(),
@@ -330,12 +330,17 @@ func parseDuration(s string, defaultVal time.Duration) time.Duration {
 	return d
 }
 
-// generateDefaultSessionSecret generates default session secret (for development only)
+// generateDefaultSessionSecret returns SESSION_SECRET from env when set; otherwise a default.
+// Non-production uses a stable default so local restarts do not invalidate existing session cookies.
 func generateDefaultSessionSecret() string {
 	if secret := utils.GetEnv("SESSION_SECRET"); secret != "" {
 		return secret
 	}
-	return "default-secret-key-change-in-production-" + utils.RandText(16)
+	mode := strings.ToLower(strings.TrimSpace(utils.GetEnv("MODE")))
+	if mode == "production" {
+		return "default-secret-key-change-in-production-" + utils.RandText(16)
+	}
+	return "default-dev-session-secret-not-for-production"
 }
 
 // loadMiddlewareConfig loads middleware configuration
@@ -522,4 +527,3 @@ func (c *Config) OpenAPIQuotaGroupRatio(group string) float64 {
 	}
 	return 1
 }
-

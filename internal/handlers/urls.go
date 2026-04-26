@@ -141,6 +141,7 @@ func (h *Handlers) Register(engine *gin.Engine) {
 		admin.GET("/users", h.listAdminUsers)
 		admin.GET("/users/:id", h.getAdminUser)
 		admin.PATCH("/users/:id", h.patchAdminUser)
+		admin.DELETE("/users/:id", h.deleteAdminUser)
 		admin.GET("/announcements", h.listAdminAnnouncements)
 		admin.POST("/announcements", h.createSiteAnnouncement)
 		admin.PUT("/announcements/:id", h.updateSiteAnnouncement)
@@ -216,5 +217,7 @@ func (h *Handlers) registerAuthRoutes(api *gin.RouterGroup) {
 	{
 		user.PATCH("/profile", h.patchUserProfile)
 		user.POST("/avatar", h.postUserAvatar)
+		user.GET("/llm-usage", h.listLLMUsageMe)
+		user.GET("/llm-usage/:id", h.getLLMUsageMe)
 	}
 }

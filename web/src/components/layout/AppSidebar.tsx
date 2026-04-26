@@ -2,7 +2,6 @@ import { Button, Layout, Menu, Tooltip } from '@arco-design/web-react'
 import {
   BarChart3,
   Bot,
-  Braces,
   ClipboardList,
   Cpu,
   BookOpen,
@@ -38,14 +37,18 @@ type MenuItem = {
 }
 
 type MenuGroup = {
+  key: string
   title: string
   adminOnly?: boolean
+  /** 在该分组标题上方加分隔线与留白（用于「调试」与上方区块区分） */
+  sectionBreakBefore?: boolean
   items: MenuItem[]
 }
 
 const menuGroups: MenuGroup[] = [
   {
-    title: '主功能',
+    key: 'play',
+    title: '演练场',
     items: [
       {
         key: '/',
@@ -53,9 +56,19 @@ const menuGroups: MenuGroup[] = [
         icon: <MessageSquare size={16} strokeWidth={1.85} />,
       },
       {
+        key: '/channels/llm-plaza',
+        label: '模型广场',
+        icon: <Store size={16} strokeWidth={1.85} />,
+      },
+      {
         key: '/dashboard',
         label: '数据面板',
         icon: <LayoutDashboard size={16} strokeWidth={1.85} />,
+      },
+      {
+        key: '/usage/llm-logs',
+        label: '使用日志',
+        icon: <ScrollText size={16} strokeWidth={1.85} />,
       },
       {
         key: '/docs',
@@ -70,6 +83,7 @@ const menuGroups: MenuGroup[] = [
     ],
   },
   {
+    key: 'admin',
     title: '管理',
     adminOnly: true,
     items: [
@@ -87,11 +101,6 @@ const menuGroups: MenuGroup[] = [
         key: '/channels/llm-model-metas',
         label: '模型元数据',
         icon: <BookOpen size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/channels/llm-plaza',
-        label: '模型广场',
-        icon: <Store size={16} strokeWidth={1.85} />,
       },
       {
         key: '/channels/asr',
@@ -145,16 +154,6 @@ const menuGroups: MenuGroup[] = [
       },
     ],
   },
-  {
-    title: '调试',
-    items: [
-      {
-        key: '/debug/v1',
-        label: 'V1 网关调试',
-        icon: <Braces size={16} strokeWidth={1.85} />,
-      },
-    ],
-  },
 ] as const
 
 function menuPathSelected(pathname: string, itemKey: string): boolean {
@@ -162,6 +161,7 @@ function menuPathSelected(pathname: string, itemKey: string): boolean {
   if (itemKey === '/notify/channels') return pathname.startsWith('/notify/channels')
   if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
   if (itemKey === '/notify/llm-usage') return pathname === '/notify/llm-usage'
+  if (itemKey === '/usage/llm-logs') return pathname === '/usage/llm-logs'
   if (itemKey === '/notify/speech-usage') return pathname === '/notify/speech-usage'
   if (itemKey === '/admin/agent-runs') return pathname === '/admin/agent-runs'
   if (itemKey === '/admin/users') return pathname === '/admin/users'
@@ -257,7 +257,13 @@ export function AppSidebar() {
           </div>
         )}
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          className={
+            collapsed
+              ? 'min-h-0 flex-1 overflow-y-auto'
+              : 'sidebar-frame-nav-scroll min-h-0 flex-1 overflow-y-auto'
+          }
+        >
           {collapsed ? (
             <nav
               className="sidebar-collapsed-nav flex flex-col items-center gap-2 py-2"
@@ -290,7 +296,18 @@ export function AppSidebar() {
               className="sidebar-frame-menu border-none"
             >
               {visibleGroups.map((group) => (
-                <Menu.ItemGroup key={group.title} title={group.title}>
+                <Menu.ItemGroup
+                  key={group.key}
+                  title={
+                    group.sectionBreakBefore ? (
+                      <span className="sidebar-menu-group-title sidebar-menu-group-title--section">
+                        {group.title}
+                      </span>
+                    ) : (
+                      group.title
+                    )
+                  }
+                >
                   {group.items.map((item) => (
                     <Menu.Item key={item.key}>
                       <span className="inline-flex items-center gap-2 [&_svg]:h-4 [&_svg]:w-4">

@@ -1,0 +1,16 @@
+{
+  "title": "创建嵌入向量",
+  "subtitle": "POST /v1/embeddings：将输入文本编码为稠密向量。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "本接口将输入文本编码为向量表示，可用于语义检索、聚类及相关下游分析任务。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "POST",
+      "path": "/embeddings",
+      "showTry": true
+    }
+  ]
+}

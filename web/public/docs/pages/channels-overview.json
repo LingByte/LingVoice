@@ -1,0 +1,16 @@
+{
+  "title": "渠道与路由",
+  "subtitle": "阐述 LingVoice 如何将外部请求路由至具体上游厂商渠道。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "## 渠道（Channel）\n\n在控制台完成 **LLM、ASR、TTS** 等渠道配置后，网关将依据 API 密钥所绑定的 **group** 与协议类型，选择匹配的上游服务实例。\n\n## 与本文档的关系\n\n左侧 **OpenAPI 网关** 分组描述的是 **对外公开的 HTTP 契约**；渠道管理、额度与用户等控制台能力另由内部管理接口承载，可在主应用 **V1 网关调试** 页查看相关预设路径。"
+    },
+    {
+      "type": "callout",
+      "variant": "success",
+      "title": "扩展说明",
+      "content": "若需将新增控制台接口纳入本文档站，请在 `nav.json` 中增加导航条目，并于 `pages/` 目录下新增对应 JSON 页面文件（可组合 `markdown` 与 `openapiOperation` 等块类型）。"
+    }
+  ]
+}

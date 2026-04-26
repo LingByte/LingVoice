@@ -1,0 +1,16 @@
+{
+  "title": "语音识别（ASR）",
+  "subtitle": "POST /v1/speech/asr/transcribe：提交音频并返回转写文本。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "本接口须使用 **kind=asr** 的 API 凭证，并采用 **Bearer** 鉴权。请求体中 `audio_base64` 与 `audio_url` 二者须且仅能填写其一。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "POST",
+      "path": "/speech/asr/transcribe",
+      "showTry": true
+    }
+  ]
+}

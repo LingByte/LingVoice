@@ -42,10 +42,29 @@ func parseQueryBool(c *gin.Context, name string) (bool, bool) {
 	}
 }
 
-// listLLMUsage 分页查询 LLM 用量（需登录且管理员）。
+// listLLMUsageMe GET /api/me/llm-usage — 仅当前登录用户本人的用量分页（不要求管理员；忽略 user_id 查询参数）。
+func (h *Handlers) listLLMUsageMe(c *gin.Context) {
+	h.listLLMUsageInternal(c, true)
+}
+
+// listLLMUsage GET /api/llm-usage — 管理员可查全量并按 user_id 等筛选；非管理员等同仅本人。
 func (h *Handlers) listLLMUsage(c *gin.Context) {
-	if !requireAdmin(c) {
+	h.listLLMUsageInternal(c, false)
+}
+
+// listLLMUsageInternal selfOnly 为 true 时恒按当前用户过滤（供「使用日志」等入口专用）。
+func (h *Handlers) listLLMUsageInternal(c *gin.Context, selfOnly bool) {
+	u := models.CurrentUser(c)
+	if u == nil {
+		response.FailWithCode(c, 401, "未登录", nil)
 		return
+	}
+	selfID := strconv.FormatUint(uint64(u.ID), 10)
+	forcedUserID := ""
+	if selfOnly {
+		forcedUserID = selfID
+	} else if !u.IsAdmin() {
+		forcedUserID = selfID
 	}
 	page := parseQueryInt(c, "page", 1)
 	if page < 1 {
@@ -55,7 +74,9 @@ func (h *Handlers) listLLMUsage(c *gin.Context) {
 	offset := (page - 1) * pageSize
 
 	q := h.db.Model(&models.LLMUsage{})
-	if s := strings.TrimSpace(c.Query("user_id")); s != "" {
+	if forcedUserID != "" {
+		q = q.Where("user_id = ?", forcedUserID)
+	} else if s := strings.TrimSpace(c.Query("user_id")); s != "" {
 		q = q.Where("user_id = ?", s)
 	}
 	if s := strings.TrimSpace(c.Query("channel_id")); s != "" {
@@ -92,7 +113,9 @@ func (h *Handlers) listLLMUsage(c *gin.Context) {
 	}
 
 	listQ := h.db.Model(&models.LLMUsage{})
-	if s := strings.TrimSpace(c.Query("user_id")); s != "" {
+	if forcedUserID != "" {
+		listQ = listQ.Where("user_id = ?", forcedUserID)
+	} else if s := strings.TrimSpace(c.Query("user_id")); s != "" {
 		listQ = listQ.Where("user_id = ?", s)
 	}
 	if s := strings.TrimSpace(c.Query("channel_id")); s != "" {
@@ -140,9 +163,20 @@ func (h *Handlers) listLLMUsage(c *gin.Context) {
 	})
 }
 
-// getLLMUsage 按主键 id 查询单条用量（需登录且管理员）。
+// getLLMUsageMe GET /api/me/llm-usage/:id — 仅当记录属于当前用户时返回（不要求管理员）。
+func (h *Handlers) getLLMUsageMe(c *gin.Context) {
+	h.getLLMUsageInternal(c, true)
+}
+
+// getLLMUsage GET /api/llm-usage/:id — 管理员可查任意；非管理员仅可查本人记录。
 func (h *Handlers) getLLMUsage(c *gin.Context) {
-	if !requireAdmin(c) {
+	h.getLLMUsageInternal(c, false)
+}
+
+func (h *Handlers) getLLMUsageInternal(c *gin.Context, selfOnly bool) {
+	u := models.CurrentUser(c)
+	if u == nil {
+		response.FailWithCode(c, 401, "未登录", nil)
 		return
 	}
 	id := strings.TrimSpace(c.Param("id"))
@@ -158,6 +192,18 @@ func (h *Handlers) getLLMUsage(c *gin.Context) {
 		}
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
+	}
+	self := strconv.FormatUint(uint64(u.ID), 10)
+	if selfOnly {
+		if row.UserID != self {
+			response.FailWithCode(c, 403, "无权访问该记录", nil)
+			return
+		}
+	} else if !u.IsAdmin() {
+		if row.UserID != self {
+			response.FailWithCode(c, 403, "无权访问该记录", nil)
+			return
+		}
 	}
 	response.Success(c, "ok", gin.H{"usage": row})
 }

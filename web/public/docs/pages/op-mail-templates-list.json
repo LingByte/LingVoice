@@ -1,0 +1,16 @@
+{
+  "title": "列出邮件模版",
+  "subtitle": "GET /v1/mail-templates：分页返回邮件模版列表。",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "本接口须使用 **kind=email** 的凭证，并携带 **LAuthorization**、**L-Timestamp**、**L-Nonce** 等约定请求头。支持通过 `page`、`pageSize` 等查询参数控制分页行为。"
+    },
+    {
+      "type": "openapiOperation",
+      "method": "GET",
+      "path": "/mail-templates",
+      "showTry": true
+    }
+  ]
+}

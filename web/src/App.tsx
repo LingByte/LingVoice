@@ -1,5 +1,6 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { MainLayout } from '@/layouts/MainLayout'
+import { DocsLayout } from '@/layouts/DocsLayout'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { CredentialsPage } from '@/pages/CredentialsPage'
 import { ChatPage } from '@/pages/ChatPage'
@@ -19,6 +20,7 @@ import { LlmChannelsPage } from '@/pages/LlmChannelsPage'
 import { LlmModelMetasPage } from '@/pages/LlmModelMetasPage'
 import { ModelPlazaPage } from '@/pages/ModelPlazaPage'
 import { LlmUsagePage } from '@/pages/LlmUsagePage'
+import { UsageLogsPage } from '@/pages/UsageLogsPage'
 import { SpeechUsagePage } from '@/pages/SpeechUsagePage'
 import { AsrChannelsPage } from '@/pages/AsrChannelsPage'
 import { TtsChannelsPage } from '@/pages/TtsChannelsPage'
@@ -48,11 +50,11 @@ export default function App() {
           <Route path="notify/mail-templates/:templateId" element={<MailTemplateEditPage />} />
           <Route path="notify/mail-logs" element={<MailLogsPage />} />
           <Route path="notify/llm-usage" element={<LlmUsagePage />} />
+          <Route path="usage/llm-logs" element={<UsageLogsPage />} />
           <Route path="notify/speech-usage" element={<SpeechUsagePage />} />
           <Route path="admin/agent-runs" element={<AgentRunsPage />} />
           <Route path="admin/users" element={<AdminUsersPage />} />
           <Route path="admin/announcements" element={<AdminAnnouncementsPage />} />
-          <Route path="docs" element={<DocsPage />} />
           <Route path="about" element={<AboutPage />} />
           <Route path="announcements" element={<AnnouncementsPage />} />
           <Route path="channels/llm" element={<LlmChannelsPage />} />
@@ -63,6 +65,9 @@ export default function App() {
           <Route path="channels/tts" element={<TtsChannelsPage />} />
           <Route path="debug/v1" element={<V1ApiDebugPage />} />
           <Route path="*" element={<NotFoundPage />} />
+        </Route>
+        <Route path="/docs" element={<DocsLayout />}>
+          <Route index element={<DocsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
