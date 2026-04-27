@@ -159,14 +159,13 @@ func (h *Handlers) postRegister(c *gin.Context) {
 		return
 	}
 	// Update the temporary user record with the actual registration data
-	source := models.NormalizeUserSource(req.Source)
 	hashedPassword := models.HashPassword(password)
 	updateData := map[string]any{
 		"password":           hashedPassword,
 		"status":             models.UserStatusActive,
 		"email_verified":     true,
 		"email_verify_token": "",
-		"source":             source,
+		"source":             req.Source,
 	}
 	if strings.TrimSpace(req.DisplayName) != "" {
 		updateData["display_name"] = strings.TrimSpace(req.DisplayName)
@@ -416,17 +415,12 @@ func (h *Handlers) patchAdminUser(c *gin.Context) {
 	}
 
 	vals := map[string]any{}
-	if s := strings.TrimSpace(body.Status); s != "" {
-		norm := models.NormalizeUserStatus(s)
-		if norm == "" {
-			response.FailWithCode(c, 400, "无效的 status", nil)
-			return
-		}
-		if op.ID == row.ID && !models.UserStatusAllowsLogin(norm) {
+	if status := strings.TrimSpace(body.Status); status != "" {
+		if op.ID == row.ID && !models.UserStatusAllowsLogin(status) {
 			response.FailWithCode(c, 400, "不能将本人账号设为不可登录状态", nil)
 			return
 		}
-		vals["status"] = norm
+		vals["status"] = status
 	}
 	if r := strings.TrimSpace(body.Role); r != "" {
 		if r != models.RoleUser && r != models.RoleAdmin && r != models.RoleSuperAdmin {

@@ -45,48 +45,6 @@ const (
 	UserStatusBanned              = "banned"
 )
 
-// NormalizeUserSource 统一为大写合法值，未知则回落为 SYSTEM。
-func NormalizeUserSource(raw string) string {
-	s := strings.TrimSpace(raw)
-	if s == "" {
-		return UserSourceSystem
-	}
-	u := strings.ToUpper(s)
-	switch u {
-	case UserSourceSystem, UserSourceAdmin, UserSourceWechat, UserSourceGithub:
-		return u
-	}
-	switch strings.ToLower(s) {
-	case "system", "web", "email", "password", "signup":
-		return UserSourceSystem
-	case "admin", "后台":
-		return UserSourceAdmin
-	case "wechat", "weixin", "微信":
-		return UserSourceWechat
-	case "github":
-		return UserSourceGithub
-	default:
-		return UserSourceSystem
-	}
-}
-
-// NormalizeUserStatus 校验并规范化状态字符串。
-func NormalizeUserStatus(raw string) string {
-	s := strings.TrimSpace(strings.ToLower(raw))
-	switch s {
-	case "", UserStatusActive:
-		return UserStatusActive
-	case UserStatusPendingVerification:
-		return UserStatusPendingVerification
-	case UserStatusSuspended:
-		return UserStatusSuspended
-	case UserStatusBanned:
-		return UserStatusBanned
-	default:
-		return ""
-	}
-}
-
 // UserStatusAllowsLogin 是否允许登录（仅正常态）。
 func UserStatusAllowsLogin(status string) bool {
 	return strings.EqualFold(strings.TrimSpace(status), UserStatusActive)
@@ -502,12 +460,6 @@ func CreateUserByEmail(db *gorm.DB, username, display, email, password string) (
 
 // CreateUserByEmailWithMeta 创建用户并写入来源与账号状态。
 func CreateUserByEmailWithMeta(db *gorm.DB, username, display, email, password, source, status string) (*User, error) {
-	source = NormalizeUserSource(source)
-	if st := NormalizeUserStatus(status); st != "" {
-		status = st
-	} else {
-		status = UserStatusActive
-	}
 	// Properly handle Unicode characters (including Chinese)
 	var firstName, lastName string
 	if username != "" {
@@ -552,12 +504,6 @@ func CreateUser(db *gorm.DB, email, password string) (*User, error) {
 
 // CreateUserWithMeta 使用邮箱+密码创建用户（如网页注册），可指定来源与状态。
 func CreateUserWithMeta(db *gorm.DB, email, password, source, status string) (*User, error) {
-	source = NormalizeUserSource(source)
-	if st := NormalizeUserStatus(status); st != "" {
-		status = st
-	} else {
-		status = UserStatusActive
-	}
 	user := User{
 		BaseModel: BaseModel{},
 		Email:     email,
