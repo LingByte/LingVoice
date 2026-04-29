@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/response"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 )
 

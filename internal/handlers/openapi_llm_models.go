@@ -128,7 +128,7 @@ func collectOpenAPIAbilityModelsFromGroup(db *gorm.DB, group, protocol string) (
 	err := db.Raw(
 		"SELECT DISTINCT a.model FROM llm_abilities a "+
 			"INNER JOIN llm_channels c ON c.id = a.channel_id AND c.status = 1 AND c.protocol = ? "+
-			"WHERE a.enabled = 1 AND a.`"+"group`"+"` = ? ORDER BY a.model",
+			"WHERE a.enabled = 1 AND a.`group` = ? ORDER BY a.model",
 		protocol, group,
 	).Scan(&out).Error
 	if err != nil {

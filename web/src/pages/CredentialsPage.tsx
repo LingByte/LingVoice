@@ -33,6 +33,7 @@ import {
   type CredentialRow,
   type CredentialUpdateBody,
 } from '@/api/credentials'
+import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 
 const { Title, Paragraph, Text } = Typography
 const FormItem = Form.Item
@@ -279,16 +280,36 @@ export function CredentialsPage() {
 
   const cols = useMemo(
     () => [
-      { title: 'ID', dataIndex: 'id', width: 72 },
+      {
+        title: 'ID',
+        dataIndex: 'id',
+        width: 88,
+        render: (v: number) => <EllipsisCopyText text={v} maxWidth={72} copiedTip="ID 已复制" tooltipMaxLen={96} />,
+      },
       {
         title: '类型',
         dataIndex: 'kind',
         width: 140,
         render: (k: string) => kindLabel(k),
       },
-      { title: '名称', dataIndex: 'name', width: 160, ellipsis: true },
-      { title: '分组', dataIndex: 'group', width: 120, ellipsis: true },
-      { title: '密钥（脱敏）', dataIndex: 'key_masked', width: 200, ellipsis: true },
+      {
+        title: '名称',
+        dataIndex: 'name',
+        width: 160,
+        render: (v: string) => <EllipsisCopyText text={v} maxWidth={144} copiedTip="名称已复制" />,
+      },
+      {
+        title: '分组',
+        dataIndex: 'group',
+        width: 120,
+        render: (v: string) => <EllipsisCopyText text={v ?? ''} maxWidth={104} copiedTip="分组已复制" />,
+      },
+      {
+        title: '密钥（脱敏）',
+        dataIndex: 'key_masked',
+        width: 200,
+        render: (v: string) => <EllipsisCopyText text={v ?? ''} maxWidth={184} copiedTip="密钥已复制" />,
+      },
       {
         title: '状态',
         dataIndex: 'status',

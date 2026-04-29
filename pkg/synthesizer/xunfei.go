@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
@@ -105,13 +105,13 @@ func NewXunfeiTTSConfig(appID, apiKey, apiSecret string) XunfeiTTSConfig {
 
 	// 从环境变量获取默认值
 	if opt.AppID == "" {
-		opt.AppID = utils.GetEnv("XUNFEI_APP_ID")
+		opt.AppID = base.GetEnv("XUNFEI_APP_ID")
 	}
 	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("XUNFEI_API_KEY")
+		opt.APIKey = base.GetEnv("XUNFEI_API_KEY")
 	}
 	if opt.APISecret == "" {
-		opt.APISecret = utils.GetEnv("XUNFEI_API_SECRET")
+		opt.APISecret = base.GetEnv("XUNFEI_API_SECRET")
 	}
 
 	return opt
@@ -128,21 +128,21 @@ func (xs *XunfeiService) Provider() TTSProvider {
 	return ProviderXunfei
 }
 
-func (xs *XunfeiService) Format() media.StreamFormat {
+func (xs *XunfeiService) Format() media2.StreamFormat {
 	xs.mu.Lock()
 	defer xs.mu.Unlock()
-	return media.StreamFormat{
+	return media2.StreamFormat{
 		SampleRate:    xs.opt.SampleRate,
 		BitDepth:      xs.opt.BitDepth,
 		Channels:      xs.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(xs.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(xs.opt.FrameDuration),
 	}
 }
 
 func (xs *XunfeiService) CacheKey(text string) string {
 	xs.mu.Lock()
 	defer xs.mu.Unlock()
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("xunfei.tts-%s-%d-%s.%s", "xunfei_default", xs.opt.SampleRate, digest, xs.opt.Codec)
 }
 

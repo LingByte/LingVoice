@@ -207,21 +207,10 @@ func anthropicStreamAttempts(ch models.LLMChannel, cap *llm.AnthropicStreamCaptu
 }
 
 func llmCredDecrementQuota(db *gorm.DB, cred *models.Credential, delta int) {
-	if cred == nil || db == nil {
+	if cred == nil || db == nil || delta < 1 {
 		return
 	}
-	if delta < 1 {
-		return
-	}
-	if cred.UnlimitedQuota {
-		_ = db.Model(&models.Credential{}).Where("id = ?", cred.Id).
-			Update("used_quota", gorm.Expr("used_quota + ?", delta)).Error
-		return
-	}
-	_ = db.Model(&models.Credential{}).Where("id = ? AND remain_quota > ?", cred.Id, 0).
-		Update("remain_quota", gorm.Expr("remain_quota - ?", delta)).Error
-	_ = db.Model(&models.Credential{}).Where("id = ?", cred.Id).
-		Update("used_quota", gorm.Expr("used_quota + ?", delta)).Error
+	_ = models.BumpCredentialUsedAndDecrementRemain(db, cred.Id, cred.UnlimitedQuota, delta)
 }
 
 // llmUserQuotaApply OpenAPI 成功扣减凭证额度后，同步用户表 remain_quota / used_quota（与凭证相同 delta、相同无限策略）。
@@ -274,7 +263,7 @@ func (h *Handlers) openAPIOpenAIChatCompletionsHandler(c *gin.Context) {
 		channels, err := listLLMChannelsForRelay(h.db, cred, models.LLMChannelProtocolOpenAI, extractRelayModelFromJSONBody(body))
 		if err != nil {
 			c.JSON(http.StatusServiceUnavailable, openAINoLLMChannelResponse(cred))
-			llm.EmitOpenAPIOpenAIUsageFailure(body, nil, meta, "No active OpenAI-protocol LLM channel for credential group")
+			llm.EmitOpenAPIOpenAIUsageFailure(body, nil, meta, "model_not_found", "No active OpenAI-protocol LLM channel for credential group")
 			return
 		}
 		ch := channels[0]
@@ -294,7 +283,11 @@ func (h *Handlers) openAPIOpenAIChatCompletionsHandler(c *gin.Context) {
 				res.WallLatencyMs = cap.WallLatencyMs
 				res.Attempts = openAIStreamAttempts(ch, cap, false)
 			}
-			llm.EmitOpenAPIOpenAIUsageFailure(streamBody, res, meta, err.Error())
+			errCode := "upstream_failed"
+			if res != nil && len(res.Attempts) > 0 && strings.TrimSpace(res.Attempts[len(res.Attempts)-1].ErrorCode) != "" {
+				errCode = res.Attempts[len(res.Attempts)-1].ErrorCode
+			}
+			llm.EmitOpenAPIOpenAIUsageFailure(streamBody, res, meta, errCode, err.Error())
 			return
 		}
 		if streamOK {
@@ -316,11 +309,15 @@ func (h *Handlers) openAPIOpenAIChatCompletionsHandler(c *gin.Context) {
 			if cap != nil && cap.StatusCode > 0 {
 				extra = http.StatusText(cap.StatusCode)
 			}
+			errCode := "upstream_failed"
+			if cap != nil && cap.StatusCode > 0 {
+				errCode = "upstream_http"
+			}
 			llm.EmitOpenAPIOpenAIUsageFailure(streamBody, &llm.OpenAPIProxyResult{
 				FinalStatus:   cap.StatusCode,
 				WallLatencyMs: cap.WallLatencyMs,
 				Attempts:      openAIStreamAttempts(ch, cap, false),
-			}, meta, extra)
+			}, meta, errCode, extra)
 		}
 		return
 	}
@@ -328,10 +325,64 @@ func (h *Handlers) openAPIOpenAIChatCompletionsHandler(c *gin.Context) {
 	channels, err := listLLMChannelsForRelay(h.db, cred, models.LLMChannelProtocolOpenAI, extractRelayModelFromJSONBody(body))
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, openAINoLLMChannelResponse(cred))
-		llm.EmitOpenAPIOpenAIUsageFailure(body, nil, meta, "No active OpenAI-protocol LLM channel for credential group")
+		llm.EmitOpenAPIOpenAIUsageFailure(body, nil, meta, "model_not_found", "No active OpenAI-protocol LLM channel for credential group")
 		return
 	}
-	res := llm.ProxyOpenAINonStream(c.Request.Context(), body, accept, llmChannelsToUpstream(channels))
+
+	upstreams := llmChannelsToUpstream(channels)
+	overallStart := time.Now()
+	var attempts []llm.UsageChannelAttempt
+	var queueAccum int64
+	var res *llm.OpenAPIProxyResult
+	for i := range upstreams {
+		up := upstreams[i]
+		cctx, cancel := context.WithTimeout(c.Request.Context(), 6*time.Minute)
+		once := llm.ProxyOpenAINonStreamOnce(cctx, body, accept, up, i+1)
+		cancel()
+
+		attempts = append(attempts, once.Attempt)
+		if once.Attempt.Success {
+			wall := time.Since(overallStart).Milliseconds()
+			res = &llm.OpenAPIProxyResult{
+				FinalStatus:   once.Status,
+				FinalBody:     once.Body,
+				FinalHeader:   once.Header,
+				WinChannelID:  up.ID,
+				WinBaseURL:    strings.TrimSpace(once.Attempt.BaseURL),
+				Attempts:      attempts,
+				WallLatencyMs: wall,
+				QueueMs:       queueAccum,
+				WinHopMs:      once.Attempt.TTFTMs,
+				AllFailed:     false,
+			}
+			break
+		}
+		queueAccum += once.Attempt.LatencyMs
+	}
+	if res == nil {
+		wall := time.Since(overallStart).Milliseconds()
+		lastMsg := "all upstream channels failed"
+		if n := len(attempts); n > 0 && strings.TrimSpace(attempts[n-1].ErrorMessage) != "" {
+			lastMsg = attempts[n-1].ErrorMessage
+		}
+		failBody, _ := json.Marshal(map[string]any{
+			"error": map[string]any{
+				"message": lastMsg,
+				"type":    "api_error",
+				"code":    "all_channels_exhausted",
+			},
+		})
+		res = &llm.OpenAPIProxyResult{
+			AllFailed:     true,
+			FinalStatus:   http.StatusBadGateway,
+			FinalBody:     failBody,
+			FinalHeader:   http.Header{"Content-Type": []string{"application/json"}},
+			Attempts:      attempts,
+			WallLatencyMs: wall,
+			QueueMs:       queueAccum,
+			WinHopMs:      0,
+		}
+	}
 	llm.CopyOpenAPIProxyResponseHeaders(c.Writer.Header(), res.FinalHeader)
 	c.Status(res.FinalStatus)
 	_, _ = c.Writer.Write(res.FinalBody)
@@ -345,7 +396,11 @@ func (h *Handlers) openAPIOpenAIChatCompletionsHandler(c *gin.Context) {
 		llmCredAndUserDecrementQuota(h.db, cred, d)
 		llm.EmitOpenAPIOpenAIUsageSuccess(body, res, meta, d)
 	} else {
-		llm.EmitOpenAPIOpenAIUsageFailure(body, res, meta, "")
+		errCode := "all_channels_exhausted"
+		if res != nil && res.AllFailed == false && len(res.Attempts) > 0 && strings.TrimSpace(res.Attempts[len(res.Attempts)-1].ErrorCode) != "" {
+			errCode = res.Attempts[len(res.Attempts)-1].ErrorCode
+		}
+		llm.EmitOpenAPIOpenAIUsageFailure(body, res, meta, errCode, "")
 	}
 }
 
@@ -375,7 +430,7 @@ func (h *Handlers) openAPIAnthropicMessagesHandler(c *gin.Context) {
 				"type":  "error",
 				"error": gin.H{"type": "api_error", "message": "No active Anthropic-protocol LLM channel for credential group"},
 			})
-			llm.EmitOpenAPIAnthropicUsageFailure(body, nil, meta, "No active Anthropic-protocol LLM channel for credential group")
+			llm.EmitOpenAPIAnthropicUsageFailure(body, nil, meta, "model_not_found", "No active Anthropic-protocol LLM channel for credential group")
 			return
 		}
 		ch := channels[0]
@@ -394,7 +449,11 @@ func (h *Handlers) openAPIAnthropicMessagesHandler(c *gin.Context) {
 				res.WallLatencyMs = cap.WallLatencyMs
 				res.Attempts = anthropicStreamAttempts(ch, cap, false)
 			}
-			llm.EmitOpenAPIAnthropicUsageFailure(body, res, meta, err.Error())
+			errCode := "upstream_failed"
+			if res != nil && len(res.Attempts) > 0 && strings.TrimSpace(res.Attempts[len(res.Attempts)-1].ErrorCode) != "" {
+				errCode = res.Attempts[len(res.Attempts)-1].ErrorCode
+			}
+			llm.EmitOpenAPIAnthropicUsageFailure(body, res, meta, errCode, err.Error())
 			return
 		}
 		if streamOK {
@@ -419,11 +478,15 @@ func (h *Handlers) openAPIAnthropicMessagesHandler(c *gin.Context) {
 			if cap != nil && cap.StatusCode > 0 {
 				extra = http.StatusText(cap.StatusCode)
 			}
+			errCode := "upstream_failed"
+			if cap != nil && cap.StatusCode > 0 {
+				errCode = "upstream_http"
+			}
 			llm.EmitOpenAPIAnthropicUsageFailure(body, &llm.OpenAPIProxyResult{
 				FinalStatus:   cap.StatusCode,
 				WallLatencyMs: cap.WallLatencyMs,
 				Attempts:      anthropicStreamAttempts(ch, cap, false),
-			}, meta, extra)
+			}, meta, errCode, extra)
 		}
 		return
 	}
@@ -434,10 +497,64 @@ func (h *Handlers) openAPIAnthropicMessagesHandler(c *gin.Context) {
 			"type":  "error",
 			"error": gin.H{"type": "api_error", "message": "No active Anthropic-protocol LLM channel for credential group"},
 		})
-		llm.EmitOpenAPIAnthropicUsageFailure(body, nil, meta, "No active Anthropic-protocol LLM channel for credential group")
+		llm.EmitOpenAPIAnthropicUsageFailure(body, nil, meta, "model_not_found", "No active Anthropic-protocol LLM channel for credential group")
 		return
 	}
-	res := llm.ProxyAnthropicNonStream(c.Request.Context(), body, av, ab, llmChannelsToUpstream(channels))
+
+	upstreams := llmChannelsToUpstream(channels)
+	overallStart := time.Now()
+	var attempts []llm.UsageChannelAttempt
+	var queueAccum int64
+	var res *llm.OpenAPIProxyResult
+	for i := range upstreams {
+		up := upstreams[i]
+		cctx, cancel := context.WithTimeout(c.Request.Context(), 6*time.Minute)
+		once := llm.ProxyAnthropicNonStreamOnce(cctx, body, av, ab, up, i+1)
+		cancel()
+
+		attempts = append(attempts, once.Attempt)
+		if once.Attempt.Success {
+			wall := time.Since(overallStart).Milliseconds()
+			res = &llm.OpenAPIProxyResult{
+				FinalStatus:   once.Status,
+				FinalBody:     once.Body,
+				FinalHeader:   once.Header,
+				WinChannelID:  up.ID,
+				WinBaseURL:    strings.TrimSpace(once.Attempt.BaseURL),
+				Attempts:      attempts,
+				WallLatencyMs: wall,
+				QueueMs:       queueAccum,
+				WinHopMs:      once.Attempt.TTFTMs,
+				AllFailed:     false,
+			}
+			break
+		}
+		queueAccum += once.Attempt.LatencyMs
+	}
+	if res == nil {
+		wall := time.Since(overallStart).Milliseconds()
+		lastMsg := "all upstream channels failed"
+		if n := len(attempts); n > 0 && strings.TrimSpace(attempts[n-1].ErrorMessage) != "" {
+			lastMsg = attempts[n-1].ErrorMessage
+		}
+		failBody, _ := json.Marshal(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":    "api_error",
+				"message": lastMsg,
+			},
+		})
+		res = &llm.OpenAPIProxyResult{
+			AllFailed:     true,
+			FinalStatus:   http.StatusBadGateway,
+			FinalBody:     failBody,
+			FinalHeader:   http.Header{"Content-Type": []string{"application/json"}},
+			Attempts:      attempts,
+			WallLatencyMs: wall,
+			QueueMs:       queueAccum,
+			WinHopMs:      0,
+		}
+	}
 	llm.CopyOpenAPIProxyResponseHeaders(c.Writer.Header(), res.FinalHeader)
 	c.Status(res.FinalStatus)
 	_, _ = c.Writer.Write(res.FinalBody)
@@ -448,6 +565,10 @@ func (h *Handlers) openAPIAnthropicMessagesHandler(c *gin.Context) {
 		llmCredAndUserDecrementQuota(h.db, cred, d)
 		llm.EmitOpenAPIAnthropicUsageSuccess(body, res, meta, d)
 	} else {
-		llm.EmitOpenAPIAnthropicUsageFailure(body, res, meta, "")
+		errCode := "all_channels_exhausted"
+		if res != nil && res.AllFailed == false && len(res.Attempts) > 0 && strings.TrimSpace(res.Attempts[len(res.Attempts)-1].ErrorCode) != "" {
+			errCode = res.Attempts[len(res.Attempts)-1].ErrorCode
+		}
+		llm.EmitOpenAPIAnthropicUsageFailure(body, res, meta, errCode, "")
 	}
 }

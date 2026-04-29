@@ -247,3 +247,24 @@ export async function uploadUserAvatar(file: File): Promise<string> {
   }
   return data.url
 }
+
+export async function changePasswordWithOldPassword(oldPassword: string, newPassword: string): Promise<void> {
+  const r = await post<unknown>('/api/user/password/change', { oldPassword, newPassword })
+  ensureOk(r)
+}
+
+export async function sendPasswordResetCode(email?: string): Promise<void> {
+  const r = await post<unknown>('/api/user/password/send-code', {
+    email: email?.trim() || undefined,
+  })
+  ensureOk(r)
+}
+
+export async function resetPasswordByEmailCode(email: string, code: string, newPassword: string): Promise<void> {
+  const r = await post<unknown>('/api/user/password/reset-by-code', {
+    email: email.trim(),
+    code: code.trim(),
+    newPassword,
+  })
+  ensureOk(r)
+}

@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Avatar, Button, Card, Form, Input, Message, Progress, Select, Tag, Typography, Upload } from '@arco-design/web-react'
-import { Key, LogOut, Pencil, Save, Settings, Shield, User, X } from 'lucide-react'
+import { Key, Lock, LogOut, Pencil, Save, Settings, Shield, User, X } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { logoutSession, type AuthUser, updateUserProfile, uploadUserAvatar } from '@/api/auth'
+import {
+  changePasswordWithOldPassword,
+  logoutSession,
+  resetPasswordByEmailCode,
+  sendPasswordResetCode,
+  type AuthUser,
+  updateUserProfile,
+  uploadUserAvatar,
+} from '@/api/auth'
 import { ProfileSettingsSection } from '@/components/profile/ProfileSettingsSection'
 import { useAuthStore } from '@/stores/authStore'
 import { cn } from '@/lib/cn'
@@ -57,6 +65,15 @@ function fmtQuota(n?: number, unlimited?: boolean): string {
   return String(n)
 }
 
+function ProfileKV(props: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-[var(--color-border-1)] bg-[var(--color-bg-1)] px-3 py-2">
+      <Text type="secondary" className="block text-[12px]">{props.label}</Text>
+      <Text className="mt-1 block text-[13px]">{props.value || '—'}</Text>
+    </div>
+  )
+}
+
 const TIMEZONES = [
   'Asia/Shanghai',
   'Asia/Tokyo',
@@ -89,7 +106,7 @@ const GENDER_OPTIONS = [
   { value: 'other', label: '其他' },
 ]
 
-type NavKey = 'profile' | 'settings' | 'logout'
+type NavKey = 'profile' | 'settings' | 'password' | 'logout'
 
 const NAV_PROFILE: { key: 'profile'; label: string; icon: typeof User } = {
   key: 'profile',
@@ -109,22 +126,38 @@ const NAV_LOGOUT: { key: 'logout'; label: string; icon: typeof LogOut } = {
   icon: LogOut,
 }
 
+const NAV_PASSWORD: { key: 'password'; label: string; icon: typeof Lock } = {
+  key: 'password',
+  label: '密码修改',
+  icon: Lock,
+}
+
 export function ProfilePage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const authUser = useAuthStore((s) => s.user)
   const setUser = useAuthStore((s) => s.setUser)
   const [activeKey, setActiveKey] = useState<NavKey>(() =>
-    searchParams.get('tab') === 'settings' ? 'settings' : 'profile',
+    searchParams.get('tab') === 'settings'
+      ? 'settings'
+      : searchParams.get('tab') === 'password'
+        ? 'password'
+        : 'profile',
   )
   const [isEditing, setIsEditing] = useState(false)
   const [loading, setLoading] = useState(false)
 
   const [form] = Form.useForm()
+  const [pwdForm] = Form.useForm()
+  const [codeForm] = Form.useForm()
+  const [pwdLoading, setPwdLoading] = useState(false)
+  const [codeSending, setCodeSending] = useState(false)
 
   useEffect(() => {
     const t = searchParams.get('tab')
-    setActiveKey(t === 'settings' ? 'settings' : 'profile')
+    if (t === 'settings') setActiveKey('settings')
+    else if (t === 'password') setActiveKey('password')
+    else setActiveKey('profile')
   }, [searchParams])
 
   useEffect(() => {
@@ -152,6 +185,11 @@ export function ProfilePage() {
     setSearchParams({ tab: 'settings' }, { replace: true })
   }
 
+  const goPassword = () => {
+    setActiveKey('password')
+    setSearchParams({ tab: 'password' }, { replace: true })
+  }
+
   const handleNav = (key: NavKey) => {
     if (key === 'logout') {
       void (async () => {
@@ -167,6 +205,10 @@ export function ProfilePage() {
     }
     if (key === 'settings') {
       goSettings()
+      return
+    }
+    if (key === 'password') {
+      goPassword()
       return
     }
     goProfile()
@@ -236,6 +278,47 @@ export function ProfilePage() {
     }
   }
 
+  const sendCode = async () => {
+    if (!authUser?.email) return
+    setCodeSending(true)
+    try {
+      await sendPasswordResetCode(authUser.email)
+      Message.success('验证码已发送，请查收邮箱')
+    } catch (error) {
+      Message.error('发送失败: ' + (error as Error).message)
+    } finally {
+      setCodeSending(false)
+    }
+  }
+
+  const submitOldPasswordMode = async () => {
+    try {
+      const values = await pwdForm.validate()
+      setPwdLoading(true)
+      await changePasswordWithOldPassword(values.oldPassword, values.newPassword)
+      Message.success('密码修改成功')
+      pwdForm.resetFields()
+    } catch (error) {
+      Message.error('修改失败: ' + (error as Error).message)
+    } finally {
+      setPwdLoading(false)
+    }
+  }
+
+  const submitCodeMode = async () => {
+    try {
+      const values = await codeForm.validate()
+      setPwdLoading(true)
+      await resetPasswordByEmailCode(authUser?.email || '', values.code, values.newPassword)
+      Message.success('密码重置成功')
+      codeForm.resetFields()
+    } catch (error) {
+      Message.error('重置失败: ' + (error as Error).message)
+    } finally {
+      setPwdLoading(false)
+    }
+  }
+
   const emailInitial = (authUser?.email?.[0] ?? '?').toUpperCase()
   const displayName =
     (authUser?.displayName && String(authUser.displayName).trim()) ||
@@ -249,7 +332,7 @@ export function ProfilePage() {
       <aside className="profile-shell__nav flex h-full min-h-0 w-[220px] shrink-0 flex-col border-r border-[var(--color-border-2)] bg-[var(--color-bg-1)]">
         <div className="profile-nav flex min-h-0 flex-1 flex-col">
           <nav
-            className="profile-nav__list min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
+            className="profile-nav__list min-h-0 flex-1 overflow-x-hidden overflow-y-auto pt-8"
             aria-label="个人中心"
           >
             <button
@@ -278,6 +361,19 @@ export function ProfilePage() {
               </span>
               <span className="profile-nav__label">{NAV_SETTINGS.label}</span>
             </button>
+            <button
+              type="button"
+              onClick={() => handleNav('password')}
+              className={cn(
+                'profile-nav__item',
+                activeKey === 'password' && 'profile-nav__item--active',
+              )}
+            >
+              <span className="profile-nav__icon" aria-hidden>
+                <NAV_PASSWORD.icon size={16} strokeWidth={1.85} />
+              </span>
+              <span className="profile-nav__label">{NAV_PASSWORD.label}</span>
+            </button>
           </nav>
           <div className="profile-nav__sep" role="presentation" />
           <button
@@ -304,6 +400,47 @@ export function ProfilePage() {
             </Text>
             <ProfileSettingsSection />
           </>
+        ) : activeKey === 'password' ? (
+          <div className="mx-auto flex w-full max-w-[960px] min-w-0 flex-col gap-4">
+            <Title heading={5} className="!mb-1 !mt-0">密码修改</Title>
+            <Text type="secondary" className="!mb-1 block text-[13px]">
+              支持两种方式：输入旧密码修改，或邮箱验证码重置（当前登录邮箱：{authUser?.email || '—'}）。
+            </Text>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <Card title="方式一：旧密码修改" bordered={false} className="shadow-sm">
+                <Form form={pwdForm} layout="vertical">
+                  <Form.Item field="oldPassword" label="旧密码" rules={[{ required: true, message: '请输入旧密码' }]}>
+                    <Input.Password autoComplete="current-password" />
+                  </Form.Item>
+                  <Form.Item field="newPassword" label="新密码" rules={[{ required: true, message: '请输入新密码' }, { minLength: 6, message: '至少 6 位' }]}>
+                    <Input.Password autoComplete="new-password" />
+                  </Form.Item>
+                  <Button type="primary" loading={pwdLoading} onClick={() => void submitOldPasswordMode()}>
+                    修改密码
+                  </Button>
+                </Form>
+              </Card>
+              <Card title="方式二：邮箱验证码重置" bordered={false} className="shadow-sm">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <Text type="secondary" className="text-[12px]">将验证码发送到当前邮箱</Text>
+                  <Button size="small" loading={codeSending} onClick={() => void sendCode()}>
+                    发送验证码
+                  </Button>
+                </div>
+                <Form form={codeForm} layout="vertical">
+                  <Form.Item field="code" label="验证码" rules={[{ required: true, message: '请输入验证码' }]}>
+                    <Input maxLength={12} />
+                  </Form.Item>
+                  <Form.Item field="newPassword" label="新密码" rules={[{ required: true, message: '请输入新密码' }, { minLength: 6, message: '至少 6 位' }]}>
+                    <Input.Password autoComplete="new-password" />
+                  </Form.Item>
+                  <Button type="primary" loading={pwdLoading} onClick={() => void submitCodeMode()}>
+                    验证并重置
+                  </Button>
+                </Form>
+              </Card>
+            </div>
+          </div>
         ) : (
           <div className="mx-auto flex w-full max-w-[960px] min-w-0 flex-col gap-5">
           {/* 个人资料头部 */}
@@ -510,92 +647,19 @@ export function ProfilePage() {
                 </div>
               </Form>
             ) : (
-              <div className="space-y-0 text-[13px]">
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">账号 ID</Text>
-                  <Text className="font-mono text-[12px]">{authUser?.id ?? '—'}</Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">邮箱</Text>
-                  <Text className="max-w-[60%] truncate text-right">
-                    {authUser?.email ?? '—'}
-                  </Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">显示名</Text>
-                  <Text className="max-w-[60%] truncate text-right">
-                    {authUser?.displayName || '—'}
-                  </Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">姓名</Text>
-                  <Text className="max-w-[60%] truncate text-right">
-                    {[authUser?.firstName, authUser?.lastName].filter(Boolean).join(' ') || '—'}
-                  </Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">性别</Text>
-                  <Text className="max-w-[60%] truncate text-right">
-                    {genderLabel(authUser?.gender)}
-                  </Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">城市</Text>
-                  <Text className="max-w-[60%] truncate text-right">
-                    {authUser?.city || '—'}
-                  </Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">地区</Text>
-                  <Text className="max-w-[60%] truncate text-right">
-                    {authUser?.region || '—'}
-                  </Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">角色</Text>
-                  <Text>{authUser ? roleLabel(authUser.role) : '—'}</Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">状态</Text>
-                  <Text>{statusLabel(authUser?.status)}</Text>
-                </div>
-                {showSource ? (
-                  <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                    <Text type="secondary">来源</Text>
-                    <Text>{authUser.source}</Text>
-                  </div>
-                ) : null}
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">语言 / 时区</Text>
-                  <Text className="max-w-[55%] truncate text-right">
-                    {[authUser?.locale, authUser?.timezone].filter(Boolean).join(' · ') || '—'}
-                  </Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">登录次数</Text>
-                  <Text>{authUser?.loginCount ?? '—'}</Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">注册时间</Text>
-                  <Text className="max-w-[55%] text-right text-[12px]">
-                    {fmtTime(authUser?.createdAt)}
-                  </Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">上次登录</Text>
-                  <Text className="max-w-[55%] text-right text-[12px]">
-                    {fmtTime(authUser?.lastLogin)}
-                  </Text>
-                </div>
-                <div className="flex justify-between gap-4 border-b border-[var(--color-border-1)] py-2.5">
-                  <Text type="secondary">密码</Text>
-                  <div className="flex items-center gap-2">
-                    <Text>••••••••</Text>
-                    <Button type="text" size="mini">
-                      变更
-                    </Button>
-                  </div>
-                </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <ProfileKV label="账号 ID" value={authUser?.id ?? '—'} />
+                <ProfileKV label="邮箱" value={authUser?.email ?? '—'} />
+                <ProfileKV label="显示名" value={authUser?.displayName || '—'} />
+                <ProfileKV label="姓名" value={[authUser?.firstName, authUser?.lastName].filter(Boolean).join(' ') || '—'} />
+                <ProfileKV label="性别" value={genderLabel(authUser?.gender)} />
+                <ProfileKV label="城市 / 地区" value={[authUser?.city, authUser?.region].filter(Boolean).join(' / ') || '—'} />
+                <ProfileKV label="角色 / 状态" value={`${authUser ? roleLabel(authUser.role) : '—'} / ${statusLabel(authUser?.status)}`} />
+                <ProfileKV label="语言 / 时区" value={[authUser?.locale, authUser?.timezone].filter(Boolean).join(' · ') || '—'} />
+                <ProfileKV label="登录次数" value={String(authUser?.loginCount ?? '—')} />
+                <ProfileKV label="注册时间" value={fmtTime(authUser?.createdAt)} />
+                <ProfileKV label="上次登录" value={fmtTime(authUser?.lastLogin)} />
+                <ProfileKV label="来源" value={showSource ? authUser?.source || '—' : '—'} />
               </div>
             )}
           </Card>

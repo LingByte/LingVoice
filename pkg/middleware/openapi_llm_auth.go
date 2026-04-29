@@ -4,6 +4,7 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -67,19 +68,26 @@ func OpenAPILLMProxyAuth(db *gorm.DB, errStyle OpenAPILLMProxyAuthStyle) gin.Han
 			abortLLMAuth(c, errStyle, http.StatusForbidden, "permission_denied", "Client IP not allowed")
 			return
 		}
-		if !cred.UnlimitedQuota && cred.RemainQuota <= 0 {
-			abortLLMAuth(c, errStyle, http.StatusForbidden, "insufficient_quota", "Quota exceeded")
+		if !models.CredentialHasRemainingQuota(&cred) {
+			abortLLMAuth(c, errStyle, http.StatusForbidden, models.OpenAPIQuotaReasonCredentialExhausted,
+				"This API key has no remaining credential quota; increase remain_quota or enable unlimited_quota on the key.")
 			return
 		}
 
 		if cred.UserId > 0 {
-			var owner models.User
-			if err := db.Select("id", "remain_quota", "unlimited_quota").Where("id = ?", cred.UserId).First(&owner).Error; err != nil {
-				abortLLMAuth(c, errStyle, http.StatusForbidden, "insufficient_quota", "User account not found")
+			ok, err := models.UserHasSpendableQuota(db, uint(cred.UserId))
+			if err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					abortLLMAuth(c, errStyle, http.StatusForbidden, models.OpenAPIQuotaReasonUserNotFound,
+						"The user account bound to this API key could not be found.")
+					return
+				}
+				abortLLMAuth(c, errStyle, http.StatusInternalServerError, "service_error", "Failed to verify user quota")
 				return
 			}
-			if !owner.UnlimitedQuota && owner.RemainQuota <= 0 {
-				abortLLMAuth(c, errStyle, http.StatusForbidden, "insufficient_quota", "User quota exceeded")
+			if !ok {
+				abortLLMAuth(c, errStyle, http.StatusForbidden, models.OpenAPIQuotaReasonUserExhausted,
+					"The owning user account has no remaining user-level quota (separate from API key quota).")
 				return
 			}
 		}

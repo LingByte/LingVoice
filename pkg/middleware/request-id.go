@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"runtime/debug"
 
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 	"github.com/gin-gonic/gin"
 )
 
@@ -19,12 +19,12 @@ var _bp = func() string {
 		h := sha256.Sum256([]byte(bi.Main.Path))
 		return hex.EncodeToString(h[:4])
 	}
-	return utils.RandString(8)
+	return base.RandString(8)
 }()
 
 func RequestId() func(c *gin.Context) {
 	return func(c *gin.Context) {
-		id := utils.GetTimeString() + _bp + utils.RandString(8)
+		id := base.GetTimeString() + _bp + base.RandString(8)
 		c.Set(RequestIdKey, id)
 		ctx := context.WithValue(c.Request.Context(), RequestIdKey, id)
 		c.Request = c.Request.WithContext(ctx)

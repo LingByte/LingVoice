@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
+	"github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"

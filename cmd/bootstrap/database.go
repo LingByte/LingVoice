@@ -12,7 +12,8 @@ import (
 
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/logger"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	"github.com/LingByte/LingVoice/pkg/utils/dbutils"
 	"go.uber.org/zap"
 
 	"gorm.io/gorm"
@@ -72,7 +73,7 @@ func SetupDatabase(logWriter io.Writer, opts *Options) (*gorm.DB, error) {
 	}
 
 	// 4) Non-production: default configuration
-	if opts.SeedNonProd && utils.GetEnv("APP_ENV") != "production" && utils.GetEnv("APP_ENV") != "development" {
+	if opts.SeedNonProd && base.GetEnv("APP_ENV") != "production" && base.GetEnv("APP_ENV") != "development" {
 		service := SeedService{
 			db: db,
 		}
@@ -90,7 +91,7 @@ func SetupDatabase(logWriter io.Writer, opts *Options) (*gorm.DB, error) {
 func initDBConn(logWriter io.Writer) (*gorm.DB, error) {
 	dbDriver := config.GlobalConfig.Database.Driver
 	dsn := config.GlobalConfig.Database.DSN
-	return utils.InitDatabase(logWriter, dbDriver, dsn)
+	return dbutils.InitDatabase(logWriter, dbDriver, dsn)
 }
 
 // RunInitSQL executes SQL statements from a local .sql file segment by segment (split by semicolon ;), idempotent scripts should use IF NOT EXISTS in SQL for protection
@@ -176,5 +177,5 @@ func RunMigrations(db *gorm.DB, entities []any) error {
 	if len(entities) == 0 {
 		return nil
 	}
-	return utils.MakeMigrates(db, entities)
+	return dbutils.MakeMigrates(db, entities)
 }

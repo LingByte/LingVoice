@@ -18,8 +18,9 @@ import (
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
-	"github.com/LingByte/LingVoice/pkg/response"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/accessutils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/LingByte/lingstorage-sdk-go"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -79,7 +80,7 @@ func (h *Handlers) authSendVerifyEmailHandler(c *gin.Context) {
 		response.FailWithCode(c, 500, "无法生成验证码", nil)
 		return
 	}
-	utils.Sig().Emit(constants.SigUserVerifyEmail, user, code, c.ClientIP(), c.Request.UserAgent(), db)
+	base.Sig().Emit(constants.SigUserVerifyEmail, user, code, c.ClientIP(), c.Request.UserAgent(), db)
 	if isRegistration {
 		response.Success(c, "验证码已发送，请查收邮箱", nil)
 	} else {
@@ -122,7 +123,7 @@ func (h *Handlers) authLoginHandler(c *gin.Context) {
 		models.InTimezone(c, strings.TrimSpace(form.Timezone))
 	}
 	models.Login(c, user)
-	payload, err := authdto.BuildLoginResponse(user)
+	payload, err := authdto.BuildLoginResponse(h.db, user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "登录令牌签发失败", nil)
@@ -184,9 +185,10 @@ func (h *Handlers) authRegisterHandler(c *gin.Context) {
 	}
 	// Ensure personal organization and default org binding for multi-tenancy.
 	_ = models.EnsurePersonalOrg(h.db, user)
-	utils.Sig().Emit(constants.SigUserCreate, user, c)
+	base.Sig().Emit(constants.SigUserCreate, user, c)
+	_, _ = models.EnsureUserProfile(h.db, user.ID)
 	models.Login(c, user)
-	payload, err := authdto.BuildLoginResponse(user)
+	payload, err := authdto.BuildLoginResponse(h.db, user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "注册成功但令牌签发失败", nil)
@@ -207,7 +209,12 @@ func (h *Handlers) authMeHandler(c *gin.Context) {
 		response.FailWithCode(c, 401, "未登录", nil)
 		return
 	}
-	response.Success(c, "ok", authdto.MeResponse{User: authdto.NewUserResponse(u)})
+	prof, err := models.EnsureUserProfile(h.db, u.ID)
+	if err != nil {
+		response.FailWithCode(c, 500, "加载用户资料失败", gin.H{"error": err.Error()})
+		return
+	}
+	response.Success(c, "ok", authdto.MeResponse{User: authdto.NewUserResponse(u, prof)})
 }
 
 type verifyEmailLoginRequest struct {
@@ -233,7 +240,7 @@ func (h *Handlers) authVerifyEmailLoginHandler(c *gin.Context) {
 		return
 	}
 	models.Login(c, user)
-	payload, err := authdto.BuildLoginResponse(user)
+	payload, err := authdto.BuildLoginResponse(h.db, user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "登录令牌签发失败", nil)
@@ -258,16 +265,16 @@ func (h *Handlers) authRefreshHandler(c *gin.Context) {
 		return
 	}
 	rt := strings.TrimSpace(req.RefreshToken)
-	var payload *utils.RefreshPayload
+	var payload *accessutils.RefreshPayload
 	var err error
 	if bootstrap.GlobalKeyManager != nil {
-		payload, err = utils.ParseRefreshTokenWithKey(rt, bootstrap.GlobalKeyManager)
+		payload, err = accessutils.ParseRefreshTokenWithKey(rt, bootstrap.GlobalKeyManager)
 		if err != nil {
 			// Backward-compat: allow HS256 refresh tokens issued before JWKS rollout.
-			payload, err = utils.ParseRefreshToken(rt, config.GlobalConfig.Auth.RefreshJWTSigningKey())
+			payload, err = accessutils.ParseRefreshToken(rt, config.GlobalConfig.Auth.RefreshJWTSigningKey())
 		}
 	} else {
-		payload, err = utils.ParseRefreshToken(rt, config.GlobalConfig.Auth.RefreshJWTSigningKey())
+		payload, err = accessutils.ParseRefreshToken(rt, config.GlobalConfig.Auth.RefreshJWTSigningKey())
 	}
 	if err != nil {
 		response.FailWithCode(c, 401, "刷新令牌无效或已过期", nil)
@@ -283,7 +290,7 @@ func (h *Handlers) authRefreshHandler(c *gin.Context) {
 		return
 	}
 	models.Login(c, &fresh)
-	out, err := authdto.BuildLoginResponse(&fresh)
+	out, err := authdto.BuildLoginResponse(h.db, &fresh)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "令牌签发失败", nil)
@@ -358,9 +365,25 @@ func (h *Handlers) adminUsersListHandler(c *gin.Context) {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
 	}
+	profByID := make(map[uint]*models.UserProfile)
+	if len(list) > 0 {
+		ids := make([]uint, 0, len(list))
+		for _, row := range list {
+			ids = append(ids, row.ID)
+		}
+		var profs []models.UserProfile
+		if err := h.db.Where("user_id IN ?", ids).Find(&profs).Error; err != nil {
+			response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+			return
+		}
+		for i := range profs {
+			p := profs[i]
+			profByID[p.UserID] = &p
+		}
+	}
 	listOut := make([]gin.H, 0, len(list))
 	for _, row := range list {
-		listOut = append(listOut, models.AdminUserJSON(row))
+		listOut = append(listOut, models.AdminUserJSON(row, profByID[row.ID]))
 	}
 	totalPage := int(total) / pageSize
 	if int(total)%pageSize != 0 {
@@ -394,7 +417,8 @@ func (h *Handlers) adminUserDetailHandler(c *gin.Context) {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{"user": models.AdminUserJSON(row)})
+	prof, _ := models.GetUserProfile(h.db, row.ID)
+	response.Success(c, "ok", gin.H{"user": models.AdminUserJSON(row, prof)})
 }
 
 // adminUserPatchHandler PATCH /api/admin/users/:id
@@ -428,13 +452,14 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 		return
 	}
 
-	vals := map[string]any{}
+	userVals := map[string]any{}
+	profVals := map[string]any{}
 	if status := strings.TrimSpace(body.Status); status != "" {
 		if op.ID == row.ID && !models.UserStatusAllowsLogin(status) {
 			response.FailWithCode(c, 400, "不能将本人账号设为不可登录状态", nil)
 			return
 		}
-		vals["status"] = status
+		userVals["status"] = status
 	}
 	if r := strings.TrimSpace(body.Role); r != "" {
 		if r != models.RoleUser && r != models.RoleAdmin && r != models.RoleSuperAdmin {
@@ -446,14 +471,14 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 				response.FailWithCode(c, 403, "仅超级管理员可变更用户角色", nil)
 				return
 			}
-			vals["role"] = r
+			userVals["role"] = r
 		}
 	}
 	if body.DisplayName != nil {
-		vals["display_name"] = strings.TrimSpace(*body.DisplayName)
+		userVals["display_name"] = strings.TrimSpace(*body.DisplayName)
 	}
 	if body.Locale != nil {
-		vals["locale"] = strings.TrimSpace(*body.Locale)
+		profVals["locale"] = strings.TrimSpace(*body.Locale)
 	}
 	if body.Phone != nil {
 		p := strings.TrimSpace(*body.Phone)
@@ -461,37 +486,37 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 			response.FailWithCode(c, 400, "phone 过长", nil)
 			return
 		}
-		vals["phone"] = p
+		userVals["phone"] = p
 	}
 	if body.FirstName != nil {
-		vals["first_name"] = strings.TrimSpace(*body.FirstName)
+		userVals["first_name"] = strings.TrimSpace(*body.FirstName)
 	}
 	if body.LastName != nil {
-		vals["last_name"] = strings.TrimSpace(*body.LastName)
+		userVals["last_name"] = strings.TrimSpace(*body.LastName)
 	}
 	if body.Avatar != nil {
-		vals["avatar"] = strings.TrimSpace(*body.Avatar)
+		userVals["avatar"] = strings.TrimSpace(*body.Avatar)
 	}
 	if body.Timezone != nil {
-		vals["timezone"] = strings.TrimSpace(*body.Timezone)
+		profVals["timezone"] = strings.TrimSpace(*body.Timezone)
 	}
 	if body.Gender != nil {
-		vals["gender"] = strings.TrimSpace(*body.Gender)
+		profVals["gender"] = strings.TrimSpace(*body.Gender)
 	}
 	if body.City != nil {
-		vals["city"] = strings.TrimSpace(*body.City)
+		profVals["city"] = strings.TrimSpace(*body.City)
 	}
 	if body.Region != nil {
-		vals["region"] = strings.TrimSpace(*body.Region)
+		profVals["region"] = strings.TrimSpace(*body.Region)
 	}
 	if body.EmailNotifications != nil {
-		vals["email_notifications"] = *body.EmailNotifications
+		profVals["email_notifications"] = *body.EmailNotifications
 	}
 	if body.PhoneVerified != nil {
-		vals["phone_verified"] = *body.PhoneVerified
+		userVals["phone_verified"] = *body.PhoneVerified
 	}
 	if body.EmailVerified != nil {
-		vals["email_verified"] = *body.EmailVerified
+		userVals["email_verified"] = *body.EmailVerified
 	}
 	if body.RemainQuota != nil {
 		v := *body.RemainQuota
@@ -499,7 +524,7 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 			response.FailWithCode(c, 400, "remain_quota 不能为负", nil)
 			return
 		}
-		vals["remain_quota"] = v
+		userVals["remain_quota"] = v
 	}
 	if body.UsedQuota != nil {
 		v := *body.UsedQuota
@@ -507,25 +532,35 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 			response.FailWithCode(c, 400, "used_quota 不能为负", nil)
 			return
 		}
-		vals["used_quota"] = v
+		userVals["used_quota"] = v
 	}
 	if body.UnlimitedQuota != nil {
-		vals["unlimited_quota"] = *body.UnlimitedQuota
+		userVals["unlimited_quota"] = *body.UnlimitedQuota
 	}
-	if len(vals) == 0 {
+	if len(userVals) == 0 && len(profVals) == 0 {
 		response.FailWithCode(c, 400, "无可更新字段", nil)
 		return
 	}
-	vals["update_by"] = models.OperatorFromUser(op)
-	if err := models.UpdateUserFields(h.db, &row, vals); err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
-		return
+	if len(userVals) > 0 {
+		userVals["update_by"] = models.OperatorFromUser(op)
+		if err := models.UpdateUserFields(h.db, &row, userVals); err != nil {
+			response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if len(profVals) > 0 {
+		if err := models.UpdateUserProfileFields(h.db, id, profVals); err != nil {
+			response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+			return
+		}
 	}
 	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
 		response.Success(c, "已更新", gin.H{"user": gin.H{"id": strconv.FormatUint(uint64(id), 10)}})
 		return
 	}
-	response.Success(c, "已更新", gin.H{"user": models.AdminUserJSON(row)})
+	_ = models.UpdateProfileComplete(h.db, &row)
+	prof, _ := models.GetUserProfile(h.db, row.ID)
+	response.Success(c, "已更新", gin.H{"user": models.AdminUserJSON(row, prof)})
 }
 
 // adminUserDeleteHandler DELETE /api/admin/users/:id（软删除；不可删除本人；非超管不可删超级管理员）
@@ -574,6 +609,21 @@ type patchUserProfileBody struct {
 	Timezone    string `json:"timezone"`
 }
 
+type userChangePasswordBody struct {
+	OldPassword string `json:"oldPassword" binding:"required"`
+	NewPassword string `json:"newPassword" binding:"required"`
+}
+
+type userSendPasswordCodeBody struct {
+	Email string `json:"email"`
+}
+
+type userResetPasswordByCodeBody struct {
+	Email       string `json:"email" binding:"required"`
+	Code        string `json:"code" binding:"required"`
+	NewPassword string `json:"newPassword" binding:"required"`
+}
+
 // userProfilePatchHandler PATCH /api/user/profile - update current user's profile
 func (h *Handlers) userProfilePatchHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
@@ -586,45 +636,166 @@ func (h *Handlers) userProfilePatchHandler(c *gin.Context) {
 		response.FailWithCode(c, 400, "参数错误", nil)
 		return
 	}
-	vals := map[string]any{}
+	userVals := map[string]any{}
+	profVals := map[string]any{}
 	if body.DisplayName != "" {
-		vals["display_name"] = strings.TrimSpace(body.DisplayName)
+		userVals["display_name"] = strings.TrimSpace(body.DisplayName)
 	}
 	if body.FirstName != "" {
-		vals["first_name"] = strings.TrimSpace(body.FirstName)
+		userVals["first_name"] = strings.TrimSpace(body.FirstName)
 	}
 	if body.LastName != "" {
-		vals["last_name"] = strings.TrimSpace(body.LastName)
+		userVals["last_name"] = strings.TrimSpace(body.LastName)
 	}
 	if body.Gender != "" {
-		vals["gender"] = strings.TrimSpace(body.Gender)
+		profVals["gender"] = strings.TrimSpace(body.Gender)
 	}
 	if body.City != "" {
-		vals["city"] = strings.TrimSpace(body.City)
+		profVals["city"] = strings.TrimSpace(body.City)
 	}
 	if body.Region != "" {
-		vals["region"] = strings.TrimSpace(body.Region)
+		profVals["region"] = strings.TrimSpace(body.Region)
 	}
 	if body.Locale != "" {
-		vals["locale"] = strings.TrimSpace(body.Locale)
+		profVals["locale"] = strings.TrimSpace(body.Locale)
 	}
 	if body.Timezone != "" {
-		vals["timezone"] = strings.TrimSpace(body.Timezone)
+		profVals["timezone"] = strings.TrimSpace(body.Timezone)
 	}
-	if len(vals) == 0 {
+	if len(userVals) == 0 && len(profVals) == 0 {
 		response.FailWithCode(c, 400, "无可更新字段", nil)
 		return
 	}
-	vals["update_by"] = models.OperatorFromUser(u)
-	if err := models.UpdateUserFields(h.db, u, vals); err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
-		return
+	if len(userVals) > 0 {
+		userVals["update_by"] = models.OperatorFromUser(u)
+		if err := models.UpdateUserFields(h.db, u, userVals); err != nil {
+			response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if len(profVals) > 0 {
+		if err := models.UpdateUserProfileFields(h.db, u.ID, profVals); err != nil {
+			response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+			return
+		}
 	}
 	if err := h.db.Where("id = ?", u.ID).First(u).Error; err != nil {
 		response.Success(c, "已更新", nil)
 		return
 	}
-	response.Success(c, "已更新", gin.H{"user": authdto.NewUserResponse(u)})
+	_ = models.UpdateProfileComplete(h.db, u)
+	prof, err := models.EnsureUserProfile(h.db, u.ID)
+	if err != nil {
+		response.FailWithCode(c, 500, "加载用户资料失败", gin.H{"error": err.Error()})
+		return
+	}
+	response.Success(c, "已更新", gin.H{"user": authdto.NewUserResponse(u, prof)})
+}
+
+// userChangePasswordHandler POST /api/user/password/change - 登录态下通过旧密码改新密码
+func (h *Handlers) userChangePasswordHandler(c *gin.Context) {
+	u := models.CurrentUser(c)
+	if u == nil {
+		response.FailWithCode(c, 401, "未登录", nil)
+		return
+	}
+	var body userChangePasswordBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		return
+	}
+	oldPwd := strings.TrimSpace(body.OldPassword)
+	newPwd := strings.TrimSpace(body.NewPassword)
+	if oldPwd == "" || newPwd == "" {
+		response.FailWithCode(c, 400, "旧密码和新密码不能为空", nil)
+		return
+	}
+	if len(newPwd) < 6 {
+		response.FailWithCode(c, 400, "新密码长度至少 6 位", nil)
+		return
+	}
+	if err := models.ChangePassword(h.db, u, oldPwd, newPwd); err != nil {
+		response.FailWithCode(c, 400, err.Error(), nil)
+		return
+	}
+	response.Success(c, "密码修改成功", nil)
+}
+
+// userSendPasswordResetCodeHandler POST /api/user/password/send-code - 向当前登录邮箱发送重置验证码
+func (h *Handlers) userSendPasswordResetCodeHandler(c *gin.Context) {
+	u := models.CurrentUser(c)
+	if u == nil {
+		response.FailWithCode(c, 401, "未登录", nil)
+		return
+	}
+	var body userSendPasswordCodeBody
+	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(body.Email))
+	if email == "" {
+		email = strings.ToLower(strings.TrimSpace(u.Email))
+	}
+	if email == "" || !strings.EqualFold(email, strings.TrimSpace(u.Email)) {
+		response.FailWithCode(c, 400, "仅支持向当前登录邮箱发送验证码", nil)
+		return
+	}
+	code, err := models.GenerateEmailVerifyToken(h.db, u)
+	if err != nil {
+		response.FailWithCode(c, 500, "验证码生成失败", gin.H{"error": err.Error()})
+		return
+	}
+	base.Sig().Emit(constants.SigUserVerifyEmail, u, code, c.ClientIP(), c.Request.UserAgent(), h.db)
+	response.Success(c, "验证码已发送，请查收邮箱", nil)
+}
+
+// userResetPasswordByCodeHandler POST /api/user/password/reset-by-code - 登录态下通过邮箱验证码重置密码
+func (h *Handlers) userResetPasswordByCodeHandler(c *gin.Context) {
+	u := models.CurrentUser(c)
+	if u == nil {
+		response.FailWithCode(c, 401, "未登录", nil)
+		return
+	}
+	var body userResetPasswordByCodeBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(body.Email))
+	if email == "" || !strings.EqualFold(email, strings.TrimSpace(u.Email)) {
+		response.FailWithCode(c, 400, "邮箱与当前登录账号不一致", nil)
+		return
+	}
+	code := strings.TrimSpace(body.Code)
+	if code == "" {
+		response.FailWithCode(c, 400, "验证码不能为空", nil)
+		return
+	}
+	newPwd := strings.TrimSpace(body.NewPassword)
+	if len(newPwd) < 6 {
+		response.FailWithCode(c, 400, "新密码长度至少 6 位", nil)
+		return
+	}
+	var userRow models.User
+	if err := h.db.Where("id = ? AND email = ? AND email_verify_token = ? AND email_verify_expires > ?", u.ID, email, code, time.Now()).First(&userRow).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.FailWithCode(c, 400, "验证码无效或已过期", nil)
+			return
+		}
+		response.FailWithCode(c, 500, "验证码校验失败", gin.H{"error": err.Error()})
+		return
+	}
+	if err := models.ResetPassword(h.db, &userRow, newPwd); err != nil {
+		response.FailWithCode(c, 500, "密码重置失败", gin.H{"error": err.Error()})
+		return
+	}
+	_ = models.UpdateUserFields(h.db, &userRow, map[string]any{
+		"email_verify_token":   "",
+		"email_verify_expires": nil,
+		"update_by":            models.OperatorFromUser(u),
+	})
+	response.Success(c, "密码重置成功", nil)
 }
 
 type uploadAvatarResponse struct {

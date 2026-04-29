@@ -8,14 +8,14 @@ import (
 	"strings"
 
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/response"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 // siteAnnouncementsListHandler GET /api/site/announcements 已启用公告列表（无需登录）。
 func (h *Handlers) siteAnnouncementsListHandler(c *gin.Context) {
-	var rows []models.SiteAnnouncement
+	var rows []models.Announcement
 	if err := h.db.Where("enabled = ?", true).
 		Order("pinned DESC, sort_order ASC, id DESC").
 		Find(&rows).Error; err != nil {
@@ -38,7 +38,7 @@ func (h *Handlers) adminSiteAnnouncementsListHandler(c *gin.Context) {
 	if !models.RequireAdmin(c) {
 		return
 	}
-	var rows []models.SiteAnnouncement
+	var rows []models.Announcement
 	if err := h.db.Order("pinned DESC, sort_order ASC, id DESC").Find(&rows).Error; err != nil {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
@@ -60,7 +60,7 @@ func (h *Handlers) adminSiteAnnouncementCreateHandler(c *gin.Context) {
 	if body.Body != nil {
 		b = strings.TrimSpace(*body.Body)
 	}
-	row := models.SiteAnnouncement{
+	row := models.Announcement{
 		Title:     strings.TrimSpace(body.Title),
 		Body:      b,
 		Pinned:    body.Pinned != nil && *body.Pinned,
@@ -100,7 +100,7 @@ func (h *Handlers) adminSiteAnnouncementUpdateHandler(c *gin.Context) {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
 		return
 	}
-	var row models.SiteAnnouncement
+	var row models.Announcement
 	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithCode(c, 404, "不存在", nil)
@@ -149,7 +149,7 @@ func (h *Handlers) adminSiteAnnouncementDeleteHandler(c *gin.Context) {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
 	}
-	if err := h.db.Delete(&models.SiteAnnouncement{}, id).Error; err != nil {
+	if err := h.db.Delete(&models.Announcement{}, id).Error; err != nil {
 		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
 		return
 	}

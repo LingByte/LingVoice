@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/gorilla/websocket"
 	gonanoid "github.com/matoous/go-nanoid"
 	"github.com/sirupsen/logrus"
@@ -37,7 +37,7 @@ type HotWord struct {
 }
 
 type TranscribeOneShot struct {
-	handler media.MediaHandler
+	handler media2.MediaHandler
 	buffer  chan []byte
 	client  *websocket.Conn
 	mode    int
@@ -45,13 +45,13 @@ type TranscribeOneShot struct {
 }
 
 func channelSize() int {
-	return 700 * utils.ComputeSampleByteCount(16000, 16, 1)
+	return 700 * base.ComputeSampleByteCount(16000, 16, 1)
 }
 
-func AudioIntercept() media.MediaHandlerFunc {
-	return func(h media.MediaHandler, data media.MediaData) {
-		if data.Type == media.MediaDataTypePacket {
-			if _, ok := data.Packet.(*media.AudioPacket); ok {
+func AudioIntercept() media2.MediaHandlerFunc {
+	return func(h media2.MediaHandler, data media2.MediaData) {
+		if data.Type == media2.MediaDataTypePacket {
+			if _, ok := data.Packet.(*media2.AudioPacket); ok {
 				return
 			}
 			h.EmitPacket(h, data.Packet)
@@ -65,7 +65,7 @@ type TranscribeOption struct {
 	FuzzyOptions AsrCorrectorOption `json:"fuzzyOptions,omitempty"`
 }
 
-func WithTranscribeFilter(asr TranscribeService, h media.MediaHandler, opt TranscribeOption) media.PacketFilter {
+func WithTranscribeFilter(asr TranscribeService, h media2.MediaHandler, opt TranscribeOption) media2.PacketFilter {
 	senderName := "asr." + asr.Vendor()
 
 	err := asr.ConnAndReceive("")
@@ -83,7 +83,7 @@ func WithTranscribeFilter(asr TranscribeService, h media.MediaHandler, opt Trans
 			startTranscribingAt = time.Now()
 		}
 		if isLast {
-			h.EmitState(senderName, media.Completed, &media.CompletedData{
+			h.EmitState(senderName, media2.Completed, &media2.CompletedData{
 				SenderName: ASRFilterSenderName(senderName, opt.Direction, h),
 				Result:     text,
 				Duration:   duration,
@@ -98,7 +98,7 @@ func WithTranscribeFilter(asr TranscribeService, h media.MediaHandler, opt Trans
 				localDialogID, _ = gonanoid.Nanoid()
 				startTranscribingAt = time.Now()
 			}
-			h.EmitState(senderName, media.Transcribing, &media.TranscribingData{
+			h.EmitState(senderName, media2.Transcribing, &media2.TranscribingData{
 				SenderName: senderName,
 				Result:     text,
 				Duration:   duration,
@@ -114,7 +114,7 @@ func WithTranscribeFilter(asr TranscribeService, h media.MediaHandler, opt Trans
 		}
 	})
 
-	packetChan := make(chan media.MediaPacket, 1024)
+	packetChan := make(chan media2.MediaPacket, 1024)
 	go func() {
 		for {
 			select {
@@ -122,13 +122,13 @@ func WithTranscribeFilter(asr TranscribeService, h media.MediaHandler, opt Trans
 				return
 			case packet := <-packetChan:
 				switch packet := packet.(type) {
-				case *media.AudioPacket:
+				case *media2.AudioPacket:
 					originalPayload := packet.Payload
 					copiedPayload := make([]byte, len(originalPayload))
 					copy(copiedPayload, originalPayload)
 					// ignore system voice data
-					if opt.Direction == media.DirectionOutput {
-						if val, ok := h.GetSession().Get(media.UpstreamRunning); !ok || !val.(bool) {
+					if opt.Direction == media2.DirectionOutput {
+						if val, ok := h.GetSession().Get(media2.UpstreamRunning); !ok || !val.(bool) {
 							_ = asr.SendAudioBytes(make([]byte, 0))
 							continue
 						}
@@ -137,23 +137,23 @@ func WithTranscribeFilter(asr TranscribeService, h media.MediaHandler, opt Trans
 					if err != nil {
 						asr.RestartClient()
 					}
-				case *media.ClosePacket:
+				case *media2.ClosePacket:
 					_ = asr.StopConn()
 				}
 			}
 		}
 	}()
 
-	return func(packet media.MediaPacket) (bool, error) {
+	return func(packet media2.MediaPacket) (bool, error) {
 		packetChan <- packet
 		return false, nil
 	}
 }
 
-func WithTranscribeFilterState(asr TranscribeService, h media.MediaHandler, opt TranscribeOption) media.PacketFilter {
+func WithTranscribeFilterState(asr TranscribeService, h media2.MediaHandler, opt TranscribeOption) media2.PacketFilter {
 	senderName := "asr." + asr.Vendor()
 
-	bytePerMillSecond := utils.ComputeSampleByteCount(16000, 16, 1)
+	bytePerMillSecond := base.ComputeSampleByteCount(16000, 16, 1)
 	frameLen := 20 * bytePerMillSecond
 	bufferLen := 700 * bytePerMillSecond
 
@@ -189,7 +189,7 @@ func WithTranscribeFilterState(asr TranscribeService, h media.MediaHandler, opt 
 				"dialogID":        textDialogID,
 			}).Infof("asr result correction ")
 
-			h.EmitState(senderName, media.Completed, &media.CompletedData{
+			h.EmitState(senderName, media2.Completed, &media2.CompletedData{
 				SenderName: ASRFilterSenderName(senderName, opt.Direction, h),
 				Result:     correctText,
 				Duration:   duration,
@@ -199,7 +199,7 @@ func WithTranscribeFilterState(asr TranscribeService, h media.MediaHandler, opt 
 			if textDialogID != currentDialogID {
 				startTranscribingAt = time.Now()
 			}
-			h.EmitState(senderName, media.Transcribing, &media.TranscribingData{
+			h.EmitState(senderName, media2.Transcribing, &media2.TranscribingData{
 				SenderName: senderName,
 				Result:     text,
 				Duration:   duration,
@@ -215,8 +215,8 @@ func WithTranscribeFilterState(asr TranscribeService, h media.MediaHandler, opt 
 		}
 	})
 
-	h.GetSession().On(media.StartSpeaking, func(event media.StateChange) {
-		if h.GetSession().GetString(media.WorkingState) != media.AgentRunning {
+	h.GetSession().On(media2.StartSpeaking, func(event media2.StateChange) {
+		if h.GetSession().GetString(media2.WorkingState) != media2.AgentRunning {
 			return
 		}
 		ctx, cancel := context.WithCancel(h.GetContext())
@@ -276,7 +276,7 @@ func WithTranscribeFilterState(asr TranscribeService, h media.MediaHandler, opt 
 		}()
 	})
 
-	h.GetSession().On(media.StartSilence, func(event media.StateChange) {
+	h.GetSession().On(media2.StartSilence, func(event media2.StateChange) {
 		if s, ok := currentState.Load().(*state); ok && s != nil {
 			s.cancel()
 			close(s.dataChan)
@@ -284,8 +284,8 @@ func WithTranscribeFilterState(asr TranscribeService, h media.MediaHandler, opt 
 		}
 	})
 
-	return func(packet media.MediaPacket) (bool, error) {
-		if _, ok := packet.(*media.ClosePacket); ok {
+	return func(packet media2.MediaPacket) (bool, error) {
+		if _, ok := packet.(*media2.ClosePacket); ok {
 			if s, ok := currentState.Load().(*state); ok && s != nil {
 				s.cancel()
 			}
@@ -314,12 +314,12 @@ func WithTranscribeFilterState(asr TranscribeService, h media.MediaHandler, opt 
 	}
 }
 
-func ASRFilterSenderName(senderName, direction string, h media.MediaHandler) string {
+func ASRFilterSenderName(senderName, direction string, h media2.MediaHandler) string {
 	var name string
-	if direction == media.DirectionInput {
+	if direction == media2.DirectionInput {
 		name = senderName + ".customer"
-	} else if direction == media.DirectionOutput {
-		val, ok := h.GetSession().Get(media.UpstreamRunning)
+	} else if direction == media2.DirectionOutput {
+		val, ok := h.GetSession().Get(media2.UpstreamRunning)
 		if ok && val.(bool) {
 			name = senderName + ".agent"
 		}
@@ -328,7 +328,7 @@ func ASRFilterSenderName(senderName, direction string, h media.MediaHandler) str
 }
 
 // 识别结果处理函数
-func handleAsrResult(senderName string, opt TranscribeOption, h media.MediaHandler, corrector *AsrCorrector, currentDialogID *string, startTranscribingAt *time.Time) func(text string, isLast bool, duration time.Duration, textDialogID string) {
+func handleAsrResult(senderName string, opt TranscribeOption, h media2.MediaHandler, corrector *AsrCorrector, currentDialogID *string, startTranscribingAt *time.Time) func(text string, isLast bool, duration time.Duration, textDialogID string) {
 	return func(text string, isLast bool, duration time.Duration, textDialogID string) {
 		if text == "" {
 			return
@@ -342,7 +342,7 @@ func handleAsrResult(senderName string, opt TranscribeOption, h media.MediaHandl
 				"dialogID":  textDialogID,
 			}).Infof("asr result correction ")
 
-			h.EmitState(senderName, media.Completed, &media.CompletedData{
+			h.EmitState(senderName, media2.Completed, &media2.CompletedData{
 				SenderName: ASRFilterSenderName(senderName, opt.Direction, h),
 				Result:     corrected,
 				Duration:   duration,
@@ -352,7 +352,7 @@ func handleAsrResult(senderName string, opt TranscribeOption, h media.MediaHandl
 			if textDialogID != *currentDialogID {
 				*startTranscribingAt = time.Now()
 			}
-			h.EmitState(senderName, media.Transcribing, &media.TranscribingData{
+			h.EmitState(senderName, media2.Transcribing, &media2.TranscribingData{
 				SenderName: senderName,
 				Result:     text,
 				Duration:   duration,
@@ -364,7 +364,7 @@ func handleAsrResult(senderName string, opt TranscribeOption, h media.MediaHandl
 }
 
 // 错误处理函数
-func handleAsrError(senderName string, h media.MediaHandler, asr TranscribeService) func(err error, isFatal bool) {
+func handleAsrError(senderName string, h media2.MediaHandler, asr TranscribeService) func(err error, isFatal bool) {
 	return func(err error, isFatal bool) {
 		if isFatal {
 			h.CauseError(senderName, err)
@@ -375,9 +375,9 @@ func handleAsrError(senderName string, h media.MediaHandler, asr TranscribeServi
 	}
 }
 
-func WithTranscribeFilterStateV2(asr TranscribeService, h media.MediaHandler, opt TranscribeOption) media.PacketFilter {
+func WithTranscribeFilterStateV2(asr TranscribeService, h media2.MediaHandler, opt TranscribeOption) media2.PacketFilter {
 	senderName := "asr." + asr.Vendor()
-	bytePerMillSecond := utils.ComputeSampleByteCount(16000, 16, 1)
+	bytePerMillSecond := base.ComputeSampleByteCount(16000, 16, 1)
 	vadSpeaking := false
 	ringbuffer := NewRingBuffer(500 * bytePerMillSecond)
 
@@ -389,8 +389,8 @@ func WithTranscribeFilterStateV2(asr TranscribeService, h media.MediaHandler, op
 		handleAsrError(senderName, h, asr),
 	)
 
-	h.GetSession().On(media.StartSpeaking, func(event media.StateChange) {
-		if h.GetSession().GetString(media.WorkingState) != media.AgentRunning {
+	h.GetSession().On(media2.StartSpeaking, func(event media2.StateChange) {
+		if h.GetSession().GetString(media2.WorkingState) != media2.AgentRunning {
 			return
 		}
 
@@ -415,13 +415,13 @@ func WithTranscribeFilterStateV2(asr TranscribeService, h media.MediaHandler, op
 		vadSpeaking = true
 	})
 
-	h.GetSession().On(media.StartSilence, func(event media.StateChange) {
+	h.GetSession().On(media2.StartSilence, func(event media2.StateChange) {
 		vadSpeaking = false
 		_ = asr.SendEnd()
 	})
 
-	return func(packet media.MediaPacket) (bool, error) {
-		if _, ok := packet.(*media.ClosePacket); ok {
+	return func(packet media2.MediaPacket) (bool, error) {
+		if _, ok := packet.(*media2.ClosePacket); ok {
 			return false, asr.StopConn()
 		}
 

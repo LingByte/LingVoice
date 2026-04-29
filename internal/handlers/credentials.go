@@ -10,8 +10,7 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/response"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -42,16 +41,6 @@ type credentialUpdateBody struct {
 	CrossGroupRetry         bool   `json:"cross_group_retry"`
 	ExpiredTime             int64  `json:"expired_time"`
 	OpenAPIModelCatalogJSON string `json:"openapi_model_catalog"`
-}
-
-func credentialKindError(kind string) string {
-	k := strings.ToLower(strings.TrimSpace(kind))
-	switch k {
-	case models.CredentialKindLLM, models.CredentialKindASR, models.CredentialKindTTS, models.CredentialKindEmail:
-		return ""
-	default:
-		return "不支持的凭证类型 kind，可选：llm、asr、tts、email"
-	}
 }
 
 func allowIPsPtr(s string) *string {
@@ -128,19 +117,14 @@ func (h *Handlers) credentialsListHandler(c *gin.Context) {
 		return
 	}
 	kindFilter := strings.ToLower(strings.TrimSpace(c.Query("kind")))
-	q := h.db.Model(&models.Credential{}).Where("user_id = ?", int(u.ID))
 	if kindFilter != "" {
-		if msg := credentialKindError(kindFilter); msg != "" {
+		if msg := models.ValidateCredentialKind(kindFilter); msg != "" {
 			response.FailWithCode(c, 400, msg, nil)
 			return
 		}
-		q = q.Where("kind = ?", kindFilter)
 	}
-	if g := strings.TrimSpace(c.Query("group")); g != "" {
-		q = q.Where("`group` = ?", g)
-	}
-	var rows []models.Credential
-	if err := q.Order("id DESC").Find(&rows).Error; err != nil {
+	rows, err := models.ListCredentialsForUser(h.db, int(u.ID), kindFilter, strings.TrimSpace(c.Query("group")))
+	if err != nil {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
 	}
@@ -158,12 +142,8 @@ func (h *Handlers) credentialGroupsListHandler(c *gin.Context) {
 		response.FailWithCode(c, 401, "未登录", nil)
 		return
 	}
-	var groups []string
-	if err := h.db.Model(&models.Credential{}).
-		Distinct("`group`").
-		Where("user_id = ? AND TRIM(COALESCE(`group`,'')) != ''", int(u.ID)).
-		Order("`group` ASC").
-		Pluck("`group`", &groups).Error; err != nil {
+	groups, err := models.ListDistinctCredentialGroups(h.db, int(u.ID))
+	if err != nil {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
 	}
@@ -181,7 +161,7 @@ func (h *Handlers) credentialCreateHandler(c *gin.Context) {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
 		return
 	}
-	if msg := credentialKindError(body.Kind); msg != "" {
+	if msg := models.ValidateCredentialKind(body.Kind); msg != "" {
 		response.FailWithCode(c, 400, msg, nil)
 		return
 	}
@@ -208,23 +188,19 @@ func (h *Handlers) credentialCreateHandler(c *gin.Context) {
 		Group:              strings.TrimSpace(body.Group),
 		CrossGroupRetry:    body.CrossGroupRetry,
 	}
-	for i := 0; i < 8; i++ {
-		row := base
-		row.Key = utils.RandCredentialAPIKey()
-		if err := h.db.Create(&row).Error; err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "unique") {
-				continue
-			}
-			response.Fail(c, "创建失败", gin.H{"error": err.Error()})
+	row, err := models.TryCreateCredentialWithUniqueKey(h.db, base, 8)
+	if err != nil {
+		if errors.Is(err, models.ErrCredentialUniqueKeyExhausted) {
+			response.FailWithCode(c, 500, "无法生成唯一密钥，请重试", nil)
 			return
 		}
-		pub := credentialToPublic(&row)
-		pub["key"] = row.Key
-		pub["key_hint"] = "请立即保存：密钥仅本次返回，之后仅显示脱敏片段；若遗失请删除后重新创建。"
-		response.Success(c, "创建成功", pub)
+		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
 		return
 	}
-	response.FailWithCode(c, 500, "无法生成唯一密钥，请重试", nil)
+	pub := credentialToPublic(row)
+	pub["key"] = row.Key
+	pub["key_hint"] = "请立即保存：密钥仅本次返回，之后仅显示脱敏片段；若遗失请删除后重新创建。"
+	response.Success(c, "创建成功", pub)
 }
 
 func (h *Handlers) credentialDetailHandler(c *gin.Context) {
@@ -238,8 +214,8 @@ func (h *Handlers) credentialDetailHandler(c *gin.Context) {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
 	}
-	var row models.Credential
-	if err := h.db.Where("id = ? AND user_id = ?", id, int(u.ID)).First(&row).Error; err != nil {
+	row, err := models.GetCredentialOwnedByUser(h.db, id, int(u.ID))
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithCode(c, 404, "凭证不存在", nil)
 			return
@@ -247,7 +223,7 @@ func (h *Handlers) credentialDetailHandler(c *gin.Context) {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", credentialToPublic(&row))
+	response.Success(c, "ok", credentialToPublic(row))
 }
 
 func (h *Handlers) credentialUpdateHandler(c *gin.Context) {
@@ -270,8 +246,8 @@ func (h *Handlers) credentialUpdateHandler(c *gin.Context) {
 		response.FailWithCode(c, 400, "status 只能为 0（禁用）或 1（启用）", nil)
 		return
 	}
-	var row models.Credential
-	if err := h.db.Where("id = ? AND user_id = ?", id, int(u.ID)).First(&row).Error; err != nil {
+	row, err := models.GetCredentialOwnedByUser(h.db, id, int(u.ID))
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithCode(c, 404, "凭证不存在", nil)
 			return
@@ -295,11 +271,11 @@ func (h *Handlers) credentialUpdateHandler(c *gin.Context) {
 		row.OpenAPIModelCatalogJSON = strings.TrimSpace(body.OpenAPIModelCatalogJSON)
 	}
 
-	if err := h.db.Save(&row).Error; err != nil {
+	if err := models.SaveCredential(h.db, row); err != nil {
 		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "更新成功", credentialToPublic(&row))
+	response.Success(c, "更新成功", credentialToPublic(row))
 }
 
 // credentialsLLMAvailableModelsHandler GET /api/credentials/llm-available-models?group=
@@ -336,12 +312,12 @@ func (h *Handlers) credentialDeleteHandler(c *gin.Context) {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
 	}
-	res := h.db.Where("id = ? AND user_id = ?", id, int(u.ID)).Delete(&models.Credential{})
-	if res.Error != nil {
-		response.Fail(c, "删除失败", gin.H{"error": res.Error.Error()})
+	n, err := models.DeleteCredentialOwnedByUser(h.db, id, int(u.ID))
+	if err != nil {
+		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
 		return
 	}
-	if res.RowsAffected == 0 {
+	if n == 0 {
 		response.FailWithCode(c, 404, "凭证不存在", nil)
 		return
 	}

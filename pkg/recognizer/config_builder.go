@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"cloud.google.com/go/speech/apiv1/speechpb"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 )
 
 // ConfigReader 配置读取器 - 简化配置读取逻辑
@@ -138,17 +138,17 @@ func buildQCloudConfig(config map[string]interface{}) (*QCloudASROption, error) 
 	// 优先使用配置中的值，如果没有则使用环境变量
 	appID := cfg.String("app_id", "appId")
 	if appID == "" {
-		appID = utils.GetEnv("QCLOUD_APP_ID")
+		appID = base.GetEnv("QCLOUD_APP_ID")
 	}
 
 	secretID := cfg.String("secret_id", "secretId")
 	if secretID == "" {
-		secretID = utils.GetEnv("QCLOUD_SECRET_ID")
+		secretID = base.GetEnv("QCLOUD_SECRET_ID")
 	}
 
 	secretKey := cfg.String("secret_key", "secretKey", "secret")
 	if secretKey == "" {
-		secretKey = utils.GetEnv("QCLOUD_SECRET")
+		secretKey = base.GetEnv("QCLOUD_SECRET")
 	}
 
 	if appID == "" || secretID == "" || secretKey == "" {
@@ -157,7 +157,60 @@ func buildQCloudConfig(config map[string]interface{}) (*QCloudASROption, error) 
 	}
 
 	opt := NewQcloudASROption(appID, secretID, secretKey)
+	// 勿使用通用键 "model"（易与 LLM 的 model 混进 extra），仅认 modelType / model_type。
+	if mt := cfg.String("modelType", "model_type"); mt != "" {
+		opt.ModelType = mt
+	}
+	if n, ok := qcloudVoiceFormatFromConfigValue(config["format"]); ok {
+		opt.Format = n
+	} else if n, ok := qcloudVoiceFormatFromConfigValue(config["voiceFormat"]); ok {
+		opt.Format = n
+	}
 	return &opt, nil
+}
+
+// 与 github.com/tencentcloud/tencentcloud-speech-sdk-go/asr 中 AudioFormat 常量一致（避免本文件依赖 cgo/体积时可单独维护）。
+func qcloudVoiceFormatFromConfigValue(v interface{}) (int, bool) {
+	if v == nil {
+		return 0, false
+	}
+	switch x := v.(type) {
+	case int:
+		return x, true
+	case int32:
+		return int(x), true
+	case int64:
+		return int(x), true
+	case float64:
+		return int(x), true
+	case string:
+		s := strings.ToLower(strings.TrimSpace(x))
+		if s == "" {
+			return 0, false
+		}
+		switch s {
+		case "pcm", "raw", "s16le", "linear16", "1":
+			return 1, true
+		case "speex", "4":
+			return 4, true
+		case "silk", "6":
+			return 6, true
+		case "mp3", "8":
+			return 8, true
+		case "opus", "10":
+			return 10, true
+		case "wav", "wave", "12":
+			return 12, true
+		case "m4a", "14":
+			return 14, true
+		case "aac", "16":
+			return 16, true
+		default:
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
 }
 
 // buildGoogleConfig 构建Google ASR配置
@@ -266,7 +319,7 @@ func buildDeepgramConfig(config map[string]interface{}, language string) (*Deepg
 	cfg := NewConfigReader(config)
 	apiKey := cfg.String("apiKey", "api_key")
 	if apiKey == "" {
-		apiKey = utils.GetEnv("DEEPGRAM_API_KEY")
+		apiKey = base.GetEnv("DEEPGRAM_API_KEY")
 	}
 	if apiKey == "" {
 		return nil, fmt.Errorf("Deepgram ASR配置不完整：缺少apiKey")

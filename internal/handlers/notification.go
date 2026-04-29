@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/response"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -180,7 +180,7 @@ func (h *Handlers) notificationChannelCreateHandler(c *gin.Context) {
 	row := models.NotificationChannel{
 		OrgID:      orgID,
 		Type:       channelType,
-		Code:       fmt.Sprintf("%s-%s", strings.ToUpper(channelType[:1]), utils.SnowflakeUtil.GenID()),
+		Code:       fmt.Sprintf("%s-%s", strings.ToUpper(channelType[:1]), base.SnowflakeUtil.GenID()),
 		Name:       strings.TrimSpace(req.Name),
 		SortOrder:  req.SortOrder,
 		Enabled:    true,

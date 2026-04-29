@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/sirupsen/logrus"
 )
 
@@ -81,7 +81,7 @@ func NewFishAudioConfig(apiKey, referenceID string) FishAudioConfig {
 
 	// 从环境变量获取默认值
 	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("FISHAUDIO_API_KEY")
+		opt.APIKey = base.GetEnv("FISHAUDIO_API_KEY")
 	}
 
 	return opt
@@ -98,7 +98,7 @@ func (fa *FishAudioService) Provider() TTSProvider {
 	return ProviderFishAudio
 }
 
-func (fa *FishAudioService) Format() media.StreamFormat {
+func (fa *FishAudioService) Format() media2.StreamFormat {
 	fa.mu.Lock()
 	defer fa.mu.Unlock()
 
@@ -107,7 +107,7 @@ func (fa *FishAudioService) Format() media.StreamFormat {
 		sampleRate = 48000
 	}
 
-	return media.StreamFormat{
+	return media2.StreamFormat{
 		SampleRate:    sampleRate,
 		BitDepth:      fa.opt.BitDepth,
 		Channels:      fa.opt.Channels,
@@ -118,7 +118,7 @@ func (fa *FishAudioService) Format() media.StreamFormat {
 func (fa *FishAudioService) CacheKey(text string) string {
 	fa.mu.Lock()
 	defer fa.mu.Unlock()
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("fishaudio.tts-%s-%s-%d-%s.%s", fa.opt.Model, fa.opt.ReferenceID, fa.opt.SampleRate, digest, fa.opt.Format)
 }
 

@@ -27,6 +27,7 @@ import {
   LLM_CHANNEL_PROTOCOL_OPTIONS,
 } from '@/api/channelsAdmin'
 import { AdminOnly } from '@/components/AdminOnly'
+import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 
 const { Title, Paragraph, Text } = Typography
 const FormItem = Form.Item
@@ -269,15 +270,30 @@ export function LlmChannelsPage() {
         pagination={false}
         scroll={{ x: 1180 }}
         columns={[
-          { title: 'ID', dataIndex: 'id', width: 64 },
+          {
+            title: 'ID',
+            dataIndex: 'id',
+            width: 72,
+            render: (v: number) => <EllipsisCopyText text={v} maxWidth={56} copiedTip="ID 已复制" tooltipMaxLen={96} />,
+          },
           {
             title: '协议',
             dataIndex: 'protocol',
             width: 100,
             render: (p: string) => protocolLabels[p as keyof typeof protocolLabels] || p || '—',
           },
-          { title: '名称', dataIndex: 'name', width: 140, ellipsis: true },
-          { title: '分组', dataIndex: 'group', width: 100, ellipsis: true },
+          {
+            title: '名称',
+            dataIndex: 'name',
+            width: 140,
+            render: (v: string) => <EllipsisCopyText text={v} maxWidth={124} copiedTip="名称已复制" />,
+          },
+          {
+            title: '分组',
+            dataIndex: 'group',
+            width: 100,
+            render: (v: string) => <EllipsisCopyText text={v ?? ''} maxWidth={88} copiedTip="分组已复制" />,
+          },
           { title: '状态', dataIndex: 'status', width: 64 },
           {
             title: 'P/W',
@@ -288,10 +304,16 @@ export function LlmChannelsPage() {
             title: 'Base URL',
             dataIndex: 'base_url',
             width: 200,
-            ellipsis: true,
-            render: (v: string | null | undefined) => v || '—',
+            render: (v: string | null | undefined) => (
+              <EllipsisCopyText text={v && String(v).trim() ? v : '—'} maxWidth={184} copiedTip="URL 已复制" />
+            ),
           },
-          { title: '模型', dataIndex: 'models', width: 160, ellipsis: true },
+          {
+            title: '模型',
+            dataIndex: 'models',
+            width: 160,
+            render: (v: string) => <EllipsisCopyText text={v ?? ''} maxWidth={144} copiedTip="模型已复制" />,
+          },
           {
             title: '操作',
             width: 140,

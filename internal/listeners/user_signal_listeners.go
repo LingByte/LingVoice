@@ -9,13 +9,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/LingByte/LingVoice"
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
-	"github.com/LingByte/LingVoice/pkg/mailtemplate"
 	"github.com/LingByte/LingVoice/pkg/notification/mail"
 	"github.com/LingByte/LingVoice/pkg/task"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -54,7 +54,7 @@ func InitUserSignalListeners(db *gorm.DB, lg *zap.Logger) {
 }
 
 func registerUserSignalHandlers(lg *zap.Logger) {
-	utils.Sig().Connect(constants.SigUserLogin, func(sender any, params ...any) {
+	base.Sig().Connect(constants.SigUserLogin, func(sender any, params ...any) {
 		u, _ := sender.(*models.User)
 		lg.Info("signal user.login",
 			zap.String("email", emailOf(u)),
@@ -62,21 +62,21 @@ func registerUserSignalHandlers(lg *zap.Logger) {
 		)
 	})
 
-	utils.Sig().Connect(constants.SigUserLogout, func(sender any, params ...any) {
+	base.Sig().Connect(constants.SigUserLogout, func(sender any, params ...any) {
 		u, _ := sender.(*models.User)
 		lg.Info("signal user.logout",
 			zap.String("email", emailOf(u)),
 		)
 	})
 
-	utils.Sig().Connect(constants.SigUserCreate, func(sender any, params ...any) {
+	base.Sig().Connect(constants.SigUserCreate, func(sender any, params ...any) {
 		u, _ := sender.(*models.User)
 		lg.Info("signal user.create",
 			zap.String("email", emailOf(u)),
 		)
 	})
 
-	utils.Sig().Connect(constants.SigUserVerifyEmail, func(sender any, params ...any) {
+	base.Sig().Connect(constants.SigUserVerifyEmail, func(sender any, params ...any) {
 		u, ok := sender.(*models.User)
 		if !ok || u == nil || len(params) < 4 {
 			lg.Warn("signal user.verifyemail: bad payload")
@@ -144,8 +144,8 @@ func sendEmailLoginCodeHTML(ctx context.Context, job emailVerifyCodeJob) (struct
 		Code       string
 		ExpireHint string
 	}
-	html, err := mailtemplate.RenderHTML(mailtemplate.TplEmailLoginCode, codeTpl{
-		Username:   mailtemplate.UsernameFromEmail(job.email),
+	html, err := LingVoice.RenderHTML(LingVoice.TplEmailLoginCode, codeTpl{
+		Username:   LingVoice.UsernameFromEmail(job.email),
 		Code:       job.code,
 		ExpireHint: "10 分钟",
 	})

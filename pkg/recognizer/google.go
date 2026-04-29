@@ -10,13 +10,13 @@ import (
 
 	speech "cloud.google.com/go/speech/apiv1"
 	"cloud.google.com/go/speech/apiv1/speechpb"
-	"github.com/LingByte/LingVoice/pkg/media"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
 
 type GoogleASR struct {
-	handler     media.MediaHandler
+	handler     media2.MediaHandler
 	stream      speechpb.Speech_StreamingRecognizeClient
 	opt         GoogleASROption
 	ttfbDone    bool
@@ -57,7 +57,7 @@ func (google *GoogleASR) receiveFrames() {
 			if google.sendReqTime != nil {
 				google.handler.AddMetric("asr_google", time.Since(*google.sendReqTime))
 			}
-			google.handler.EmitState(google, media.Completed)
+			google.handler.EmitState(google, media2.Completed)
 			break
 		}
 		if err != nil {
@@ -92,8 +92,8 @@ func (google *GoogleASR) receiveFrames() {
 		google.Sentence = string(google.words)
 		google.words = nil
 
-		google.handler.EmitState(google, media.Transcribing, google.Sentence)
-		google.handler.EmitPacket(google, &media.AudioPacket{
+		google.handler.EmitState(google, media2.Transcribing, google.Sentence)
+		google.handler.EmitPacket(google, &media2.AudioPacket{
 			Payload:       []byte(google.Sentence),
 			IsSynthesized: true,
 		})

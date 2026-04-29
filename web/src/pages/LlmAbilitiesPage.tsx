@@ -25,8 +25,9 @@ import {
   type LLMAbilityRow,
 } from '@/api/llmAbilities'
 import { AdminOnly } from '@/components/AdminOnly'
+import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 
-const { Title, Paragraph, Text } = Typography
+const { Title, Paragraph } = Typography
 const FormItem = Form.Item
 
 const drawerBodyStyle: CSSProperties = { padding: '12px 16px 8px' }
@@ -344,23 +345,44 @@ export function LlmAbilitiesPage() {
           pagination={false}
           scroll={{ x: 1040 }}
           columns={[
-            { title: '分组', dataIndex: 'group', width: 120, ellipsis: true },
-            { title: '模型', dataIndex: 'model', width: 200, ellipsis: true },
+            {
+              title: '分组',
+              dataIndex: 'group',
+              width: 120,
+              render: (v: string) => <EllipsisCopyText text={v} maxWidth={104} copiedTip="分组已复制" />,
+            },
+            {
+              title: '模型',
+              dataIndex: 'model',
+              width: 200,
+              render: (v: string) => <EllipsisCopyText text={v} maxWidth={184} copiedTip="模型已复制" />,
+            },
             {
               title: '渠道',
               width: 260,
-              ellipsis: true,
-              render: (_: unknown, row: LLMAbilityRow) => (
-                <span title={`#${row.channel_id}`}>
-                  {row.channel_name ? `${row.channel_name} (#${row.channel_id})` : `#${row.channel_id}`}
-                </span>
-              ),
+              render: (_: unknown, row: LLMAbilityRow) => {
+                const label = row.channel_name
+                  ? `${row.channel_name} (#${row.channel_id})`
+                  : `#${row.channel_id}`
+                return (
+                  <EllipsisCopyText text={label} maxWidth={240} copiedTip="渠道已复制" tooltipMaxLen={160} />
+                )
+              },
             },
             {
               title: '元数据',
               width: 88,
               render: (_: unknown, row: LLMAbilityRow) =>
-                row.model_meta_id ? <Text type="success">#{row.model_meta_id}</Text> : '—',
+                row.model_meta_id ? (
+                  <EllipsisCopyText
+                    text={`#${row.model_meta_id}`}
+                    maxWidth={72}
+                    copiedTip="元数据 ID 已复制"
+                    tooltipMaxLen={48}
+                  />
+                ) : (
+                  '—'
+                ),
             },
             {
               title: '启用',
@@ -370,7 +392,12 @@ export function LlmAbilitiesPage() {
             },
             { title: 'Priority', dataIndex: 'priority', width: 88 },
             { title: 'Weight', dataIndex: 'weight', width: 72 },
-            { title: 'Tag', dataIndex: 'tag', width: 120, ellipsis: true, render: (t: string | null) => t || '—' },
+            {
+              title: 'Tag',
+              dataIndex: 'tag',
+              width: 120,
+              render: (t: string | null) => <EllipsisCopyText text={t || '—'} maxWidth={104} copiedTip="Tag 已复制" />,
+            },
             {
               title: '操作',
               width: 140,

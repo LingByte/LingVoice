@@ -11,12 +11,12 @@ import (
 
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/logger"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/accessutils"
 )
 
 var (
 	// GlobalKeyManager is the global key manager for JWT signing
-	GlobalKeyManager *utils.KeyManager
+	GlobalKeyManager *accessutils.KeyManager
 	stopRotationChan chan struct{}
 )
 
@@ -30,7 +30,7 @@ func minKeysToProvision() int {
 
 // ensureMinimumKeyPairs generates additional key pairs so verification can overlap during rotation
 // (JWKS exposes several kids; new tokens use the newest key).
-func ensureMinimumKeyPairs(km *utils.KeyManager, keyFile string) error {
+func ensureMinimumKeyPairs(km *accessutils.KeyManager, keyFile string) error {
 	start := km.KeyCount()
 	for km.KeyCount() < minKeysToProvision() {
 		if _, err := km.GenerateKey(); err != nil {
@@ -46,14 +46,14 @@ func ensureMinimumKeyPairs(km *utils.KeyManager, keyFile string) error {
 	return nil
 }
 
-func publishKeyManager(km *utils.KeyManager) {
+func publishKeyManager(km *accessutils.KeyManager) {
 	GlobalKeyManager = km
-	utils.InstallJWTKeyManager(km)
+	accessutils.InstallJWTKeyManager(km)
 }
 
 // InitializeKeyManager initializes the global KeyManager with key persistence
 func InitializeKeyManager() error {
-	keyManager := utils.NewKeyManager(config.GlobalConfig.JWT.Algorithm)
+	keyManager := accessutils.NewKeyManager(config.GlobalConfig.JWT.Algorithm)
 	keyFile := config.GlobalConfig.JWT.KeyFile
 
 	keyDir := filepath.Dir(keyFile)
@@ -98,7 +98,7 @@ func InitializeKeyManager() error {
 }
 
 // shouldRotateKey checks if the current key needs rotation
-func shouldRotateKey(km *utils.KeyManager) bool {
+func shouldRotateKey(km *accessutils.KeyManager) bool {
 	currentKey, err := km.GetCurrentKey()
 	if err != nil {
 		return false
@@ -114,7 +114,7 @@ func shouldRotateKey(km *utils.KeyManager) bool {
 }
 
 // rotateKeys performs key rotation
-func rotateKeys(km *utils.KeyManager, keyFile string) error {
+func rotateKeys(km *accessutils.KeyManager, keyFile string) error {
 	keepOldKeys := config.GlobalConfig.JWT.KeepOldKeys
 	if keepOldKeys <= 0 {
 		keepOldKeys = 2
@@ -133,7 +133,7 @@ func rotateKeys(km *utils.KeyManager, keyFile string) error {
 }
 
 // startKeyRotationChecker starts a background goroutine to check for key rotation
-func startKeyRotationChecker(km *utils.KeyManager, keyFile string) {
+func startKeyRotationChecker(km *accessutils.KeyManager, keyFile string) {
 	stopRotationChan = make(chan struct{})
 
 	go func() {

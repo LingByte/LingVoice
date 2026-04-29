@@ -12,6 +12,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Mic2 } from 'lucide-react'
 import { type SpeechUsageRow, getSpeechUsage, listSpeechUsage } from '@/api/speechUsage'
+import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -24,12 +25,6 @@ function fmtTime(s?: string): string {
 
 function fmtBool(v: boolean): string {
   return v ? '是' : '否'
-}
-
-function previewText(s: string, max = 80): string {
-  const t = String(s ?? '').replace(/\s+/g, ' ').trim()
-  if (!t) return '—'
-  return t.length > max ? `${t.slice(0, max)}…` : t
 }
 
 function fmtBytes(n: number): string {
@@ -181,8 +176,23 @@ export function SpeechUsagePage() {
       title: '请求 ID',
       dataIndex: 'request_id',
       width: 180,
-      ellipsis: true,
-      render: (v: string) => <span title={v}>{previewText(v, 28)}</span>,
+      render: (v: string) => (
+        <EllipsisCopyText text={v} maxWidth={164} copiedTip="请求 ID 已复制" tooltipMaxLen={200} />
+      ),
+    },
+    {
+      title: '用户',
+      dataIndex: 'user_id',
+      width: 112,
+      render: (v: string) => (
+        <EllipsisCopyText
+          className="tabular-nums"
+          text={v || '—'}
+          maxWidth={96}
+          copiedTip="user_id 已复制"
+          tooltipMaxLen={80}
+        />
+      ),
     },
     {
       title: '类型',
@@ -194,19 +204,35 @@ export function SpeechUsagePage() {
       title: '提供商',
       dataIndex: 'provider',
       width: 100,
-      render: (v: string) => v || '—',
+      render: (v: string) => <EllipsisCopyText text={v || '—'} maxWidth={88} copiedTip="已复制" />,
     },
     {
       title: '凭证',
       dataIndex: 'credential_id',
-      width: 72,
-      render: (v: number) => <span className="tabular-nums">{v ? String(v) : '—'}</span>,
+      width: 80,
+      render: (v: number) => (
+        <EllipsisCopyText
+          className="tabular-nums"
+          text={v ? String(v) : '—'}
+          maxWidth={64}
+          copiedTip="凭证 ID 已复制"
+          tooltipMaxLen={48}
+        />
+      ),
     },
     {
       title: '渠道',
       dataIndex: 'channel_id',
-      width: 64,
-      render: (v: number) => <span className="tabular-nums">{v ? String(v) : '—'}</span>,
+      width: 72,
+      render: (v: number) => (
+        <EllipsisCopyText
+          className="tabular-nums"
+          text={v ? String(v) : '—'}
+          maxWidth={56}
+          copiedTip="渠道 ID 已复制"
+          tooltipMaxLen={48}
+        />
+      ),
     },
     {
       title: '音频',
@@ -241,7 +267,7 @@ export function SpeechUsagePage() {
       title: '完成时间',
       dataIndex: 'completed_at',
       width: 176,
-      render: (v: string) => fmtTime(v),
+      render: (v: string) => <EllipsisCopyText text={fmtTime(v)} maxWidth={160} copyable={false} />,
     },
     {
       title: '操作',
@@ -349,7 +375,7 @@ export function SpeechUsagePage() {
             data={list}
             pagination={false}
             borderCell
-            scroll={{ x: 1100 }}
+            scroll={{ x: 1220 }}
           />
         </Spin>
       </div>

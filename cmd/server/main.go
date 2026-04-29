@@ -20,7 +20,7 @@ import (
 	"github.com/LingByte/LingVoice/pkg/middleware"
 	"github.com/LingByte/LingVoice/pkg/notification/mail"
 	"github.com/LingByte/LingVoice/pkg/notification/sms"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -79,34 +79,34 @@ func main() {
 		SeedNonProd: *seed,
 		MigrateModels: func() []any {
 			return []any{
-				utils.Config{},
-				mail.MailLog{},
-				sms.SMSLog{},
-				models.Organization{},
-				models.OrgMember{},
-				models.MailTemplate{},
-				models.InternalNotification{},
-				models.NotificationChannel{},
-				models.LLMChannel{},
-				models.LLMAbility{},
-				models.LLMModelMeta{},
-				models.SiteAnnouncement{},
-				models.ASRChannel{},
-				models.TTSChannel{},
-				models.Credential{},
-				models.User{},
+				&base.Config{},
+				&mail.MailLog{},
+				&sms.SMSLog{},
+				&models.Organization{},
+				&models.OrgMember{},
+				&models.MailTemplate{},
+				&models.InternalNotification{},
+				&models.NotificationChannel{},
+				&models.LLMChannel{},
+				&models.LLMAbility{},
+				&models.LLMModelMeta{},
+				&models.Announcement{},
+				&models.ASRChannel{},
+				&models.TTSChannel{},
+				&models.Credential{},
+				&models.User{},
+				&models.UserProfile{},
 				&models.ChatSession{},
 				&models.ChatMessage{},
 				&models.LLMUsage{},
-				models.LLMUsageUserDaily{},
-				models.LLMUsageUserModelDaily{},
+				&models.LLMUsageUserDaily{},
+				&models.LLMUsageUserModelDaily{},
 				&models.SpeechUsage{},
 				&models.AgentRun{},
 				&models.AgentStep{},
 			}
 		},
 	})
-
 	if err != nil {
 		logger.Error("database setup failed", zap.Error(err))
 		return
@@ -171,7 +171,7 @@ func main() {
 	logger.Info("already embed static resource for CombineEmbedFS")
 
 	// 19. Emit system initialization signal
-	utils.Sig().Emit(constants.SigInitSystemConfig, nil)
+	base.Sig().Emit(constants.SigInitSystemConfig, nil)
 
 	httpServer := &http.Server{
 		Addr:           addr,

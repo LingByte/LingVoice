@@ -18,8 +18,9 @@ import (
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
-	"github.com/LingByte/LingVoice/pkg/response"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/accessutils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -154,14 +155,8 @@ type User struct {
 	LastLogin                  *time.Time `json:"lastLogin,omitempty"`
 	LastLoginIP                string     `json:"-" gorm:"size:128"`
 	Source                     string     `json:"source" gorm:"size:64;index"`
-	Locale                     string     `json:"locale,omitempty" gorm:"size:20"`
-	Timezone                   string     `json:"timezone,omitempty" gorm:"size:200"`
 	AuthToken                  string     `json:"token,omitempty" gorm:"-"`
 	Avatar                     string     `json:"avatar,omitempty"`
-	Gender                     string     `json:"gender,omitempty"`
-	City                       string     `json:"city,omitempty"`
-	Region                     string     `json:"region,omitempty"`
-	EmailNotifications         bool       `json:"emailNotifications"`                           // 邮件通知
 	EmailVerified              bool       `json:"emailVerified" gorm:"default:false"`           // 邮箱已验证
 	PhoneVerified              bool       `json:"phoneVerified" gorm:"default:false"`           // 手机已验证
 	TwoFactorEnabled           bool       `json:"twoFactorEnabled" gorm:"default:false"`        // 双因素认证
@@ -176,7 +171,6 @@ type User struct {
 	UsedQuota                  int        `json:"usedQuota" gorm:"default:0"`                   // 用户级已用额度
 	UnlimitedQuota             bool       `json:"unlimitedQuota" gorm:"default:false"`          // 用户级无限额度标记
 	LastPasswordChange         *time.Time `json:"lastPasswordChange,omitempty"`                 // 最后密码修改时间
-	ProfileComplete            int        `json:"profileComplete" gorm:"default:0"`             // 资料完整度百分比
 	Role                       string     `json:"role,omitempty" gorm:"size:50;default:'user'"` // 用户角色
 	DefaultOrgID               uint       `json:"defaultOrgId" gorm:"index;not null;default:0;comment:default organization id"`
 	AccountDeletionRequestedAt *time.Time `json:"accountDeletionRequestedAt,omitempty"`
@@ -217,7 +211,7 @@ func Login(c *gin.Context, user *User) {
 	session := sessions.Default(c)
 	session.Set(constants.UserField, user.ID)
 	session.Save()
-	utils.Sig().Emit(constants.SigUserLogin, user, db)
+	base.Sig().Emit(constants.SigUserLogin, user, db)
 }
 
 func Logout(c *gin.Context, user *User) {
@@ -225,7 +219,7 @@ func Logout(c *gin.Context, user *User) {
 	session := sessions.Default(c)
 	session.Delete(constants.UserField)
 	session.Save()
-	utils.Sig().Emit(constants.SigUserLogout, user, c)
+	base.Sig().Emit(constants.SigUserLogout, user, c)
 }
 
 // AuthRequired 依赖 CurrentUser：其中已包含 session cookie 与 Authorization Bearer access JWT 的解析与装库（见 CurrentUser 末尾 jwtauth.ParseAccessToken）。
@@ -326,16 +320,16 @@ func CurrentUser(c *gin.Context) *User {
 	if raw == "" {
 		return nil
 	}
-	var payload *utils.AccessPayload
+	var payload *accessutils.AccessPayload
 	var err error
 	if bootstrap.GlobalKeyManager != nil {
-		payload, err = utils.ParseAccessTokenWithKey(raw, bootstrap.GlobalKeyManager)
+		payload, err = accessutils.ParseAccessTokenWithKey(raw, bootstrap.GlobalKeyManager)
 		if err != nil {
 			// Backward-compat: allow HS256 tokens issued before JWKS rollout.
-			payload, err = utils.ParseAccessToken(raw, config.GlobalConfig.Auth.JWTSigningKey())
+			payload, err = accessutils.ParseAccessToken(raw, config.GlobalConfig.Auth.JWTSigningKey())
 		}
 	} else {
-		payload, err = utils.ParseAccessToken(raw, config.GlobalConfig.Auth.JWTSigningKey())
+		payload, err = accessutils.ParseAccessToken(raw, config.GlobalConfig.Auth.JWTSigningKey())
 	}
 	if err != nil || payload == nil {
 		return nil
@@ -484,25 +478,28 @@ func CreateUserByEmailWithMeta(db *gorm.DB, username, display, email, password, 
 	}
 
 	user := User{
-		BaseModel:          BaseModel{},
-		DisplayName:        display,
-		FirstName:          firstName,
-		LastName:           lastName,
-		Email:              email,
-		Password:           HashPassword(password),
-		Status:             status,
-		Source:             source,
-		EmailNotifications: true,
-		Role:               RoleUser, // Explicitly set default role
+		BaseModel:   BaseModel{},
+		DisplayName: display,
+		FirstName:   firstName,
+		LastName:    lastName,
+		Email:       email,
+		Password:    HashPassword(password),
+		Status:      status,
+		Source:      source,
+		Role:        RoleUser, // Explicitly set default role
 	}
 	operator := strings.ToLower(strings.TrimSpace(email))
 	if operator == "" {
 		operator = "system"
 	}
 	user.SetCreateInfo(operator)
-	user.ID = utils.GenUintID()
+	user.ID = base.GenUintID()
 	result := db.Create(&user)
-	return &user, result.Error
+	if result.Error != nil {
+		return &user, result.Error
+	}
+	_, _ = EnsureUserProfile(db, user.ID)
+	return &user, nil
 }
 
 func CreateUser(db *gorm.DB, email, password string) (*User, error) {
@@ -524,10 +521,14 @@ func CreateUserWithMeta(db *gorm.DB, email, password, source, status string) (*U
 		operator = "system"
 	}
 	user.SetCreateInfo(operator)
-	user.ID = utils.GenUintID()
+	user.ID = base.GenUintID()
 
 	result := db.Create(&user)
-	return &user, result.Error
+	if result.Error != nil {
+		return &user, result.Error
+	}
+	_, _ = EnsureUserProfile(db, user.ID)
+	return &user, nil
 }
 func UpdateUserFields(db *gorm.DB, user *User, vals map[string]any) error {
 	if _, ok := vals["update_by"]; !ok {
@@ -563,6 +564,16 @@ func CheckUserAllowLogin(db *gorm.DB, user *User) error {
 	}
 
 	return nil
+}
+
+// UserHasSpendableQuota 用户主表剩余额度是否允许 OpenAPI 消费（无限或 remain_quota>0）。
+func UserHasSpendableQuota(db *gorm.DB, userID uint) (bool, error) {
+	var u User
+	err := db.Select("remain_quota", "unlimited_quota").Where("id = ?", userID).First(&u).Error
+	if err != nil {
+		return false, err
+	}
+	return u.UnlimitedQuota || u.RemainQuota > 0, nil
 }
 
 // ValidateUserRole validates that the user has a valid role
@@ -654,7 +665,7 @@ func ResetPassword(db *gorm.DB, user *User, newPassword string) error {
 
 // GeneratePasswordResetToken 生成密码重置令牌
 func GeneratePasswordResetToken(db *gorm.DB, user *User) (string, error) {
-	token := utils.RandString(32)
+	token := base.RandString(32)
 	expires := time.Now().Add(24 * time.Hour) // 24小时过期
 
 	err := UpdateUserFields(db, user, map[string]any{
@@ -682,7 +693,7 @@ func VerifyPasswordResetToken(db *gorm.DB, token string) (*User, error) {
 
 // GenerateEmailVerifyToken 生成邮箱登录用 6 位数字验证码（写入 email_verify_token，短期有效）。
 func GenerateEmailVerifyToken(db *gorm.DB, user *User) (string, error) {
-	token := utils.RandNumberText(6)
+	token := base.RandNumberText(6)
 	expires := time.Now().Add(10 * time.Minute)
 
 	err := UpdateUserFields(db, user, map[string]any{
@@ -739,7 +750,7 @@ func VerifyEmailLoginCode(db *gorm.DB, email, code string) (*User, error) {
 
 // GeneratePhoneVerifyToken 生成手机验证令牌
 func GeneratePhoneVerifyToken(db *gorm.DB, user *User) (string, error) {
-	token := utils.RandNumberText(6) // 6位数字验证码
+	token := base.RandNumberText(6) // 6位数字验证码
 	err := UpdateUserFields(db, user, map[string]any{
 		"PhoneVerifyToken": token,
 	})
@@ -768,138 +779,6 @@ func VerifyPhone(db *gorm.DB, user *User, token string) error {
 
 	user.PhoneVerified = true
 	user.PhoneVerifyToken = ""
-	return nil
-}
-
-// UpdateNotificationSettings 更新通知设置
-func UpdateNotificationSettings(db *gorm.DB, user *User, settings map[string]bool) error {
-	vals := make(map[string]any)
-
-	if emailNotif, ok := settings["emailNotifications"]; ok {
-		vals["email_notifications"] = emailNotif
-	}
-	if len(vals) == 0 {
-		return nil
-	}
-
-	err := UpdateUserFields(db, user, vals)
-	if err != nil {
-		return err
-	}
-
-	// 更新用户对象
-	if emailNotif, ok := settings["emailNotifications"]; ok {
-		user.EmailNotifications = emailNotif
-	}
-	return nil
-}
-
-// UpdatePreferences 更新用户偏好设置
-// 只处理实际使用的字段：timezone 和 locale
-func UpdatePreferences(db *gorm.DB, user *User, preferences map[string]string) error {
-	vals := make(map[string]any)
-
-	if timezone, ok := preferences["timezone"]; ok {
-		vals["timezone"] = timezone
-	}
-	if locale, ok := preferences["locale"]; ok {
-		vals["locale"] = locale
-	}
-
-	if len(vals) == 0 {
-		return nil
-	}
-
-	err := UpdateUserFields(db, user, vals)
-	if err != nil {
-		return err
-	}
-
-	// 更新用户对象
-	if timezone, ok := preferences["timezone"]; ok {
-		user.Timezone = timezone
-	}
-	if locale, ok := preferences["locale"]; ok {
-		user.Locale = locale
-	}
-
-	return nil
-}
-
-// CalculateProfileComplete 计算资料完整度
-func CalculateProfileComplete(user *User) int {
-	complete := 0
-	total := 0
-
-	// 基本信息 (40%)
-	total += 4
-	if user.DisplayName != "" {
-		complete++
-	}
-	if user.FirstName != "" {
-		complete++
-	}
-	if user.LastName != "" {
-		complete++
-	}
-	if user.Avatar != "" {
-		complete++
-	}
-
-	// 联系方式 (30%)
-	total += 3
-	if user.Email != "" {
-		complete++
-	}
-	if user.Phone != "" {
-		complete++
-	}
-	if user.EmailVerified {
-		complete++
-	}
-
-	// 地址信息 (20%)
-	total += 2
-	if user.City != "" {
-		complete++
-	}
-	if user.Region != "" {
-		complete++
-	}
-
-	// 偏好设置 (10%)
-	total += 1
-	if user.Timezone != "" {
-		complete++
-	}
-
-	// 第三方认证 (20%)
-	total += 2
-	if user.WechatOpenID != "" {
-		complete++
-	}
-	if user.GithubID != "" {
-		complete++
-	}
-
-	percentage := (complete * 100) / total
-	if percentage > 100 {
-		percentage = 100
-	}
-
-	return percentage
-}
-
-// UpdateProfileComplete 更新资料完整度
-func UpdateProfileComplete(db *gorm.DB, user *User) error {
-	complete := CalculateProfileComplete(user)
-	err := UpdateUserFields(db, user, map[string]any{
-		"ProfileComplete": complete,
-	})
-	if err != nil {
-		return err
-	}
-	user.ProfileComplete = complete
 	return nil
 }
 
@@ -1082,12 +961,26 @@ func FinalizeAccountDeletion(db *gorm.DB, userID uint, operator string) error {
 		if err := tx.Model(&User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
 			return err
 		}
+		_ = tx.Where("user_id = ?", userID).Delete(&UserProfile{}).Error
 		return nil
 	})
 }
 
 // AdminUserJSON 管理端用户视图：id 使用十进制字符串，避免前端 JSON number 超过 MAX_SAFE_INTEGER 时精度丢失。
-func AdminUserJSON(u User) gin.H {
+// prof 可为 nil（仅主表字段）；资料字段来自 user_profiles。
+func AdminUserJSON(u User, prof *UserProfile) gin.H {
+	locale, tz, gender, city, region := "", "", "", "", ""
+	emailNotif := false
+	pc := 0
+	if prof != nil {
+		locale = prof.Locale
+		tz = prof.Timezone
+		gender = prof.Gender
+		city = prof.City
+		region = prof.Region
+		emailNotif = prof.EmailNotifications
+		pc = prof.ProfileComplete
+	}
 	out := gin.H{
 		"id":                 strconv.FormatUint(uint64(u.ID), 10),
 		"email":              u.Email,
@@ -1096,20 +989,20 @@ func AdminUserJSON(u User) gin.H {
 		"firstName":          u.FirstName,
 		"lastName":           u.LastName,
 		"avatar":             u.Avatar,
-		"gender":             u.Gender,
-		"city":               u.City,
-		"region":             u.Region,
-		"timezone":           u.Timezone,
+		"gender":             gender,
+		"city":               city,
+		"region":             region,
+		"timezone":           tz,
 		"status":             u.Status,
 		"role":               u.Role,
-		"locale":             u.Locale,
+		"locale":             locale,
 		"source":             u.Source,
 		"emailVerified":      u.EmailVerified,
 		"phoneVerified":      u.PhoneVerified,
-		"emailNotifications": u.EmailNotifications,
+		"emailNotifications": emailNotif,
 		"twoFactorEnabled":   u.TwoFactorEnabled,
 		"loginCount":         u.LoginCount,
-		"profileComplete":    u.ProfileComplete,
+		"profileComplete":    pc,
 		"githubLogin":        u.GithubLogin,
 		"wechatOpenId":       u.WechatOpenID,
 		"remainQuota":        u.RemainQuota,

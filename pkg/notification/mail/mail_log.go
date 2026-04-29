@@ -6,7 +6,7 @@ package mail
 import (
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 	"gorm.io/gorm"
 )
 
@@ -38,7 +38,7 @@ func (MailLog) TableName() string {
 // CreateMailLog records a successful send (or send accepted by provider).
 func CreateMailLog(db *gorm.DB, orgID uint, userID uint, provider, channelName, toEmail, subject, htmlBody, messageID, status string, ip string) (*MailLog, error) {
 	log := &MailLog{
-		ID:          uint(utils.SnowflakeUtil.NextID()),
+		ID:          uint(base.SnowflakeUtil.NextID()),
 		OrgID:       orgID,
 		UserID:      userID,
 		Provider:    provider,
@@ -60,7 +60,7 @@ func CreateMailLog(db *gorm.DB, orgID uint, userID uint, provider, channelName, 
 // CreateFailedMailLog records a send that failed after all retries.
 func CreateFailedMailLog(db *gorm.DB, orgID uint, userID uint, provider, channelName, toEmail, subject, htmlBody, errMsg string, retries int, ip string) (*MailLog, error) {
 	log := &MailLog{
-		ID:          uint(utils.SnowflakeUtil.NextID()),
+		ID:          uint(base.SnowflakeUtil.NextID()),
 		OrgID:       orgID,
 		UserID:      userID,
 		Provider:    provider,

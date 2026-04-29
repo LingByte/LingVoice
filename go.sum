@@ -18,6 +18,8 @@ filippo.io/edwards25519 v1.1.0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
+github.com/LingByte/lingoroutine v0.1.1 h1:osqRBuxsZrWdezzzklnaPv9Ij2pvrDD1UNk7vusQGxs=
+github.com/LingByte/lingoroutine v0.1.1/go.mod h1:wGnuY38IIeJFbpx7N5wygIGbW4150GJiQrKAOlc2M+I=
 github.com/LingByte/lingstorage-sdk-go v0.0.0-20260113030255-ff9d0501909c h1:tYbA+ZNCME3TotUlDpGEeUt3efYJt96mRqCTazFIZMc=
 github.com/LingByte/lingstorage-sdk-go v0.0.0-20260113030255-ff9d0501909c/go.mod h1:pPClLbXjwKXfOIcgZiklZj6DVBhI86uN7jnZqxAcwEo=
 github.com/abema/go-mp4 v1.5.0 h1:aJnu723gFuNswIiM08h4kO28pUZr0QXNAJGoZWT96AU=
@@ -535,6 +537,8 @@ golang.org/x/exp v0.0.0-20190121172915-509febef88a4/go.mod h1:CJ0aWSM057203Lf6IL
 golang.org/x/image v0.0.0-20190910094157-69e4b8554b2a/go.mod h1:FeLwcggjj3mMvU+oOTbSwawSJRM1uh48EjtB4UJZlP0=
 golang.org/x/image v0.34.0 h1:33gCkyw9hmwbZJeZkct8XyR11yH889EQt/QH4VmXMn8=
 golang.org/x/image v0.34.0/go.mod h1:2RNFBZRB+vnwwFil8GkMdRvrJOFd1AzdZI6vOY+eJVU=
+golang.org/x/image v0.39.0 h1:skVYidAEVKgn8lZ602XO75asgXBgLj9G/FE3RbuPFww=
+golang.org/x/image v0.39.0/go.mod h1:sIbmppfU+xFLPIG0FoVUTvyBMmgng1/XAMhQ2ft0hpA=
 golang.org/x/lint v0.0.0-20181026193005-c67002cb31c3/go.mod h1:UVdnD1Gm6xHRNCYTkRU2/jEulfH38KcIWyp/GAMgvoE=
 golang.org/x/lint v0.0.0-20190227174305-5b3e6a55c961/go.mod h1:wehouNa3lNwaWXcvxsM5YxQ5yQlVC4a0KAMCusXpPoU=
 golang.org/x/lint v0.0.0-20190313153728-d0100b6bd8b3/go.mod h1:6SW0HCj/g11FgYtHlgUYUwCkIfeOF89ocIRzGO/8vkc=

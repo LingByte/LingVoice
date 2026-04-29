@@ -14,15 +14,15 @@ import (
 
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/llm"
-	"github.com/LingByte/LingVoice/pkg/response"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
 func newSpeechUsageRowID() string {
-	if utils.SnowflakeUtil != nil {
-		return utils.SnowflakeUtil.GenID()
+	if base.SnowflakeUtil != nil {
+		return base.SnowflakeUtil.GenID()
 	}
 	return strconv.FormatInt(time.Now().UnixNano(), 10)
 }

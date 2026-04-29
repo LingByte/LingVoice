@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/sirupsen/logrus"
 )
 
@@ -57,22 +57,22 @@ func NewQiniuTTSConfig(apiKey, baseURL string) QiniuTTSConfig {
 
 	// 从环境变量获取默认值
 	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("QINIU_TTS_API_KEY")
+		opt.APIKey = base.GetEnv("QINIU_TTS_API_KEY")
 	}
 	if opt.BaseURL == "" {
-		opt.BaseURL = utils.GetEnv("QINIU_TTS_BASE_URL")
+		opt.BaseURL = base.GetEnv("QINIU_TTS_BASE_URL")
 	}
 	if opt.BaseURL == "" {
 		opt.BaseURL = "https://openai.qiniu.com/v1"
 	}
 
 	// 解析超时时间
-	if timeout := utils.GetIntEnv("QINIU_TTS_TIMEOUT"); timeout > 0 {
+	if timeout := base.GetIntEnv("QINIU_TTS_TIMEOUT"); timeout > 0 {
 		opt.Timeout = int(timeout)
 	}
 
 	// 解析重试次数
-	if retries := utils.GetIntEnv("QINIU_TTS_RETRIES"); retries > 0 {
+	if retries := base.GetIntEnv("QINIU_TTS_RETRIES"); retries > 0 {
 		opt.Retries = int(retries)
 	}
 
@@ -90,21 +90,21 @@ func (qs *QiniuService) Provider() TTSProvider {
 	return ProviderQiniu
 }
 
-func (qs *QiniuService) Format() media.StreamFormat {
+func (qs *QiniuService) Format() media2.StreamFormat {
 	qs.mu.Lock()
 	defer qs.mu.Unlock()
-	return media.StreamFormat{
+	return media2.StreamFormat{
 		SampleRate:    qs.opt.SampleRate,
 		BitDepth:      qs.opt.BitDepth,
 		Channels:      qs.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(qs.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(qs.opt.FrameDuration),
 	}
 }
 
 func (qs *QiniuService) CacheKey(text string) string {
 	qs.mu.Lock()
 	defer qs.mu.Unlock()
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("qiniu.tts-%s-%d-%s.%s", qs.opt.VoiceType, qs.opt.SampleRate, digest, qs.opt.Codec)
 }
 

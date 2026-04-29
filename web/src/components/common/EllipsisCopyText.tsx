@@ -14,7 +14,20 @@ type Props = {
   /** cell 最大宽度（配合 Table column width 使用） */
   maxWidth?: number | string
   className?: string
+  /**
+   * Tooltip 内最多展示的字符数（按 JS 字符串长度计）；超出部分用省略号，仍复制全文。
+   * 默认 200；设为 0 表示不在此层截断（仍受 hideTooltipIfLongerThan 影响）。
+   */
+  tooltipMaxLen?: number
+  /**
+   * 超过该长度则不展示 Tooltip（避免超大 JSON / 正文撑爆浮层）；默认 4096。
+   * 设为 0 表示不启用此限制。
+   */
+  hideTooltipIfLongerThan?: number
 }
+
+const DEFAULT_TOOLTIP_MAX = 200
+const DEFAULT_HIDE_OVER = 4096
 
 async function copyToClipboard(text: string) {
   try {
@@ -38,6 +51,19 @@ async function copyToClipboard(text: string) {
   }
 }
 
+function tooltipBody(full: string, tooltipMaxLen: number, hideTooltipIfLongerThan: number): string | null {
+  if (hideTooltipIfLongerThan > 0 && full.length > hideTooltipIfLongerThan) {
+    return null
+  }
+  if (tooltipMaxLen <= 0) {
+    return full
+  }
+  if (full.length <= tooltipMaxLen) {
+    return full
+  }
+  return `${full.slice(0, tooltipMaxLen)}…`
+}
+
 export function EllipsisCopyText(props: Props) {
   const {
     text,
@@ -47,6 +73,8 @@ export function EllipsisCopyText(props: Props) {
     copyable = true,
     maxWidth,
     className,
+    tooltipMaxLen = DEFAULT_TOOLTIP_MAX,
+    hideTooltipIfLongerThan = DEFAULT_HIDE_OVER,
   } = props
 
   const s = text === null || text === undefined ? '' : String(text)
@@ -77,6 +105,9 @@ export function EllipsisCopyText(props: Props) {
 
   if (!wrapInTooltip) return content
 
+  const tip = tooltipBody(s, tooltipMaxLen, hideTooltipIfLongerThan)
+  if (tip == null) return content
+
   return (
     <Tooltip
       position="top"
@@ -89,7 +120,7 @@ export function EllipsisCopyText(props: Props) {
             lineHeight: 1.5,
           }}
         >
-          {s}
+          {tip}
         </div>
       }
     >
@@ -97,4 +128,3 @@ export function EllipsisCopyText(props: Props) {
     </Tooltip>
   )
 }
-

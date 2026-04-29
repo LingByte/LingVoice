@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/sirupsen/logrus"
 )
 
@@ -69,7 +69,7 @@ func NewOpenAIConfig(apiKey string) OpenAIConfig {
 
 	// 从环境变量获取默认值
 	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("OPENAI_API_KEY")
+		opt.APIKey = base.GetEnv("OPENAI_API_KEY")
 	}
 
 	return opt
@@ -87,21 +87,21 @@ func (os *OpenAIService) Provider() TTSProvider {
 	return ProviderOpenAI
 }
 
-func (os *OpenAIService) Format() media.StreamFormat {
+func (os *OpenAIService) Format() media2.StreamFormat {
 	os.mu.Lock()
 	defer os.mu.Unlock()
-	return media.StreamFormat{
+	return media2.StreamFormat{
 		SampleRate:    os.opt.SampleRate,
 		BitDepth:      os.opt.BitDepth,
 		Channels:      os.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(os.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(os.opt.FrameDuration),
 	}
 }
 
 func (os *OpenAIService) CacheKey(text string) string {
 	os.mu.Lock()
 	defer os.mu.Unlock()
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("openai.tts-%s-%s-%d-%s.%s", os.opt.Model, os.opt.Voice, os.opt.SampleRate, digest, os.opt.Codec)
 }
 

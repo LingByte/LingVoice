@@ -19,6 +19,7 @@ import {
   listAgentRuns,
   listAgentRunSteps,
 } from '@/api/agentRuns'
+import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 
 const { Title, Paragraph, Text } = Typography
 const TabPane = Tabs.TabPane
@@ -28,12 +29,6 @@ function fmtTime(s?: string): string {
   const t = String(s).trim()
   if (t.startsWith('0001-01-01')) return '—'
   return t
-}
-
-function previewText(s: string, max = 64): string {
-  const t = String(s ?? '').replace(/\s+/g, ' ').trim()
-  if (!t) return '—'
-  return t.length > max ? `${t.slice(0, max)}…` : t
 }
 
 function errMsg(e: unknown): string {
@@ -168,9 +163,18 @@ export function AgentRunsPage() {
   }, [detailRun])
 
   const stepColumns = [
-    { title: 'step', dataIndex: 'step_id', width: 120, ellipsis: true },
+    {
+      title: 'step',
+      dataIndex: 'step_id',
+      width: 120,
+      render: (v: string) => <EllipsisCopyText text={v ?? ''} maxWidth={104} copiedTip="已复制" />,
+    },
     { title: '状态', dataIndex: 'status', width: 100 },
-    { title: '标题', dataIndex: 'title', ellipsis: true, render: (v: string) => previewText(v || '', 40) },
+    {
+      title: '标题',
+      dataIndex: 'title',
+      render: (v: string) => <EllipsisCopyText text={v || '—'} maxWidth={200} copiedTip="标题已复制" />,
+    },
     {
       title: 'tokens',
       width: 88,
@@ -178,7 +182,12 @@ export function AgentRunsPage() {
         <span className="tabular-nums text-[12px]">{s.total_tokens ?? 0}</span>
       ),
     },
-    { title: '模型', dataIndex: 'model', width: 120, ellipsis: true },
+    {
+      title: '模型',
+      dataIndex: 'model',
+      width: 120,
+      render: (v: string) => <EllipsisCopyText text={v ?? ''} maxWidth={104} copiedTip="模型已复制" />,
+    },
   ]
 
   const columns = [
@@ -186,25 +195,36 @@ export function AgentRunsPage() {
       title: 'Run ID',
       dataIndex: 'id',
       width: 200,
-      ellipsis: true,
-      render: (v: string) => <span title={v}>{previewText(v, 28)}</span>,
+      render: (v: string) => (
+        <EllipsisCopyText text={v} maxWidth={184} copiedTip="Run ID 已复制" tooltipMaxLen={200} />
+      ),
     },
     {
       title: '会话',
       dataIndex: 'session_id',
       width: 160,
-      ellipsis: true,
-      render: (v: string) => previewText(v || '', 22),
+      render: (v: string) => (
+        <EllipsisCopyText text={v || '—'} maxWidth={144} copiedTip="session_id 已复制" tooltipMaxLen={180} />
+      ),
     },
-    { title: '用户', dataIndex: 'user_id', width: 120, ellipsis: true },
+    {
+      title: '用户',
+      dataIndex: 'user_id',
+      width: 120,
+      render: (v: string) => <EllipsisCopyText text={v ?? ''} maxWidth={104} copiedTip="user_id 已复制" />,
+    },
     {
       title: '目标',
       dataIndex: 'goal',
-      ellipsis: true,
-      render: (v: string) => previewText(v || '', 48),
+      render: (v: string) => <EllipsisCopyText text={v || '—'} maxWidth={220} copiedTip="目标已复制" />,
     },
     { title: '状态', dataIndex: 'status', width: 96 },
-    { title: '阶段', dataIndex: 'phase', width: 100, ellipsis: true },
+    {
+      title: '阶段',
+      dataIndex: 'phase',
+      width: 100,
+      render: (v: string) => <EllipsisCopyText text={v ?? ''} maxWidth={88} copiedTip="阶段已复制" />,
+    },
     {
       title: '步数 / Token',
       width: 120,
@@ -214,7 +234,12 @@ export function AgentRunsPage() {
         </span>
       ),
     },
-    { title: '创建时间', dataIndex: 'created_at', width: 168, render: (v: string) => fmtTime(v) },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      width: 168,
+      render: (v: string) => <EllipsisCopyText text={fmtTime(v)} maxWidth={152} copyable={false} />,
+    },
     {
       title: '操作',
       width: 88,

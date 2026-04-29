@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/media/encoder"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
+	"github.com/LingByte/LingVoice/pkg/utils/media/encoder"
 	"github.com/sirupsen/logrus"
 )
 
@@ -39,19 +39,19 @@ type SynthesisHandler interface {
 
 type SynthesisService interface {
 	Provider() TTSProvider
-	Format() media.StreamFormat
+	Format() media2.StreamFormat
 	CacheKey(text string) string
 	Synthesize(ctx context.Context, handler SynthesisHandler, text string) error
 	Close() error
 }
 
 type SynthesisRequest struct {
-	handler       media.MediaHandler
+	handler       media2.MediaHandler
 	player        *SynthesisPlayer
 	result        []byte
 	waitTTFB      bool
 	startTime     time.Time
-	packet        *media.TextPacket
+	packet        *media2.TextPacket
 	svc           SynthesisService
 	sequence      int
 	PlayID        string
@@ -63,7 +63,7 @@ func (req *SynthesisRequest) OnTimestamp(timestamp SentenceTimestamp) {
 
 type SynthesisPlayer struct {
 	SenderName  string
-	Format      media.StreamFormat
+	Format      media2.StreamFormat
 	reqChan     chan *SynthesisPlayerRequest
 	txqueue     []*SynthesisPlayerRequest
 	playRecords map[string]*PlayRecord
@@ -71,8 +71,8 @@ type SynthesisPlayer struct {
 }
 
 type SynthesisPlayerRequest struct {
-	h             media.MediaHandler
-	packet        *media.AudioPacket
+	h             media2.MediaHandler
+	packet        *media2.AudioPacket
 	sent          int
 	interruptPlay string
 }
@@ -106,7 +106,7 @@ func (req *SynthesisRequest) OnMessage(data []byte) {
 	if firstFrame {
 		data = encoder.StripWavHeader(data)
 	}
-	packet := &media.AudioPacket{
+	packet := &media2.AudioPacket{
 		Payload:       data,
 		IsSynthesized: true,
 		IsFirstPacket: firstFrame,
@@ -121,10 +121,10 @@ func (req *SynthesisRequest) OnMessage(data []byte) {
 	req.player.Emit(req.handler, packet, req.svc.Format().SampleRate)
 }
 
-func (player *SynthesisPlayer) Emit(h media.MediaHandler, audioPacket *media.AudioPacket, inputRate int) {
+func (player *SynthesisPlayer) Emit(h media2.MediaHandler, audioPacket *media2.AudioPacket, inputRate int) {
 	if audioPacket != nil && audioPacket.Payload != nil {
 		var err error
-		audioPacket.Payload, err = media.ResamplePCM(audioPacket.Payload, inputRate, player.Format.SampleRate)
+		audioPacket.Payload, err = media2.ResamplePCM(audioPacket.Payload, inputRate, player.Format.SampleRate)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
 				"inputRate":  inputRate,
@@ -148,14 +148,14 @@ func StripEmoji(text string) string {
 	return emojiRegex.ReplaceAllString(text, "")
 }
 
-func WithSynthesis(svc SynthesisService) media.MediaHandlerFunc {
-	executor := media.NewAsyncTaskRunner[*SynthesisRequest](1)
+func WithSynthesis(svc SynthesisService) media2.MediaHandlerFunc {
+	executor := media2.NewAsyncTaskRunner[*SynthesisRequest](1)
 	executor.ConcurrentMode = true
 
 	player := NewSynthesisPlayer("tts."+svc.Provider().ToString(), svc.Format())
 
-	executor.RequestBuilder = func(h media.MediaHandler, packet media.MediaPacket) (*media.PacketRequest[*SynthesisRequest], error) {
-		textPacket, ok := packet.(*media.TextPacket)
+	executor.RequestBuilder = func(h media2.MediaHandler, packet media2.MediaPacket) (*media2.PacketRequest[*SynthesisRequest], error) {
+		textPacket, ok := packet.(*media2.TextPacket)
 		if !ok {
 			h.EmitPacket(h, packet)
 			return nil, nil
@@ -171,13 +171,13 @@ func WithSynthesis(svc SynthesisService) media.MediaHandlerFunc {
 			PlayID:        textPacket.PlayID,
 			dialogStartAt: textPacket.StartAt,
 		}
-		return &media.PacketRequest[*SynthesisRequest]{
+		return &media2.PacketRequest[*SynthesisRequest]{
 			Req:       req,
 			Interrupt: true,
 		}, nil
 	}
 
-	executor.TaskExecutor = func(ctx context.Context, h media.MediaHandler, req media.PacketRequest[*SynthesisRequest]) error {
+	executor.TaskExecutor = func(ctx context.Context, h media2.MediaHandler, req media2.PacketRequest[*SynthesisRequest]) error {
 		if req.Req.sequence == 0 {
 			logrus.WithFields(logrus.Fields{
 				"handler":  h,
@@ -198,7 +198,7 @@ func WithSynthesis(svc SynthesisService) media.MediaHandlerFunc {
 			req.Req.OnMessage(make([]byte, 0))
 		} else {
 			cacheKey := req.Req.svc.CacheKey(req.Req.packet.Text)
-			data, err := media.MediaCache().Get(cacheKey)
+			data, err := media2.MediaCache().Get(cacheKey)
 			if err == nil {
 				logrus.WithFields(logrus.Fields{
 					"handler":  h,
@@ -210,7 +210,7 @@ func WithSynthesis(svc SynthesisService) media.MediaHandlerFunc {
 				}).Info("synthesis: cache hit")
 				req.Req.OnMessage(data)
 			} else {
-				h.EmitState(req.Req, media.Synthesizing, text)
+				h.EmitState(req.Req, media2.Synthesizing, text)
 				err = svc.Synthesize(ctx, req.Req, text)
 				if err != nil {
 					logrus.WithFields(logrus.Fields{
@@ -223,12 +223,12 @@ func WithSynthesis(svc SynthesisService) media.MediaHandlerFunc {
 					return err
 				}
 				if len(req.Req.result) > 0 && cacheKey != "" {
-					media.MediaCache().Store(cacheKey, req.Req.result)
+					media2.MediaCache().Store(cacheKey, req.Req.result)
 				}
 			}
 		}
 
-		packet := &media.AudioPacket{ // finish play
+		packet := &media2.AudioPacket{ // finish play
 			Payload:       nil,
 			IsSynthesized: true,
 			IsFirstPacket: false,
@@ -240,18 +240,18 @@ func WithSynthesis(svc SynthesisService) media.MediaHandlerFunc {
 		player.Emit(h, packet, req.Req.svc.Format().SampleRate)
 
 		if (req.Req.packet.IsPartial && req.Req.packet.IsEnd) || !req.Req.packet.IsPartial {
-			completedData := &media.CompletedData{
+			completedData := &media2.CompletedData{
 				SenderName: "tts." + svc.Provider().ToString(),
 				Source:     req.Req.packet,
 			}
-			h.EmitState(req.Req, media.Completed, completedData)
+			h.EmitState(req.Req, media2.Completed, completedData)
 		}
 		return nil
 	}
 
-	executor.StateCallback = func(h media.MediaHandler, event media.StateChange) error {
+	executor.StateCallback = func(h media2.MediaHandler, event media2.StateChange) error {
 		switch event.State {
-		case media.Interruption:
+		case media2.Interruption:
 			logrus.WithFields(logrus.Fields{
 				"handler": h,
 			}).Info("synthesis: interrupting current play")
@@ -260,7 +260,7 @@ func WithSynthesis(svc SynthesisService) media.MediaHandlerFunc {
 		return nil
 	}
 
-	executor.InitCallback = func(h media.MediaHandler) error {
+	executor.InitCallback = func(h media2.MediaHandler) error {
 		format := svc.Format()
 		format.SampleRate = h.GetSession().SampleRate // TODO: player must as same as session sample rate
 		player.Format = format
@@ -269,14 +269,14 @@ func WithSynthesis(svc SynthesisService) media.MediaHandlerFunc {
 		}
 		return nil
 	}
-	executor.TerminateCallback = func(h media.MediaHandler) error {
+	executor.TerminateCallback = func(h media2.MediaHandler) error {
 		player.Close()
 		return nil
 	}
 	return executor.HandleMediaData
 }
 
-func NewSynthesisPlayer(vendor string, format media.StreamFormat) *SynthesisPlayer {
+func NewSynthesisPlayer(vendor string, format media2.StreamFormat) *SynthesisPlayer {
 	return &SynthesisPlayer{
 		SenderName:  vendor,
 		Format:      format,
@@ -291,18 +291,18 @@ func (player *SynthesisPlayer) Close() {
 	}).Info("synthesis: closed")
 }
 
-func (player *SynthesisPlayer) Interrupt(h media.MediaHandler, reason string) {
+func (player *SynthesisPlayer) Interrupt(h media2.MediaHandler, reason string) {
 	player.reqChan <- &SynthesisPlayerRequest{
 		interruptPlay: reason,
 	}
 }
 
-func (player *SynthesisPlayer) Run(handler media.MediaHandler, ctx context.Context) {
+func (player *SynthesisPlayer) Run(handler media2.MediaHandler, ctx context.Context) {
 	if player.Format.FrameDuration <= 0 {
 		return
 	}
 	t := time.NewTicker(player.Format.FrameDuration)
-	frameSize := utils.ComputeSampleByteCount(player.Format.SampleRate, player.Format.BitDepth, player.Format.Channels) * int(player.Format.FrameDuration.Milliseconds())
+	frameSize := base.ComputeSampleByteCount(player.Format.SampleRate, player.Format.BitDepth, player.Format.Channels) * int(player.Format.FrameDuration.Milliseconds())
 	st := time.Now()
 	for {
 		select {
@@ -324,7 +324,7 @@ func (player *SynthesisPlayer) Run(handler media.MediaHandler, ctx context.Conte
 	}
 }
 
-func (player *SynthesisPlayer) streamFrame(st *time.Time, frameSize int) *media.AudioPacket {
+func (player *SynthesisPlayer) streamFrame(st *time.Time, frameSize int) *media2.AudioPacket {
 	if len(player.txqueue) <= 0 {
 		return nil
 	}
@@ -333,12 +333,12 @@ func (player *SynthesisPlayer) streamFrame(st *time.Time, frameSize int) *media.
 	if current.packet.IsFirstPacket && current.sent == 0 {
 		isFirstFrame = true
 		*st = time.Now()
-		current.h.EmitState(player.SenderName, media.StartPlay, "", current.packet.PlayID, current.packet.Sequence, "", current.packet.SourceText)
+		current.h.EmitState(player.SenderName, media2.StartPlay, "", current.packet.PlayID, current.packet.Sequence, "", current.packet.SourceText)
 	}
 
 	if current.packet.Payload == nil {
 		player.txqueue = player.txqueue[1:]
-		return &media.AudioPacket{
+		return &media2.AudioPacket{
 			Payload:       nil,
 			IsSynthesized: true,
 			IsFirstPacket: isFirstFrame,
@@ -384,7 +384,7 @@ func (player *SynthesisPlayer) streamFrame(st *time.Time, frameSize int) *media.
 		buf = buf[:frameSize-remaining]
 	}
 
-	return &media.AudioPacket{
+	return &media2.AudioPacket{
 		Payload:       buf,
 		Sequence:      sequence,
 		IsSynthesized: true,
@@ -463,13 +463,13 @@ func (player *SynthesisPlayer) playStop(playId string, sequence int, reason stri
 	val.sequences[sequence] = reason
 }
 
-func (player *SynthesisPlayer) EmitStopPlayState(h media.MediaHandler, duration string, playId string, sequence int, reason string, sourceText string) {
+func (player *SynthesisPlayer) EmitStopPlayState(h media2.MediaHandler, duration string, playId string, sequence int, reason string, sourceText string) {
 	if player.isPlayStop(playId, sequence) {
 		return
 	}
 	player.playStop(playId, sequence, reason)
 
-	h.EmitState(player.SenderName, media.StopPlay, duration, playId, sequence, reason, sourceText)
+	h.EmitState(player.SenderName, media2.StopPlay, duration, playId, sequence, reason, sourceText)
 }
 
 type SynthesisBuffer struct {
@@ -488,52 +488,52 @@ func (s *SynthesisBuffer) OnTimestamp(timestamp SentenceTimestamp) {
 func NewSynthesisService(name string, options map[string]any) (SynthesisService, error) {
 	switch name {
 	case TTS_QCLOUD:
-		opt := media.CastOption[QCloudTTSConfig](options)
+		opt := media2.CastOption[QCloudTTSConfig](options)
 		return NewQCloudService(opt), nil
 	case TTS_XUNFEI:
-		opt := media.CastOption[XunfeiTTSConfig](options)
+		opt := media2.CastOption[XunfeiTTSConfig](options)
 		return NewXunfeiService(opt), nil
 	case TTS_QINIU:
-		opt := media.CastOption[QiniuTTSConfig](options)
+		opt := media2.CastOption[QiniuTTSConfig](options)
 		return NewQiniuService(opt), nil
 	case TTS_AWS:
-		opt := media.CastOption[AmazonTTSConfig](options)
+		opt := media2.CastOption[AmazonTTSConfig](options)
 		return NewAmazonService(opt), nil
 	case TTS_BAIDU:
-		opt := media.CastOption[BaiduTTSConfig](options)
+		opt := media2.CastOption[BaiduTTSConfig](options)
 		return NewBaiduService(opt), nil
 	case TTS_GOOGLE:
-		opt := media.CastOption[GoogleTTSOption](options)
+		opt := media2.CastOption[GoogleTTSOption](options)
 		return NewGoogleService(opt), nil
 	case TTS_AZURE:
-		opt := media.CastOption[AzureConfig](options)
+		opt := media2.CastOption[AzureConfig](options)
 		return NewAzureService(opt), nil
 	case TTS_OPENAI:
-		opt := media.CastOption[OpenAIConfig](options)
+		opt := media2.CastOption[OpenAIConfig](options)
 		return NewOpenAIService(opt), nil
 	case TTS_ELEVENLABS:
-		opt := media.CastOption[ElevenLabsConfig](options)
+		opt := media2.CastOption[ElevenLabsConfig](options)
 		return NewElevenLabsService(opt), nil
 	case TTS_LOCAL:
-		opt := media.CastOption[LocalTTSConfig](options)
+		opt := media2.CastOption[LocalTTSConfig](options)
 		return NewLocalService(opt), nil
 	case TTS_LOCAL_GOSPEECH:
-		opt := media.CastOption[LocalGoSpeechConfig](options)
+		opt := media2.CastOption[LocalGoSpeechConfig](options)
 		return NewLocalGoSpeechService(&opt)
 	case TTS_FISHSPEECH:
-		opt := media.CastOption[FishSpeechConfig](options)
+		opt := media2.CastOption[FishSpeechConfig](options)
 		return NewFishSpeechService(opt), nil
 	case TTS_FISHAUDIO:
-		opt := media.CastOption[FishAudioConfig](options)
+		opt := media2.CastOption[FishAudioConfig](options)
 		return NewFishAudioService(opt), nil
 	case TTS_COQUI:
-		opt := media.CastOption[CoquiTTSOption](options)
+		opt := media2.CastOption[CoquiTTSOption](options)
 		return NewCoquiService(opt), nil
 	case TTS_VOLCENGINE:
-		opt := media.CastOption[VolcengineTTSOption](options)
+		opt := media2.CastOption[VolcengineTTSOption](options)
 		return NewVolcengineService(opt), nil
 	case TTS_MINIMAX:
-		opt := media.CastOption[MinimaxOption](options)
+		opt := media2.CastOption[MinimaxOption](options)
 		return NewMinimaxService(opt), nil
 	default:
 		return nil, fmt.Errorf("synthesis: unknown synthesis: %s", name)

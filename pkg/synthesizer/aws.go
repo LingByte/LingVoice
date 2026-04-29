@@ -9,8 +9,8 @@ import (
 
 	"io/ioutil"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/polly"
 	"github.com/aws/aws-sdk-go-v2/service/polly/types"
@@ -65,16 +65,16 @@ func (as *AmazonService) Provider() TTSProvider {
 }
 
 func (as *AmazonService) CacheKey(text string) string {
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("amazon.tts-%s-%s-%s", as.opt.VoiceId, as.opt.Region, digest)
 }
 
-func (as *AmazonService) Format() media.StreamFormat {
-	return media.StreamFormat{
+func (as *AmazonService) Format() media2.StreamFormat {
+	return media2.StreamFormat{
 		SampleRate:    as.opt.SampleRate,
 		BitDepth:      as.opt.BitDepth,
 		Channels:      as.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(as.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(as.opt.FrameDuration),
 	}
 }
 

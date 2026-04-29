@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/LingByte/LingVoice/pkg/logger"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -31,9 +31,9 @@ func TestQCloudSerivce(t *testing.T) {
 		Level:    "info",
 		Filename: "",
 	}, "test")
-	appID := utils.GetEnv("QCLOUD_APP_ID")
-	secretID := utils.GetEnv("QCLOUD_SECRET_ID")
-	secretKey := utils.GetEnv("QCLOUD_SECRET")
+	appID := base.GetEnv("QCLOUD_APP_ID")
+	secretID := base.GetEnv("QCLOUD_SECRET_ID")
+	secretKey := base.GetEnv("QCLOUD_SECRET")
 	if appID == "" {
 		t.Skip("missing parameters")
 	}

@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/response"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -80,7 +80,7 @@ func (h *Handlers) chatSessionCreateHandler(c *gin.Context) {
 		title = "新对话"
 	}
 	row := models.ChatSession{
-		ID:           utils.SnowflakeUtil.GenID(),
+		ID:           base.SnowflakeUtil.GenID(),
 		UserID:       strconv.FormatUint(uint64(u.ID), 10),
 		Title:        title,
 		Provider:     prov,
@@ -266,7 +266,7 @@ func (h *Handlers) chatSessionMessageCreateHandler(c *gin.Context) {
 		prov = sess.Provider
 	}
 	msg := models.ChatMessage{
-		ID:         utils.SnowflakeUtil.GenID(),
+		ID:         base.SnowflakeUtil.GenID(),
 		SessionID:  sid,
 		Role:       role,
 		Content:    body.Content,

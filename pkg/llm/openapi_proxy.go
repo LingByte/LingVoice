@@ -261,188 +261,155 @@ func doAnthropicUpstreamOnce(ctx context.Context, ch UpstreamChannel, body []byt
 	return resp.StatusCode, b, hdr, nil
 }
 
-// ProxyOpenAINonStream 按 channels 顺序重试，直到 OpenAI 兼容 chat completion 业务成功或全部失败。
-func ProxyOpenAINonStream(ctx context.Context, body []byte, accept string, channels []UpstreamChannel) *OpenAPIProxyResult {
-	if len(channels) == 0 {
-		return &OpenAPIProxyResult{
-			AllFailed:     true,
-			FinalStatus:   http.StatusServiceUnavailable,
-			FinalBody:     []byte(`{"error":{"message":"No active OpenAI-protocol LLM channel for credential group","type":"api_error","code":"model_not_found"}}`),
-			FinalHeader:   http.Header{"Content-Type": []string{"application/json"}},
-			WallLatencyMs: 0,
-		}
-	}
-	overallStart := time.Now()
-	var attempts []UsageChannelAttempt
-	var queueAccum int64
+// OpenAPINonStreamUpstreamOnceResult 单次上游尝试的原始结果（不包含跨渠道重试策略）。
+type OpenAPINonStreamUpstreamOnceResult struct {
+	Status     int
+	Body       []byte
+	Header     http.Header
+	BusinessOK bool
+	Attempt    UsageChannelAttempt
+}
 
-	for i := range channels {
-		ch := channels[i]
-		t0 := time.Now()
-		cctx, cancel := context.WithTimeout(ctx, 6*time.Minute)
-		status, buf, hdr, netErr := doOpenAIUpstreamOnce(cctx, ch, body, accept)
-		cancel()
-		lat := time.Since(t0).Milliseconds()
-		ord := i + 1
-		bu := ch.baseURLString()
+// ProxyOpenAINonStreamOnce 仅执行一次 OpenAI 兼容 chat completions 上游调用。
+// 是否“业务成功”（兼容性/返回体结构校验）由 pkg/llm 内的协议判断决定；跨渠道重试由业务层处理。
+func ProxyOpenAINonStreamOnce(ctx context.Context, body []byte, accept string, ch UpstreamChannel, order int) OpenAPINonStreamUpstreamOnceResult {
+	t0 := time.Now()
+	status, buf, hdr, netErr := doOpenAIUpstreamOnce(ctx, ch, body, accept)
+	lat := time.Since(t0).Milliseconds()
+	bu := ch.baseURLString()
 
-		if netErr != nil {
-			attempts = append(attempts, UsageChannelAttempt{
-				Order: ord, ChannelID: ch.ID, BaseURL: bu, Success: false,
-				LatencyMs: lat, TTFTMs: lat, ErrorCode: "upstream_network",
+	if netErr != nil {
+		return OpenAPINonStreamUpstreamOnceResult{
+			Status:     status,
+			Body:       buf,
+			Header:     hdr,
+			BusinessOK: false,
+			Attempt: UsageChannelAttempt{
+				Order:        order,
+				ChannelID:    ch.ID,
+				BaseURL:      bu,
+				Success:      false,
+				LatencyMs:    lat,
+				TTFTMs:       lat,
+				ErrorCode:    "upstream_network",
 				ErrorMessage: truncateOpenAPIAttemptMsg(netErr.Error(), maxOpenAPIAttemptErrBytes),
-			})
-			queueAccum += lat
-			continue
+			},
 		}
-
-		if status >= 200 && status < 300 && openAIBusinessOK(buf) {
-			attempts = append(attempts, UsageChannelAttempt{
-				Order: ord, ChannelID: ch.ID, BaseURL: bu, Success: true,
-				StatusCode: status, LatencyMs: lat, TTFTMs: lat,
-			})
-			wall := time.Since(overallStart).Milliseconds()
-			return &OpenAPIProxyResult{
-				FinalStatus:   status,
-				FinalBody:     buf,
-				FinalHeader:   hdr,
-				WinChannelID:  ch.ID,
-				WinBaseURL:    bu,
-				Attempts:      attempts,
-				WallLatencyMs: wall,
-				QueueMs:       queueAccum,
-				WinHopMs:      lat,
-				AllFailed:     false,
-			}
-		}
-
-		ec, em := openAIExtractError(buf)
-		if ec == "" {
-			ec = "upstream_http"
-		}
-		if em == "" {
-			em = truncateOpenAPIAttemptMsg(string(buf), maxOpenAPIAttemptErrBytes)
-		}
-		attempts = append(attempts, UsageChannelAttempt{
-			Order: ord, ChannelID: ch.ID, BaseURL: bu, Success: false,
-			StatusCode: status, LatencyMs: lat, TTFTMs: lat,
-			ErrorCode: ec, ErrorMessage: em,
-		})
-		queueAccum += lat
 	}
 
-	wall := time.Since(overallStart).Milliseconds()
-	lastMsg := "all upstream channels failed"
-	if n := len(attempts); n > 0 && attempts[n-1].ErrorMessage != "" {
-		lastMsg = attempts[n-1].ErrorMessage
+	businessOK := status >= 200 && status < 300 && openAIBusinessOK(buf)
+	if businessOK {
+		return OpenAPINonStreamUpstreamOnceResult{
+			Status:     status,
+			Body:       buf,
+			Header:     hdr,
+			BusinessOK: true,
+			Attempt: UsageChannelAttempt{
+				Order:      order,
+				ChannelID:  ch.ID,
+				BaseURL:    bu,
+				Success:    true,
+				StatusCode: status,
+				LatencyMs:  lat,
+				TTFTMs:     lat,
+			},
+		}
 	}
-	failBody, _ := json.Marshal(map[string]any{
-		"error": map[string]any{
-			"message": lastMsg,
-			"type":    "api_error",
-			"code":    "all_channels_exhausted",
+
+	ec, em := openAIExtractError(buf)
+	if ec == "" {
+		ec = "upstream_http"
+	}
+	if em == "" {
+		em = truncateOpenAPIAttemptMsg(string(buf), maxOpenAPIAttemptErrBytes)
+	}
+	return OpenAPINonStreamUpstreamOnceResult{
+		Status:     status,
+		Body:       buf,
+		Header:     hdr,
+		BusinessOK: false,
+		Attempt: UsageChannelAttempt{
+			Order:        order,
+			ChannelID:    ch.ID,
+			BaseURL:      bu,
+			Success:      false,
+			StatusCode:   status,
+			LatencyMs:    lat,
+			TTFTMs:       lat,
+			ErrorCode:    ec,
+			ErrorMessage: em,
 		},
-	})
-	return &OpenAPIProxyResult{
-		AllFailed:     true,
-		FinalStatus:   http.StatusBadGateway,
-		FinalBody:     failBody,
-		FinalHeader:   http.Header{"Content-Type": []string{"application/json"}},
-		Attempts:      attempts,
-		WallLatencyMs: wall,
-		QueueMs:       queueAccum,
-		WinHopMs:      0,
 	}
 }
 
-// ProxyAnthropicNonStream 按 channels 顺序重试 Anthropic /v1/messages。
-func ProxyAnthropicNonStream(ctx context.Context, body []byte, anthropicVersion, anthropicBeta string, channels []UpstreamChannel) *OpenAPIProxyResult {
-	if len(channels) == 0 {
-		b, _ := json.Marshal(map[string]any{
-			"type":  "error",
-			"error": map[string]any{"type": "api_error", "message": "No active Anthropic-protocol LLM channel for credential group"},
-		})
-		return &OpenAPIProxyResult{
-			AllFailed:     true,
-			FinalStatus:   http.StatusServiceUnavailable,
-			FinalBody:     b,
-			FinalHeader:   http.Header{"Content-Type": []string{"application/json"}},
-			WallLatencyMs: 0,
-		}
-	}
-	overallStart := time.Now()
-	var attempts []UsageChannelAttempt
-	var queueAccum int64
+// ProxyAnthropicNonStreamOnce 仅执行一次 Anthropic /v1/messages 上游调用。
+// 是否“业务成功”（兼容性/返回体结构校验）由 pkg/llm 内的协议判断决定；跨渠道重试由业务层处理。
+func ProxyAnthropicNonStreamOnce(ctx context.Context, body []byte, anthropicVersion, anthropicBeta string, ch UpstreamChannel, order int) OpenAPINonStreamUpstreamOnceResult {
+	t0 := time.Now()
+	status, buf, hdr, netErr := doAnthropicUpstreamOnce(ctx, ch, body, anthropicVersion, anthropicBeta)
+	lat := time.Since(t0).Milliseconds()
+	bu := ch.baseURLString()
 
-	for i := range channels {
-		ch := channels[i]
-		t0 := time.Now()
-		cctx, cancel := context.WithTimeout(ctx, 6*time.Minute)
-		status, buf, hdr, netErr := doAnthropicUpstreamOnce(cctx, ch, body, anthropicVersion, anthropicBeta)
-		cancel()
-		lat := time.Since(t0).Milliseconds()
-		ord := i + 1
-		bu := ch.baseURLString()
-
-		if netErr != nil {
-			attempts = append(attempts, UsageChannelAttempt{
-				Order: ord, ChannelID: ch.ID, BaseURL: bu, Success: false,
-				LatencyMs: lat, TTFTMs: lat, ErrorCode: "upstream_network",
+	if netErr != nil {
+		return OpenAPINonStreamUpstreamOnceResult{
+			Status:     status,
+			Body:       buf,
+			Header:     hdr,
+			BusinessOK: false,
+			Attempt: UsageChannelAttempt{
+				Order:        order,
+				ChannelID:    ch.ID,
+				BaseURL:      bu,
+				Success:      false,
+				LatencyMs:    lat,
+				TTFTMs:       lat,
+				ErrorCode:    "upstream_network",
 				ErrorMessage: truncateOpenAPIAttemptMsg(netErr.Error(), maxOpenAPIAttemptErrBytes),
-			})
-			queueAccum += lat
-			continue
+			},
 		}
-
-		if status >= 200 && status < 300 && anthropicBusinessOK(buf) {
-			attempts = append(attempts, UsageChannelAttempt{
-				Order: ord, ChannelID: ch.ID, BaseURL: bu, Success: true,
-				StatusCode: status, LatencyMs: lat, TTFTMs: lat,
-			})
-			wall := time.Since(overallStart).Milliseconds()
-			return &OpenAPIProxyResult{
-				FinalStatus:   status,
-				FinalBody:     buf,
-				FinalHeader:   hdr,
-				WinChannelID:  ch.ID,
-				WinBaseURL:    bu,
-				Attempts:      attempts,
-				WallLatencyMs: wall,
-				QueueMs:       queueAccum,
-				WinHopMs:      lat,
-				AllFailed:     false,
-			}
-		}
-
-		ec, em := anthropicExtractError(buf)
-		if ec == "" {
-			ec = "upstream_http"
-		}
-		attempts = append(attempts, UsageChannelAttempt{
-			Order: ord, ChannelID: ch.ID, BaseURL: bu, Success: false,
-			StatusCode: status, LatencyMs: lat, TTFTMs: lat,
-			ErrorCode: ec, ErrorMessage: em,
-		})
-		queueAccum += lat
 	}
 
-	wall := time.Since(overallStart).Milliseconds()
-	lastMsg := "all upstream channels failed"
-	if n := len(attempts); n > 0 && attempts[n-1].ErrorMessage != "" {
-		lastMsg = attempts[n-1].ErrorMessage
+	businessOK := status >= 200 && status < 300 && anthropicBusinessOK(buf)
+	if businessOK {
+		return OpenAPINonStreamUpstreamOnceResult{
+			Status:     status,
+			Body:       buf,
+			Header:     hdr,
+			BusinessOK: true,
+			Attempt: UsageChannelAttempt{
+				Order:      order,
+				ChannelID:  ch.ID,
+				BaseURL:    bu,
+				Success:    true,
+				StatusCode: status,
+				LatencyMs:  lat,
+				TTFTMs:     lat,
+			},
+		}
 	}
-	failBody, _ := json.Marshal(map[string]any{
-		"type":  "error",
-		"error": map[string]any{"type": "api_error", "message": lastMsg},
-	})
-	return &OpenAPIProxyResult{
-		AllFailed:     true,
-		FinalStatus:   http.StatusBadGateway,
-		FinalBody:     failBody,
-		FinalHeader:   http.Header{"Content-Type": []string{"application/json"}},
-		Attempts:      attempts,
-		WallLatencyMs: wall,
-		QueueMs:       queueAccum,
-		WinHopMs:      0,
+
+	ec, em := anthropicExtractError(buf)
+	if ec == "" {
+		ec = "upstream_http"
+	}
+	if em == "" {
+		em = truncateOpenAPIAttemptMsg(string(buf), maxOpenAPIAttemptErrBytes)
+	}
+	return OpenAPINonStreamUpstreamOnceResult{
+		Status:     status,
+		Body:       buf,
+		Header:     hdr,
+		BusinessOK: false,
+		Attempt: UsageChannelAttempt{
+			Order:        order,
+			ChannelID:    ch.ID,
+			BaseURL:      bu,
+			Success:      false,
+			StatusCode:   status,
+			LatencyMs:    lat,
+			TTFTMs:       lat,
+			ErrorCode:    ec,
+			ErrorMessage: em,
+		},
 	}
 }

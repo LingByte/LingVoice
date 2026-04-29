@@ -208,16 +208,6 @@ const (
 	SignalLLMRequestError = "llm.request.error"
 	// SignalLLMUsage 单次 LLM 调用用量与延迟落库前广播；sender 为 *LLMUsageSignalPayload（见 tracking）。
 	SignalLLMUsage = "llm.usage"
-
-	// 会话相关信号
-	SignalSessionCreated = "session.created"
-	SignalSessionUpdated = "session.updated"
-	SignalSessionDeleted = "session.deleted"
-
-	// 消息相关信号
-	SignalMessageCreated = "message.created"
-	SignalMessageUpdated = "message.updated"
-	SignalMessageDeleted = "message.deleted"
 )
 
 // LLMRequestStartData LLM请求开始信号数据
@@ -263,30 +253,6 @@ type LLMRequestErrorData struct {
 	LatencyMs    int64  `json:"latency_ms"`
 	RequestedAt  int64  `json:"requested_at"`
 	CompletedAt  int64  `json:"completed_at"`
-}
-
-// SessionCreatedData 会话创建信号数据
-type SessionCreatedData struct {
-	SessionID    string `json:"session_id"`
-	UserID       string `json:"user_id"`
-	Title        string `json:"title"`
-	Provider     string `json:"provider"`
-	Model        string `json:"model"`
-	SystemPrompt string `json:"system_prompt"`
-	CreatedAt    int64  `json:"created_at"`
-}
-
-// MessageCreatedData 消息创建信号数据
-type MessageCreatedData struct {
-	MessageID  string `json:"message_id"`
-	SessionID  string `json:"session_id"`
-	Role       string `json:"role"`
-	Content    string `json:"content"`
-	TokenCount int    `json:"token_count"`
-	Model      string `json:"model"`
-	Provider   string `json:"provider"`
-	RequestID  string `json:"request_id"`
-	CreatedAt  int64  `json:"created_at"`
 }
 
 // UsageChannelAttempt 用量信号里描述单次渠道尝试（与 models.LLMUsageChannelAttempt JSON 对齐）。

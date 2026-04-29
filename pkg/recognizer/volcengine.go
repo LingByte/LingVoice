@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
@@ -90,7 +90,7 @@ type Word struct {
 }
 
 type Volcengine struct {
-	handler        media.MediaHandler
+	handler        media2.MediaHandler
 	client         *VolcengineClient
 	opt            VolcengineOption
 	ttfbDone       bool
@@ -139,17 +139,17 @@ func NewVolcengineOption(appId string, token string, cluster string, format stri
 	}
 }
 
-func WithVolcengineASR(opt VolcengineOption) media.MediaHandlerFunc {
+func WithVolcengineASR(opt VolcengineOption) media2.MediaHandlerFunc {
 	if opt.ReqChanSize <= 0 {
 		opt.ReqChanSize = 128
 	}
-	executor := media.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
+	executor := media2.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
 
 	volc := &Volcengine{opt: opt, audioChan: make(chan []byte, 1024), closeChan: make(chan struct{}, 24)}
 
 	executor.ConcurrentMode = false
-	executor.RequestBuilder = func(h media.MediaHandler, packet media.MediaPacket) (*media.PacketRequest[[]byte], error) {
-		audioPacket, ok := packet.(*media.AudioPacket)
+	executor.RequestBuilder = func(h media2.MediaHandler, packet media2.MediaPacket) (*media2.PacketRequest[[]byte], error) {
+		audioPacket, ok := packet.(*media2.AudioPacket)
 		if !ok {
 			h.EmitPacket(volc, packet)
 			return nil, nil
@@ -157,43 +157,43 @@ func WithVolcengineASR(opt VolcengineOption) media.MediaHandlerFunc {
 		if volc.handler == nil {
 			volc.handler = h
 		}
-		audioPacket.Payload, _ = media.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
-		req := media.PacketRequest[[]byte]{
+		audioPacket.Payload, _ = media2.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
+		req := media2.PacketRequest[[]byte]{
 			Req:       audioPacket.Payload,
 			Interrupt: true,
 		}
 		return &req, nil
 	}
 
-	executor.InitCallback = func(h media.MediaHandler) error {
+	executor.InitCallback = func(h media2.MediaHandler) error {
 		return volc.buildClient()
 	}
 
-	executor.TerminateCallback = func(h media.MediaHandler) error {
+	executor.TerminateCallback = func(h media2.MediaHandler) error {
 		if volc.client == nil {
 			return nil
 		}
 		return volc.client.conn.Close()
 	}
 
-	executor.StateCallback = func(h media.MediaHandler, event media.StateChange) error {
+	executor.StateCallback = func(h media2.MediaHandler, event media2.StateChange) error {
 		switch event.State {
-		case media.StartSilence:
+		case media2.StartSilence:
 			volc.closeChan <- struct{}{}
 			n := time.Now()
 			volc.endReqTime = &n
 			return nil
-		case media.StartSpeaking:
+		case media2.StartSpeaking:
 			n := time.Now()
 			volc.sendReqTime = &n
 			return nil
-		case media.Hangup:
+		case media2.Hangup:
 			return volc.closeClient()
 		}
 		return nil
 	}
 
-	executor.TaskExecutor = func(ctx context.Context, h media.MediaHandler, req media.PacketRequest[[]byte]) error {
+	executor.TaskExecutor = func(ctx context.Context, h media2.MediaHandler, req media2.PacketRequest[[]byte]) error {
 		volc.audioChan <- req.Req
 		return nil
 	}
@@ -356,8 +356,8 @@ func (volc *Volcengine) recvFrames(client *VolcengineClient) {
 					}).WithError(err).Error("volcengine asr: recv error, connection closed")
 				}
 				if volc.Sentence != "" {
-					volc.handler.EmitPacket(volc, &media.TextPacket{Text: volc.Sentence, IsTranscribed: true})
-					volc.handler.EmitState(volc, media.Completed, &media.CompletedData{
+					volc.handler.EmitPacket(volc, &media2.TextPacket{Text: volc.Sentence, IsTranscribed: true})
+					volc.handler.EmitState(volc, media2.Completed, &media2.CompletedData{
 						SenderName: "asr.volcengine",
 						Result:     volc.Sentence,
 						Duration:   time.Since(*volc.sendReqTime),
@@ -409,16 +409,16 @@ func (volc *Volcengine) recvFrames(client *VolcengineClient) {
 						"client":    client,
 					}).Info("volcengine asr: recv frame")
 
-					volc.handler.EmitState(volc, media.Transcribing, &media.TranscribingData{
+					volc.handler.EmitState(volc, media2.Transcribing, &media2.TranscribingData{
 						SenderName: "asr.volcengine",
 						Result:     volc.Sentence,
 					})
 				}
 				if len(latestResult.Utterances) > 0 && latestResult.Utterances[0].Definite && client.sendLastAudio {
 					if volc.Sentence != "" {
-						volc.handler.EmitPacket(volc, &media.TextPacket{Text: volc.Sentence, IsTranscribed: true})
+						volc.handler.EmitPacket(volc, &media2.TextPacket{Text: volc.Sentence, IsTranscribed: true})
 					}
-					volc.handler.EmitState(volc, media.Completed, &media.CompletedData{
+					volc.handler.EmitState(volc, media2.Completed, &media2.CompletedData{
 						SenderName: "asr.volcengine",
 						Result:     volc.Sentence,
 						Duration:   time.Since(*volc.sendReqTime),

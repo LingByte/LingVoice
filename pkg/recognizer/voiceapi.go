@@ -8,13 +8,13 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
 
 type VoiceapiASR struct {
-	handler     media.MediaHandler
+	handler     media2.MediaHandler
 	conn        *websocket.Conn
 	sendReqTime *time.Time
 	endReqTime  *time.Time
@@ -39,12 +39,12 @@ func NewVoiceapiASROption(url string) VoiceapiASROption {
 	}
 }
 
-func WithVoiceapiASR(opt VoiceapiASROption) media.MediaHandlerFunc {
-	executor := media.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
+func WithVoiceapiASR(opt VoiceapiASROption) media2.MediaHandlerFunc {
+	executor := media2.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
 
 	vapi := &VoiceapiASR{}
-	executor.RequestBuilder = func(h media.MediaHandler, packet media.MediaPacket) (*media.PacketRequest[[]byte], error) {
-		audioPacket, ok := packet.(*media.AudioPacket)
+	executor.RequestBuilder = func(h media2.MediaHandler, packet media2.MediaPacket) (*media2.PacketRequest[[]byte], error) {
+		audioPacket, ok := packet.(*media2.AudioPacket)
 		if !ok {
 			h.EmitPacket(vapi, packet)
 			return nil, nil
@@ -52,15 +52,15 @@ func WithVoiceapiASR(opt VoiceapiASROption) media.MediaHandlerFunc {
 		if vapi.handler == nil {
 			vapi.handler = h
 		}
-		audioPacket.Payload, _ = media.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
-		req := media.PacketRequest[[]byte]{
+		audioPacket.Payload, _ = media2.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
+		req := media2.PacketRequest[[]byte]{
 			Req:       audioPacket.Payload,
 			Interrupt: true,
 		}
 		return &req, nil
 	}
 
-	executor.InitCallback = func(h media.MediaHandler) error {
+	executor.InitCallback = func(h media2.MediaHandler) error {
 		conn, _, err := websocket.DefaultDialer.Dial(opt.Url, nil)
 		if err != nil {
 			logrus.WithFields(logrus.Fields{
@@ -74,25 +74,25 @@ func WithVoiceapiASR(opt VoiceapiASROption) media.MediaHandlerFunc {
 		return err
 	}
 
-	executor.TerminateCallback = func(h media.MediaHandler) error {
+	executor.TerminateCallback = func(h media2.MediaHandler) error {
 		return vapi.conn.Close()
 	}
 
-	executor.StateCallback = func(h media.MediaHandler, event media.StateChange) error {
+	executor.StateCallback = func(h media2.MediaHandler, event media2.StateChange) error {
 		switch event.State {
-		case media.StartSpeaking:
+		case media2.StartSpeaking:
 			n := time.Now()
 			vapi.sendReqTime = &n
-		case media.StartSilence:
+		case media2.StartSilence:
 			n := time.Now()
 			vapi.endReqTime = &n
-		case media.Hangup:
+		case media2.Hangup:
 			return vapi.conn.Close()
 		}
 		return nil
 	}
 
-	executor.TaskExecutor = func(ctx context.Context, h media.MediaHandler, req media.PacketRequest[[]byte]) error {
+	executor.TaskExecutor = func(ctx context.Context, h media2.MediaHandler, req media2.PacketRequest[[]byte]) error {
 		return vapi.conn.WriteMessage(websocket.BinaryMessage, req.Req)
 	}
 
@@ -116,8 +116,8 @@ func (vapi *VoiceapiASR) recvFrames() {
 				vapi.handler.CauseError(vapi, err)
 			}
 			if vapi.Sentence != "" {
-				vapi.handler.EmitPacket(vapi, &media.TextPacket{Text: vapi.Sentence, IsTranscribed: true})
-				vapi.handler.EmitState(vapi, media.Completed, &media.CompletedData{
+				vapi.handler.EmitPacket(vapi, &media2.TextPacket{Text: vapi.Sentence, IsTranscribed: true})
+				vapi.handler.EmitState(vapi, media2.Completed, &media2.CompletedData{
 					SenderName: "asr.voiceapi",
 					Result:     vapi.Sentence,
 				})
@@ -139,17 +139,17 @@ func (vapi *VoiceapiASR) recvFrames() {
 		}
 
 		vapi.Sentence = res.Text
-		vapi.handler.EmitState(vapi, media.Transcribing, &media.TranscribingData{
+		vapi.handler.EmitState(vapi, media2.Transcribing, &media2.TranscribingData{
 			SenderName: "asr.voiceapi",
 			Result:     vapi.Sentence,
 		})
 
 		if res.Finished {
-			vapi.handler.EmitState(vapi, media.Completed, &media.CompletedData{
+			vapi.handler.EmitState(vapi, media2.Completed, &media2.CompletedData{
 				SenderName: "asr.voiceapi",
 				Result:     res.Text,
 			})
-			vapi.handler.EmitPacket(vapi, &media.TextPacket{Text: vapi.Sentence, IsTranscribed: true})
+			vapi.handler.EmitPacket(vapi, &media2.TextPacket{Text: vapi.Sentence, IsTranscribed: true})
 			if vapi.endReqTime != nil {
 				vapi.handler.AddMetric("asr.voiceapi.end", time.Since(*vapi.endReqTime))
 			}

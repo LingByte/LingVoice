@@ -7,14 +7,14 @@ import (
 	"context"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/aws/aws-sdk-go-v2/service/transcribestreaming"
 	"github.com/aws/aws-sdk-go-v2/service/transcribestreaming/types"
 	"github.com/sirupsen/logrus"
 )
 
 type AwsASR struct {
-	handler     media.MediaHandler
+	handler     media2.MediaHandler
 	transStream *transcribestreaming.StartStreamTranscriptionEventStream
 	sentence    string
 	words       []byte
@@ -38,14 +38,14 @@ func NewAwsASROption(appId, region string, language string) AwsASROption {
 	}
 }
 
-func WithAwsASR(opt AwsASROption) media.MediaHandlerFunc {
-	executor := media.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
+func WithAwsASR(opt AwsASROption) media2.MediaHandlerFunc {
+	executor := media2.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
 
 	aws := &AwsASR{}
 
 	executor.ConcurrentMode = false
-	executor.RequestBuilder = func(h media.MediaHandler, packet media.MediaPacket) (*media.PacketRequest[[]byte], error) {
-		audioPacket, ok := packet.(*media.AudioPacket)
+	executor.RequestBuilder = func(h media2.MediaHandler, packet media2.MediaPacket) (*media2.PacketRequest[[]byte], error) {
+		audioPacket, ok := packet.(*media2.AudioPacket)
 		if !ok {
 			h.EmitPacket(aws, packet)
 			return nil, nil
@@ -53,15 +53,15 @@ func WithAwsASR(opt AwsASROption) media.MediaHandlerFunc {
 		if aws.handler == nil {
 			aws.handler = h
 		}
-		decoded, _ := media.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
-		req := media.PacketRequest[[]byte]{
+		decoded, _ := media2.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
+		req := media2.PacketRequest[[]byte]{
 			Req:       decoded,
 			Interrupt: true,
 		}
 		return &req, nil
 	}
 
-	executor.InitCallback = func(h media.MediaHandler) error {
+	executor.InitCallback = func(h media2.MediaHandler) error {
 		client := transcribestreaming.New(transcribestreaming.Options{
 			AppID:  opt.AppID,
 			Region: opt.Region,
@@ -84,19 +84,19 @@ func WithAwsASR(opt AwsASROption) media.MediaHandlerFunc {
 		return nil
 	}
 
-	executor.TerminateCallback = func(h media.MediaHandler) error {
+	executor.TerminateCallback = func(h media2.MediaHandler) error {
 		return aws.transStream.Close()
 	}
 
-	executor.StateCallback = func(h media.MediaHandler, event media.StateChange) error {
+	executor.StateCallback = func(h media2.MediaHandler, event media2.StateChange) error {
 		switch event.State {
-		case media.Hangup:
+		case media2.Hangup:
 			return aws.transStream.Close()
 		}
 		return nil
 	}
 
-	executor.TaskExecutor = func(ctx context.Context, h media.MediaHandler, req media.PacketRequest[[]byte]) error {
+	executor.TaskExecutor = func(ctx context.Context, h media2.MediaHandler, req media2.PacketRequest[[]byte]) error {
 		return aws.transStream.Writer.Send(ctx, &types.AudioStreamMemberAudioEvent{Value: types.AudioEvent{AudioChunk: req.Req}})
 	}
 
@@ -130,8 +130,8 @@ func (aws *AwsASR) recvEvents() {
 					aws.words = append(aws.words, []byte(*alternative.Transcript)...)
 				}
 				aws.sentence = string(aws.words)
-				aws.handler.EmitPacket(aws, &media.TextPacket{Text: aws.sentence, IsTranscribed: true})
-				aws.handler.EmitState(aws, media.Transcribing, aws.sentence)
+				aws.handler.EmitPacket(aws, &media2.TextPacket{Text: aws.sentence, IsTranscribed: true})
+				aws.handler.EmitState(aws, media2.Transcribing, aws.sentence)
 			}
 		}
 	case <-aws.handler.GetContext().Done():

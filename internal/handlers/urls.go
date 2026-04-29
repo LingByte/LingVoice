@@ -236,6 +236,9 @@ func (h *Handlers) registerAuthRoutes(api *gin.RouterGroup) {
 	{
 		user.PATCH("/profile", h.userProfilePatchHandler)
 		user.POST("/avatar", h.userAvatarUploadHandler)
+		user.POST("/password/change", h.userChangePasswordHandler)
+		user.POST("/password/send-code", h.userSendPasswordResetCodeHandler)
+		user.POST("/password/reset-by-code", h.userResetPasswordByCodeHandler)
 		user.GET("/llm-usage", h.userLLMUsageListHandler)
 		user.GET("/llm-usage/:id", h.userLLMUsageDetailHandler)
 	}

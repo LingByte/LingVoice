@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	interfacesv1 "github.com/deepgram/deepgram-go-sdk/pkg/api/listen/v1/websocket/interfaces"
 	"github.com/deepgram/deepgram-go-sdk/pkg/client/interfaces"
 	client "github.com/deepgram/deepgram-go-sdk/pkg/client/listen"
@@ -19,7 +19,7 @@ import (
 )
 
 type DeepgramASR struct {
-	handler     media.MediaHandler
+	handler     media2.MediaHandler
 	opt         DeepgramASROption
 	client      *websocketv1.Client
 	Sentence    string
@@ -53,14 +53,14 @@ func NewDeepgramASROption(apiKey string, model string, language string) Deepgram
 	}
 }
 
-func WithDeepgramASR(opt DeepgramASROption) media.MediaHandlerFunc {
-	executor := media.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
+func WithDeepgramASR(opt DeepgramASROption) media2.MediaHandlerFunc {
+	executor := media2.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
 
 	dg := &DeepgramASR{opt: opt, closeChan: make(chan struct{})}
 
 	executor.ConcurrentMode = false
-	executor.RequestBuilder = func(h media.MediaHandler, packet media.MediaPacket) (*media.PacketRequest[[]byte], error) {
-		audioPacket, ok := packet.(*media.AudioPacket)
+	executor.RequestBuilder = func(h media2.MediaHandler, packet media2.MediaPacket) (*media2.PacketRequest[[]byte], error) {
+		audioPacket, ok := packet.(*media2.AudioPacket)
 		if !ok {
 			h.EmitPacket(dg, packet)
 			return nil, nil
@@ -68,15 +68,15 @@ func WithDeepgramASR(opt DeepgramASROption) media.MediaHandlerFunc {
 		if dg.handler == nil {
 			dg.handler = h
 		}
-		decoded, _ := media.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
-		req := media.PacketRequest[[]byte]{
+		decoded, _ := media2.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
+		req := media2.PacketRequest[[]byte]{
 			Req:       decoded,
 			Interrupt: true,
 		}
 		return &req, nil
 	}
 
-	executor.InitCallback = func(h media.MediaHandler) error {
+	executor.InitCallback = func(h media2.MediaHandler) error {
 		client.InitWithDefault()
 		ctx := h.GetContext()
 
@@ -116,21 +116,21 @@ func WithDeepgramASR(opt DeepgramASROption) media.MediaHandlerFunc {
 		go dg.keepAlive()
 		return nil
 	}
-	executor.TerminateCallback = func(h media.MediaHandler) error {
+	executor.TerminateCallback = func(h media2.MediaHandler) error {
 		dg.closeChan <- struct{}{}
 		dg.client.Stop()
 		return nil
 	}
 
-	executor.StateCallback = func(h media.MediaHandler, event media.StateChange) error {
+	executor.StateCallback = func(h media2.MediaHandler, event media2.StateChange) error {
 		switch event.State {
-		case media.Hangup:
+		case media2.Hangup:
 			return dg.client.Finalize()
 		}
 		return nil
 	}
 
-	executor.TaskExecutor = func(ctx context.Context, h media.MediaHandler, req media.PacketRequest[[]byte]) error {
+	executor.TaskExecutor = func(ctx context.Context, h media2.MediaHandler, req media2.PacketRequest[[]byte]) error {
 		if dg.sendReqTime == nil {
 			n := time.Now()
 			dg.sendReqTime = &n
@@ -196,12 +196,12 @@ func (dg *DeepgramASR) Message(mr *interfacesv1.MessageResponse) error {
 	if mr.IsFinal {
 		dg.Sentence = sentence
 
-		dg.handler.EmitPacket(dg, &media.TextPacket{
+		dg.handler.EmitPacket(dg, &media2.TextPacket{
 			IsTranscribed: true,
 			Text:          dg.Sentence,
 		})
 
-		dg.handler.EmitState(dg, media.Completed, dg.Sentence)
+		dg.handler.EmitState(dg, media2.Completed, dg.Sentence)
 	}
 	return nil
 }
@@ -227,7 +227,7 @@ func (dg *DeepgramASR) UtteranceEnd(ur *interfacesv1.UtteranceEndResponse) error
 		"sessionID":            dg.handler.GetSession().ID,
 		"utteranceEndResponse": ur,
 	}).Info("deepgram asr: utterance ended")
-	dg.handler.EmitState(dg, media.Completed, dg.Sentence)
+	dg.handler.EmitState(dg, media2.Completed, dg.Sentence)
 	if dg.sendReqTime != nil {
 		dg.handler.AddMetric("asr.deepgram", time.Since(*dg.sendReqTime))
 	}

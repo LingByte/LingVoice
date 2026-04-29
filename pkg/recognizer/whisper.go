@@ -8,13 +8,13 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
 
 type WhisperASR struct {
-	handler     media.MediaHandler
+	handler     media2.MediaHandler
 	conn        *websocket.Conn
 	words       []byte
 	Sentence    string
@@ -41,14 +41,14 @@ func NewWhisperASROption(url, model string) WhisperASROption {
 	}
 }
 
-func WithWhisperASR(opt WhisperASROption) media.MediaHandlerFunc {
-	executor := media.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
+func WithWhisperASR(opt WhisperASROption) media2.MediaHandlerFunc {
+	executor := media2.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
 
 	wp := &WhisperASR{}
 
 	executor.ConcurrentMode = true
-	executor.RequestBuilder = func(h media.MediaHandler, packet media.MediaPacket) (*media.PacketRequest[[]byte], error) {
-		audioPacket, ok := packet.(*media.AudioPacket)
+	executor.RequestBuilder = func(h media2.MediaHandler, packet media2.MediaPacket) (*media2.PacketRequest[[]byte], error) {
+		audioPacket, ok := packet.(*media2.AudioPacket)
 		if !ok {
 			h.EmitPacket(wp, packet)
 			return nil, nil
@@ -56,15 +56,15 @@ func WithWhisperASR(opt WhisperASROption) media.MediaHandlerFunc {
 		if wp.handler == nil {
 			wp.handler = h
 		}
-		decoded, _ := media.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
-		req := media.PacketRequest[[]byte]{
+		decoded, _ := media2.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
+		req := media2.PacketRequest[[]byte]{
 			Req:       decoded,
 			Interrupt: true,
 		}
 		return &req, nil
 	}
 
-	executor.InitCallback = func(h media.MediaHandler) error {
+	executor.InitCallback = func(h media2.MediaHandler) error {
 		var err error
 		wp.conn, _, err = websocket.DefaultDialer.Dial(opt.Url, nil)
 		if err != nil {
@@ -78,21 +78,21 @@ func WithWhisperASR(opt WhisperASROption) media.MediaHandlerFunc {
 		return nil
 	}
 
-	executor.TerminateCallback = func(h media.MediaHandler) error {
+	executor.TerminateCallback = func(h media2.MediaHandler) error {
 		err := wp.conn.Close()
 		wp.conn = nil
 		return err
 	}
 
-	executor.StateCallback = func(h media.MediaHandler, event media.StateChange) error {
+	executor.StateCallback = func(h media2.MediaHandler, event media2.StateChange) error {
 		switch event.State {
-		case media.Hangup:
+		case media2.Hangup:
 			return wp.conn.Close()
 		}
 		return nil
 	}
 
-	executor.TaskExecutor = func(ctx context.Context, h media.MediaHandler, req media.PacketRequest[[]byte]) error {
+	executor.TaskExecutor = func(ctx context.Context, h media2.MediaHandler, req media2.PacketRequest[[]byte]) error {
 		if wp.sendReqTime == nil {
 			n := time.Now()
 			wp.sendReqTime = &n
@@ -120,8 +120,8 @@ func (wp *WhisperASR) recvFrames() {
 				wp.handler.CauseError(wp, err)
 			}
 			if wp.Sentence != "" {
-				wp.handler.EmitPacket(wp, &media.TextPacket{Text: wp.Sentence, IsTranscribed: true})
-				wp.handler.EmitState(wp, media.Completed, wp.Sentence)
+				wp.handler.EmitPacket(wp, &media2.TextPacket{Text: wp.Sentence, IsTranscribed: true})
+				wp.handler.EmitState(wp, media2.Completed, wp.Sentence)
 				if wp.sendReqTime != nil {
 					wp.handler.AddMetric("asr.whisper", time.Since(*wp.sendReqTime))
 				}
@@ -153,12 +153,12 @@ func (wp *WhisperASR) recvFrames() {
 		wp.Sentence = result.Text
 
 		if result.IsFinal {
-			packet := &media.TextPacket{
+			packet := &media2.TextPacket{
 				Text:          wp.Sentence,
 				IsTranscribed: true,
 			}
 			wp.handler.EmitPacket(wp, packet)
-			wp.handler.EmitState(wp, media.Completed, wp.Sentence)
+			wp.handler.EmitState(wp, media2.Completed, wp.Sentence)
 		}
 
 		logrus.WithFields(logrus.Fields{
@@ -166,6 +166,6 @@ func (wp *WhisperASR) recvFrames() {
 			"word":      wp.Sentence,
 		}).Debug("whisper asr: recv frame")
 
-		wp.handler.EmitState(wp, media.Transcribing, wp.Sentence)
+		wp.handler.EmitState(wp, media2.Transcribing, wp.Sentence)
 	}
 }

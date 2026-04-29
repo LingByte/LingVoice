@@ -11,7 +11,7 @@ import (
 
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/llm"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -24,8 +24,8 @@ func msToTime(ms int64) time.Time {
 }
 
 func newLLMUsageRowID() string {
-	if utils.SnowflakeUtil != nil {
-		return utils.SnowflakeUtil.GenID()
+	if base.SnowflakeUtil != nil {
+		return base.SnowflakeUtil.GenID()
 	}
 	return strconv.FormatInt(time.Now().UnixNano(), 10)
 }
@@ -38,7 +38,7 @@ func InitLLMUsageListener(db *gorm.DB, lg *zap.Logger) {
 		}
 		return
 	}
-	utils.Sig().Connect(llm.SignalLLMUsage, func(sender any, params ...any) {
+	base.Sig().Connect(llm.SignalLLMUsage, func(sender any, params ...any) {
 		p, ok := sender.(*llm.LLMUsageSignalPayload)
 		if !ok || p == nil {
 			return

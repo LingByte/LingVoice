@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/carlmjohnson/requests"
 	"github.com/sirupsen/logrus"
 )
@@ -68,16 +68,16 @@ func (bs *BaiduTTSService) Provider() TTSProvider {
 	return ProviderBaidu
 }
 
-func (bs *BaiduTTSService) Format() media.StreamFormat {
-	return media.StreamFormat{
-		FrameDuration: utils.NormalizeFramePeriod(bs.opt.FrameDuration),
+func (bs *BaiduTTSService) Format() media2.StreamFormat {
+	return media2.StreamFormat{
+		FrameDuration: base.NormalizeFramePeriod(bs.opt.FrameDuration),
 		Channels:      bs.opt.Channels,
 		SampleRate:    bs.opt.SampleRate,
 		BitDepth:      bs.opt.BitDepth,
 	}
 }
 func (bs *BaiduTTSService) CacheKey(text string) string {
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("baidu.tts-%s-%s-%s.pcm", bs.opt.Lan, bs.opt.Ctp, digest)
 }
 

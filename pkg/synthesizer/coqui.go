@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/carlmjohnson/requests"
 	"github.com/sirupsen/logrus"
 )
@@ -63,17 +63,17 @@ func (c *CoquiService) Provider() TTSProvider {
 	return ProviderCoqui
 }
 
-func (c *CoquiService) Format() media.StreamFormat {
-	return media.StreamFormat{
+func (c *CoquiService) Format() media2.StreamFormat {
+	return media2.StreamFormat{
 		SampleRate:    c.opt.SampleRate,
 		BitDepth:      c.opt.BitDepth,
 		Channels:      c.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(c.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(c.opt.FrameDuration),
 	}
 }
 
 func (c *CoquiService) CacheKey(text string) string {
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("qcloud.tts-%s-%s-%s.pcm", c.opt.Language, c.opt.Speaker, digest)
 }
 

@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
@@ -17,7 +17,7 @@ import (
 var closeMsg = []byte(`{"event": "terminate"}`)
 
 type GladiaASR struct {
-	handler     media.MediaHandler
+	handler     media2.MediaHandler
 	conn        *websocket.Conn
 	Sentence    string
 	sendReqTime *time.Time
@@ -91,8 +91,8 @@ func (gla *GladiaASR) recvFrames() {
 				gla.handler.CauseError(gla, err)
 			}
 			if gla.Sentence != "" {
-				gla.handler.EmitPacket(gla, &media.TextPacket{Text: gla.Sentence, IsTranscribed: true})
-				gla.handler.EmitState(gla, media.Completed, gla.Sentence)
+				gla.handler.EmitPacket(gla, &media2.TextPacket{Text: gla.Sentence, IsTranscribed: true})
+				gla.handler.EmitState(gla, media2.Completed, gla.Sentence)
 				if gla.sendReqTime != nil {
 					gla.handler.AddMetric("asr.gladia", time.Since(*gla.sendReqTime))
 				}
@@ -130,13 +130,13 @@ func (gla *GladiaASR) recvFrames() {
 			}
 
 			gla.Sentence = transcript.Transcription
-			gla.handler.EmitPacket(gla, &media.TextPacket{
+			gla.handler.EmitPacket(gla, &media2.TextPacket{
 				Text:          gla.Sentence,
 				IsTranscribed: true,
 			})
-			gla.handler.EmitState(gla, media.Transcribing, gla.Sentence)
+			gla.handler.EmitState(gla, media2.Transcribing, gla.Sentence)
 			if transcript.Type == "final" {
-				gla.handler.EmitState(gla, media.Completed, gla.Sentence)
+				gla.handler.EmitState(gla, media2.Completed, gla.Sentence)
 				if gla.sendReqTime != nil {
 					gla.handler.AddMetric("asr.gladia", time.Since(*gla.sendReqTime))
 				}

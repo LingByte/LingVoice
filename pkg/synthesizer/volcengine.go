@@ -15,20 +15,15 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/carlmjohnson/requests"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
 
 const (
-	SsmlSpeak = "<speak>"
-
-	VolcengineCloneCluster = "volcano_icl"
-	VolcengineLLMCluster   = "volcano_tts"
-	optSubmit              = "submit"
-	optQuery               = "query"
+	optQuery = "query"
 )
 
 var defaultHeader = []byte{0x11, 0x10, 0x11, 0x00}
@@ -110,21 +105,21 @@ func (v *VolcengineService) Provider() TTSProvider {
 	return ProviderVolcengine
 }
 
-func (v *VolcengineService) Format() media.StreamFormat {
+func (v *VolcengineService) Format() media2.StreamFormat {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	return media.StreamFormat{
+	return media2.StreamFormat{
 		SampleRate:    v.opt.Rate,
 		BitDepth:      v.opt.BitDepth,
 		Channels:      v.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(v.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(v.opt.FrameDuration),
 	}
 }
 
 func (v *VolcengineService) CacheKey(text string) string {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	speedRatio := int(v.opt.SpeedRatio * 100)
 	return fmt.Sprintf("volcengine.tts-%s-%s-%d-%d-%s.pcm", v.opt.VoiceType, v.opt.Encoding, v.opt.Rate, speedRatio, digest)
 }
@@ -203,7 +198,7 @@ func (v *volcengineSpeechSynthesisListener) sendRequest(ctx context.Context, opt
 	params["request"] = make(map[string]interface{})
 	params["request"]["reqid"] = reqID
 	params["request"]["text"] = text
-	if strings.HasPrefix(text, SsmlSpeak) {
+	if strings.HasPrefix(text, "<speak>") {
 		params["request"]["text_type"] = "ssml"
 	} else {
 		params["request"]["text_type"] = "plain"

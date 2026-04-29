@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/sirupsen/logrus"
 )
 
@@ -63,10 +63,10 @@ func NewAzureConfig(subscriptionKey, region string) AzureConfig {
 
 	// 从环境变量获取默认值
 	if opt.SubscriptionKey == "" {
-		opt.SubscriptionKey = utils.GetEnv("AZURE_SUBSCRIPTION_KEY")
+		opt.SubscriptionKey = base.GetEnv("AZURE_SUBSCRIPTION_KEY")
 	}
 	if opt.Region == "" {
-		opt.Region = utils.GetEnv("AZURE_REGION")
+		opt.Region = base.GetEnv("AZURE_REGION")
 	}
 
 	return opt
@@ -84,21 +84,21 @@ func (as *AzureService) Provider() TTSProvider {
 	return ProviderAzure
 }
 
-func (as *AzureService) Format() media.StreamFormat {
+func (as *AzureService) Format() media2.StreamFormat {
 	as.mu.Lock()
 	defer as.mu.Unlock()
-	return media.StreamFormat{
+	return media2.StreamFormat{
 		SampleRate:    as.opt.SampleRate,
 		BitDepth:      as.opt.BitDepth,
 		Channels:      as.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(as.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(as.opt.FrameDuration),
 	}
 }
 
 func (as *AzureService) CacheKey(text string) string {
 	as.mu.Lock()
 	defer as.mu.Unlock()
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("azure.tts-%s-%s-%d-%s.%s", as.opt.Voice, as.opt.Region, as.opt.SampleRate, digest, "mp3")
 }
 

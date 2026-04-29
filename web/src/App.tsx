@@ -20,6 +20,7 @@ import { LlmAbilitiesPage } from '@/pages/LlmAbilitiesPage'
 import { LlmChannelsPage } from '@/pages/LlmChannelsPage'
 import { LlmModelMetasPage } from '@/pages/LlmModelMetasPage'
 import { ModelPlazaPage } from '@/pages/ModelPlazaPage'
+import { AdminOnly } from '@/components/AdminOnly'
 import { LlmUsagePage } from '@/pages/LlmUsagePage'
 import { UsageLogsPage } from '@/pages/UsageLogsPage'
 import { SpeechUsagePage } from '@/pages/SpeechUsagePage'
@@ -51,9 +52,23 @@ export default function App() {
           <Route path="notify/mail-templates/:templateId" element={<MailTemplateEditPage />} />
           <Route path="notify/mail-logs" element={<MailLogsPage />} />
           <Route path="notify/sms-logs" element={<SmsLogsPage />} />
-          <Route path="notify/llm-usage" element={<LlmUsagePage />} />
+          <Route
+            path="notify/llm-usage"
+            element={
+              <AdminOnly title="LLM 用量">
+                <LlmUsagePage />
+              </AdminOnly>
+            }
+          />
           <Route path="usage/llm-logs" element={<UsageLogsPage />} />
-          <Route path="notify/speech-usage" element={<SpeechUsagePage />} />
+          <Route
+            path="notify/speech-usage"
+            element={
+              <AdminOnly title="语音用量">
+                <SpeechUsagePage />
+              </AdminOnly>
+            }
+          />
           <Route path="admin/agent-runs" element={<AgentRunsPage />} />
           <Route path="admin/users" element={<AdminUsersPage />} />
           <Route path="admin/announcements" element={<AdminAnnouncementsPage />} />

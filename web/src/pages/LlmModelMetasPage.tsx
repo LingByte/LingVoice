@@ -22,6 +22,7 @@ import {
   type LLMModelMetaRow,
 } from '@/api/llmModelMetas'
 import { AdminOnly } from '@/components/AdminOnly'
+import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 import { VENDOR_PRESET_OPTIONS } from '@/utils/modelVendorIcon'
 
 const { Title, Paragraph } = Typography
@@ -209,12 +210,36 @@ export function LlmModelMetasPage() {
           pagination={false}
           scroll={{ x: 1180 }}
           columns={[
-            { title: 'ID', dataIndex: 'id', width: 64 },
+            {
+              title: 'ID',
+              dataIndex: 'id',
+              width: 72,
+              render: (v: number) => <EllipsisCopyText text={v} maxWidth={56} copiedTip="ID 已复制" tooltipMaxLen={96} />,
+            },
             { title: '排序', dataIndex: 'sort_order', width: 56 },
-            { title: '模型名', dataIndex: 'model_name', width: 200, ellipsis: true },
-            { title: '厂商', dataIndex: 'vendor', width: 100, ellipsis: true, render: (v: string) => v || '—' },
-            { title: '描述', dataIndex: 'description', ellipsis: true, render: (d: string) => d || '—' },
-            { title: 'Tags', dataIndex: 'tags', width: 120, ellipsis: true, render: (t: string) => t || '—' },
+            {
+              title: '模型名',
+              dataIndex: 'model_name',
+              width: 200,
+              render: (v: string) => <EllipsisCopyText text={v} maxWidth={184} copiedTip="模型名已复制" />,
+            },
+            {
+              title: '厂商',
+              dataIndex: 'vendor',
+              width: 100,
+              render: (v: string) => <EllipsisCopyText text={v || '—'} maxWidth={88} copiedTip="厂商已复制" />,
+            },
+            {
+              title: '描述',
+              dataIndex: 'description',
+              render: (d: string) => <EllipsisCopyText text={d || '—'} maxWidth={240} copiedTip="描述已复制" />,
+            },
+            {
+              title: 'Tags',
+              dataIndex: 'tags',
+              width: 120,
+              render: (t: string) => <EllipsisCopyText text={t || '—'} maxWidth={104} copiedTip="Tags 已复制" />,
+            },
             {
               title: 'Ctx/Out',
               width: 100,

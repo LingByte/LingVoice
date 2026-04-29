@@ -11,8 +11,8 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/sirupsen/logrus"
 )
 
@@ -71,21 +71,21 @@ func (ls *LocalService) Provider() TTSProvider {
 	return ProviderLocal
 }
 
-func (ls *LocalService) Format() media.StreamFormat {
+func (ls *LocalService) Format() media2.StreamFormat {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	return media.StreamFormat{
+	return media2.StreamFormat{
 		SampleRate:    ls.opt.SampleRate,
 		BitDepth:      ls.opt.BitDepth,
 		Channels:      ls.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(ls.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(ls.opt.FrameDuration),
 	}
 }
 
 func (ls *LocalService) CacheKey(text string) string {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("local.tts-%s-%d-%s.%s", ls.opt.Command, ls.opt.SampleRate, digest, ls.opt.Codec)
 }
 

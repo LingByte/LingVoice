@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 )
 
 const maxOpenAPIUsageBodyClip = 512 * 1024
@@ -39,8 +39,8 @@ type OpenAPIUsageEmitMeta struct {
 }
 
 func openapiUsageFailRequestID(prefix string) string {
-	if utils.SnowflakeUtil != nil {
-		return prefix + utils.SnowflakeUtil.GenID()
+	if base.SnowflakeUtil != nil {
+		return prefix + base.SnowflakeUtil.GenID()
 	}
 	return prefix + strconv.FormatInt(time.Now().UnixNano(), 10)
 }
@@ -134,11 +134,12 @@ func EmitOpenAPIOpenAIUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta
 		FirstTokenAtMs:  0,
 		CompletedAtMs:   ms,
 	}
-	utils.Sig().Emit(SignalLLMUsage, payload)
+	base.Sig().Emit(SignalLLMUsage, payload)
 }
 
 // EmitOpenAPIOpenAIUsageFailure 非流式或流式入口失败时的用量信号。
-func EmitOpenAPIOpenAIUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta, extraMsg string) {
+// errorCode/errorMessage 由业务层传入，以区分“无渠道/上游失败/多渠道耗尽”等策略差异。
+func EmitOpenAPIOpenAIUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta, errorCode string, extraMsg string) {
 	rid := openapiUsageFailRequestID("ling-openapi-openai-fail-")
 	msg := strings.TrimSpace(extraMsg)
 	if msg == "" && res != nil && len(res.Attempts) > 0 {
@@ -150,6 +151,9 @@ func EmitOpenAPIOpenAIUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta
 	}
 	if msg == "" {
 		msg = "openai upstream failed"
+	}
+	if strings.TrimSpace(errorCode) == "" {
+		errorCode = "all_channels_exhausted"
 	}
 	var wall, queue int64
 	var atts []UsageChannelAttempt
@@ -187,14 +191,14 @@ func EmitOpenAPIOpenAIUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta
 		IPAddress:       meta.ClientIP,
 		StatusCode:      httpCode,
 		Success:         false,
-		ErrorCode:       "all_channels_exhausted",
+		ErrorCode:       strings.TrimSpace(errorCode),
 		ErrorMessage:    truncateOpenAPIAttemptMsg(msg, maxOpenAPIAttemptErrBytes),
 		RequestedAtMs:   ms,
 		StartedAtMs:     ms,
 		FirstTokenAtMs:  0,
 		CompletedAtMs:   ms,
 	}
-	utils.Sig().Emit(SignalLLMUsage, payload)
+	base.Sig().Emit(SignalLLMUsage, payload)
 }
 
 // EmitOpenAPIAnthropicUsageSuccess 非流式 Anthropic /v1/messages 成功。
@@ -252,11 +256,12 @@ func EmitOpenAPIAnthropicUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, m
 		FirstTokenAtMs:  0,
 		CompletedAtMs:   ms,
 	}
-	utils.Sig().Emit(SignalLLMUsage, payload)
+	base.Sig().Emit(SignalLLMUsage, payload)
 }
 
 // EmitOpenAPIAnthropicUsageFailure 非流式或流式入口失败。
-func EmitOpenAPIAnthropicUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta, extraMsg string) {
+// errorCode/errorMessage 由业务层传入，以区分“无渠道/上游失败/多渠道耗尽”等策略差异。
+func EmitOpenAPIAnthropicUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta, errorCode string, extraMsg string) {
 	rid := openapiUsageFailRequestID("ling-openapi-anthropic-fail-")
 	msg := strings.TrimSpace(extraMsg)
 	if msg == "" && res != nil && len(res.Attempts) > 0 {
@@ -268,6 +273,9 @@ func EmitOpenAPIAnthropicUsageFailure(reqBody []byte, res *OpenAPIProxyResult, m
 	}
 	if msg == "" {
 		msg = "anthropic upstream failed"
+	}
+	if strings.TrimSpace(errorCode) == "" {
+		errorCode = "all_channels_exhausted"
 	}
 	var wall, queue int64
 	var atts []UsageChannelAttempt
@@ -303,14 +311,14 @@ func EmitOpenAPIAnthropicUsageFailure(reqBody []byte, res *OpenAPIProxyResult, m
 		IPAddress:       meta.ClientIP,
 		StatusCode:      httpCode,
 		Success:         false,
-		ErrorCode:       "all_channels_exhausted",
+		ErrorCode:       strings.TrimSpace(errorCode),
 		ErrorMessage:    truncateOpenAPIAttemptMsg(msg, maxOpenAPIAttemptErrBytes),
 		RequestedAtMs:   ms,
 		StartedAtMs:     ms,
 		FirstTokenAtMs:  0,
 		CompletedAtMs:   ms,
 	}
-	utils.Sig().Emit(SignalLLMUsage, payload)
+	base.Sig().Emit(SignalLLMUsage, payload)
 }
 
 // EmitOpenAPIOpenAIUsageStreamSuccess 流式 chat completion 成功后的用量（建议请求体含 stream_options.include_usage）。
@@ -359,7 +367,7 @@ func EmitOpenAPIOpenAIUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMe
 		FirstTokenAtMs:  cap.FirstTokenAtMs,
 		CompletedAtMs:   cap.CompletedAtMs,
 	}
-	utils.Sig().Emit(SignalLLMUsage, payload)
+	base.Sig().Emit(SignalLLMUsage, payload)
 }
 
 // EmitOpenAPIAnthropicUsageStreamSuccess Anthropic 流式 messages 成功。
@@ -412,5 +420,5 @@ func EmitOpenAPIAnthropicUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmi
 		FirstTokenAtMs:  cap.FirstTokenAtMs,
 		CompletedAtMs:   cap.CompletedAtMs,
 	}
-	utils.Sig().Emit(SignalLLMUsage, payload)
+	base.Sig().Emit(SignalLLMUsage, payload)
 }

@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
@@ -73,7 +73,7 @@ func NewFishSpeechConfig(apiKey, referenceID string) FishSpeechConfig {
 
 	// 从环境变量获取默认值
 	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("FISHSPEECH_API_KEY")
+		opt.APIKey = base.GetEnv("FISHSPEECH_API_KEY")
 	}
 	if opt.ReferenceID == "" {
 		opt.ReferenceID = "default"
@@ -93,21 +93,21 @@ func (fs *FishSpeechService) Provider() TTSProvider {
 	return ProviderFishSpeech
 }
 
-func (fs *FishSpeechService) Format() media.StreamFormat {
+func (fs *FishSpeechService) Format() media2.StreamFormat {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	return media.StreamFormat{
+	return media2.StreamFormat{
 		SampleRate:    fs.opt.SampleRate,
 		BitDepth:      fs.opt.BitDepth,
 		Channels:      fs.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(fs.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(fs.opt.FrameDuration),
 	}
 }
 
 func (fs *FishSpeechService) CacheKey(text string) string {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("fishspeech.tts-%s-%d-%s.%s", fs.opt.ReferenceID, fs.opt.SampleRate, digest, fs.opt.Codec)
 }
 

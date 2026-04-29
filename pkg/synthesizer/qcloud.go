@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/sirupsen/logrus"
 	"github.com/tencentcloud/tencentcloud-speech-sdk-go/common"
 	"github.com/tencentcloud/tencentcloud-speech-sdk-go/tts"
@@ -76,21 +76,21 @@ func (qs *QCloudService) Provider() TTSProvider {
 	return ProviderTencent
 }
 
-func (qs *QCloudService) Format() media.StreamFormat {
+func (qs *QCloudService) Format() media2.StreamFormat {
 	qs.mu.Lock()
 	defer qs.mu.Unlock()
-	return media.StreamFormat{
+	return media2.StreamFormat{
 		SampleRate:    qs.opt.SampleRate,
 		BitDepth:      qs.opt.BitDepth,
 		Channels:      qs.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(qs.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(qs.opt.FrameDuration),
 	}
 }
 
 func (qs *QCloudService) CacheKey(text string) string {
 	qs.mu.Lock()
 	defer qs.mu.Unlock()
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	// 如果配置了语言，将其包含在缓存键中
 	if qs.opt.Language != "" {
 		return fmt.Sprintf("qcloud.tts-%d-%d-%d-%d-%s-%s.pcm", qs.opt.VoiceType, qs.opt.ModelType, qs.opt.SampleRate, qs.opt.Speed, qs.opt.Language, digest)

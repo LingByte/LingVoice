@@ -10,7 +10,7 @@ import (
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 	"go.uber.org/zap"
 )
 
@@ -24,7 +24,7 @@ var (
 // InitSystemListeners initializes system listeners
 func InitSystemListeners() {
 	// Connect system initialization signal
-	utils.Sig().Connect(constants.SigInitSystemConfig, func(sender any, params ...any) {
+	base.Sig().Connect(constants.SigInitSystemConfig, func(sender any, params ...any) {
 		// Load SSL certificates
 		loadSSLCertificates()
 	})

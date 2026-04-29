@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
+	"github.com/LingByte/LingVoice/pkg/utils/media"
 	gonanoid "github.com/matoous/go-nanoid"
 
 	"github.com/sirupsen/logrus"

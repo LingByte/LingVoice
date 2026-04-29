@@ -39,30 +39,29 @@ type ChatMessage struct {
 
 // LLMUsage LLM用量统计表
 type LLMUsage struct {
-	ID              string  `json:"id" gorm:"primaryKey;type:varchar(64)"`                   // 雪花算法生成的ID
-	RequestID       string  `json:"request_id" gorm:"type:varchar(64);uniqueIndex;not null"` // 唯一请求ID（可与上游 id 对齐）
-	UserID          string  `json:"user_id" gorm:"type:varchar(64);index"`
-	Provider        string  `json:"provider" gorm:"type:varchar(50);not null;index"`
-	Model           string  `json:"model" gorm:"type:varchar(100);not null;index"`
-	BaseURL         string  `json:"base_url" gorm:"type:varchar(255)"`             // API基础URL
-	RequestType     string  `json:"request_type" gorm:"type:varchar(20);not null"` // query, query_stream, rewrite, expand
-	InputTokens     int     `json:"input_tokens" gorm:"default:0"`
-	OutputTokens    int     `json:"output_tokens" gorm:"default:0"`
-	TotalTokens     int     `json:"total_tokens" gorm:"default:0"`
-	QuotaDelta      int     `json:"quota_delta" gorm:"default:0"`        // 本次从凭证扣除的额度单位（倍率/按次/按 token 汇总）
-	LatencyMs       int64   `json:"latency_ms" gorm:"default:0"`         // 总延迟（毫秒）
-	TTFTMs          int64   `json:"ttft_ms" gorm:"default:0"`            // Time To First Token（毫秒）
-	TPS             float64 `json:"tps" gorm:"default:0"`                // Tokens Per Second
-	QueueTimeMs     int64   `json:"queue_time_ms" gorm:"default:0"`      // 排队时间（毫秒）
-	RequestContent  string  `json:"request_content" gorm:"type:text"`    // 请求内容（JSON格式）
-	ResponseContent string  `json:"response_content" gorm:"type:text"`   // 响应内容（JSON格式）
-	UserAgent       string  `json:"user_agent" gorm:"type:varchar(500)"` // 用户代理
-	IPAddress       string  `json:"ip_address" gorm:"type:varchar(45)"`  // 客户端IP地址
-	StatusCode      int     `json:"status_code" gorm:"default:200"`      // HTTP响应码
-	Success         bool    `json:"success" gorm:"default:true"`
-	ErrorCode       string  `json:"error_code" gorm:"type:varchar(50)"`
-	ErrorMessage    string  `json:"error_message" gorm:"type:text"`
-	// ChannelID 实际完成请求的上游 llm_channels.id（轮询/重试后命中的渠道）。
+	ID              string                  `json:"id" gorm:"primaryKey;type:varchar(64)"`                   // 雪花算法生成的ID
+	RequestID       string                  `json:"request_id" gorm:"type:varchar(64);uniqueIndex;not null"` // 唯一请求ID（可与上游 id 对齐）
+	UserID          string                  `json:"user_id" gorm:"type:varchar(64);index"`
+	Provider        string                  `json:"provider" gorm:"type:varchar(50);not null;index"`
+	Model           string                  `json:"model" gorm:"type:varchar(100);not null;index"`
+	BaseURL         string                  `json:"base_url" gorm:"type:varchar(255)"`             // API基础URL
+	RequestType     string                  `json:"request_type" gorm:"type:varchar(20);not null"` // query, query_stream, rewrite, expand
+	InputTokens     int                     `json:"input_tokens" gorm:"default:0"`
+	OutputTokens    int                     `json:"output_tokens" gorm:"default:0"`
+	TotalTokens     int                     `json:"total_tokens" gorm:"default:0"`
+	QuotaDelta      int                     `json:"quota_delta" gorm:"default:0"`        // 本次从凭证扣除的额度单位（倍率/按次/按 token 汇总）
+	LatencyMs       int64                   `json:"latency_ms" gorm:"default:0"`         // 总延迟（毫秒）
+	TTFTMs          int64                   `json:"ttft_ms" gorm:"default:0"`            // Time To First Token（毫秒）
+	TPS             float64                 `json:"tps" gorm:"default:0"`                // Tokens Per Second
+	QueueTimeMs     int64                   `json:"queue_time_ms" gorm:"default:0"`      // 排队时间（毫秒）
+	RequestContent  string                  `json:"request_content" gorm:"type:text"`    // 请求内容（JSON格式）
+	ResponseContent string                  `json:"response_content" gorm:"type:text"`   // 响应内容（JSON格式）
+	UserAgent       string                  `json:"user_agent" gorm:"type:varchar(500)"` // 用户代理
+	IPAddress       string                  `json:"ip_address" gorm:"type:varchar(45)"`  // 客户端IP地址
+	StatusCode      int                     `json:"status_code" gorm:"default:200"`      // HTTP响应码
+	Success         bool                    `json:"success" gorm:"default:true"`
+	ErrorCode       string                  `json:"error_code" gorm:"type:varchar(50)"`
+	ErrorMessage    string                  `json:"error_message" gorm:"type:text"`
 	ChannelID       int                     `json:"channel_id" gorm:"index;default:0"`
 	ChannelAttempts LLMUsageChannelAttempts `json:"channel_attempts" gorm:"column:channel_attempts;type:json"`
 	RequestedAt     time.Time               `json:"requested_at" gorm:"not null;index"` // 请求开始时间
@@ -141,9 +140,6 @@ func (AgentStep) TableName() string {
 
 // GetChatSessionOwned returns the session if it belongs to userID and is not soft-deleted.
 func GetChatSessionOwned(db *gorm.DB, userID, sessionID string) (*ChatSession, error) {
-	if db == nil {
-		return nil, errNilDB
-	}
 	var row ChatSession
 	err := db.Where("id = ? AND user_id = ? AND (deleted_at IS NULL)", sessionID, userID).First(&row).Error
 	if err != nil {
@@ -154,9 +150,6 @@ func GetChatSessionOwned(db *gorm.DB, userID, sessionID string) (*ChatSession, e
 
 // ListChatSessionsForUser returns recent sessions for the user (non-deleted).
 func ListChatSessionsForUser(db *gorm.DB, userID string, limit int) ([]ChatSession, error) {
-	if db == nil {
-		return nil, errNilDB
-	}
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
@@ -197,9 +190,6 @@ func ChatSessionToAPIRow(s *ChatSession) ChatSessionAPIRow {
 
 // CreateChatSession inserts a new session row.
 func CreateChatSession(db *gorm.DB, row *ChatSession) error {
-	if db == nil {
-		return errNilDB
-	}
 	if row == nil {
 		return errors.New("models: nil chat session")
 	}
@@ -208,22 +198,15 @@ func CreateChatSession(db *gorm.DB, row *ChatSession) error {
 
 // UpdateChatSessionTitle updates title and bumps updated_at for an owned session.
 func UpdateChatSessionTitle(db *gorm.DB, userID, sessionID, title string) error {
-	if db == nil {
-		return errNilDB
-	}
-	title = strings.TrimSpace(title)
 	return db.Model(&ChatSession{}).Where("id = ? AND user_id = ?", sessionID, userID).
 		Updates(map[string]interface{}{
-			"title":      title,
+			"title":      strings.TrimSpace(title),
 			"updated_at": time.Now(),
 		}).Error
 }
 
 // SoftDeleteChatSession marks a session deleted for an owner.
 func SoftDeleteChatSession(db *gorm.DB, userID, sessionID string) error {
-	if db == nil {
-		return errNilDB
-	}
 	now := time.Now()
 	return db.Model(&ChatSession{}).Where("id = ? AND user_id = ?", sessionID, userID).
 		Updates(map[string]interface{}{
@@ -235,9 +218,6 @@ func SoftDeleteChatSession(db *gorm.DB, userID, sessionID string) error {
 
 // ListChatMessagesForSession returns messages for a session (non-deleted), oldest first.
 func ListChatMessagesForSession(db *gorm.DB, sessionID string, limit int) ([]ChatMessage, error) {
-	if db == nil {
-		return nil, errNilDB
-	}
 	if limit <= 0 || limit > 2000 {
 		limit = 500
 	}
@@ -280,9 +260,6 @@ func ChatMessageToAPIRow(m *ChatMessage) ChatMessageAPIRow {
 
 // CreateChatMessage inserts a message and returns the created row (timestamps from DB).
 func CreateChatMessage(db *gorm.DB, msg *ChatMessage) error {
-	if db == nil {
-		return errNilDB
-	}
 	if msg == nil {
 		return errors.New("models: nil chat message")
 	}
@@ -291,8 +268,5 @@ func CreateChatMessage(db *gorm.DB, msg *ChatMessage) error {
 
 // TouchChatSessionUpdatedAt bumps updated_at for a session (e.g. after new message).
 func TouchChatSessionUpdatedAt(db *gorm.DB, sessionID string) error {
-	if db == nil {
-		return errNilDB
-	}
 	return db.Model(&ChatSession{}).Where("id = ?", sessionID).Update("updated_at", time.Now()).Error
 }

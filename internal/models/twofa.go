@@ -8,7 +8,7 @@ import (
 	"unicode"
 
 	"github.com/LingByte/LingVoice/pkg/logger"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/accessutils"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -50,7 +50,7 @@ func twoFABackupCodeMatchesPlain(plainNormalized, storedHash string) bool {
 
 // GenerateTwoFATOTPSetupMaterial 生成绑定 TOTP 所需的密钥、otpauth URL 与二维码（依赖 pkg/utils/totp）。
 // 将 Secret 写入 TwoFA 前应由用户用验证器校验首码。
-func GenerateTwoFATOTPSetupMaterial(issuer string, user *User) (*utils.TOTPSetup, error) {
+func GenerateTwoFATOTPSetupMaterial(issuer string, user *User) (*accessutils.TOTPSetup, error) {
 	if user == nil {
 		return nil, errors.New("用户不能为空")
 	}
@@ -58,7 +58,7 @@ func GenerateTwoFATOTPSetupMaterial(issuer string, user *User) (*utils.TOTPSetup
 	if account == "" {
 		account = fmt.Sprintf("user-%d", user.ID)
 	}
-	return utils.GenerateTOTPSetup(issuer, account, 0)
+	return accessutils.GenerateTOTPSetup(issuer, account, 0)
 }
 
 // TwoFA 用户2FA设置表
@@ -273,8 +273,6 @@ func DisableTwoFA(db *gorm.DB, userId int) error {
 	if twoFA == nil {
 		return ErrTwoFANotEnabled
 	}
-
-	// 删除2FA设置和备用码
 	return twoFA.Delete(db)
 }
 
@@ -294,7 +292,7 @@ func (t *TwoFA) ValidateTOTPAndUpdateUsage(db *gorm.DB, code string) (bool, erro
 	}
 
 	// 验证TOTP码（pkg/utils/totp.ValidateTOTP）
-	if !utils.ValidateTOTP(code, t.Secret) {
+	if !accessutils.ValidateTOTP(code, t.Secret) {
 		// 增加失败次数
 		if err := t.IncrementFailedAttempts(db); err != nil {
 			logger.Warn("twofa.increment_failed", zap.Error(err))

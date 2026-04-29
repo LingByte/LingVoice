@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	gonanoid "github.com/matoous/go-nanoid"
 	"github.com/sirupsen/logrus"
 	"github.com/tencentcloud/tencentcloud-speech-sdk-go/asr"
@@ -17,7 +17,7 @@ import (
 )
 
 type QCloudASR struct {
-	Handler     media.MediaHandler
+	Handler     media2.MediaHandler
 	sentence    string
 	sliceType   uint32
 	startTime   uint32
@@ -53,8 +53,8 @@ func NewQcloudASROption(appId string, secretId string, secretKey string) QCloudA
 	}
 }
 
-func WithQCloudASR(opt QCloudASROption) media.MediaHandlerFunc {
-	executor := media.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
+func WithQCloudASR(opt QCloudASROption) media2.MediaHandlerFunc {
+	executor := media2.NewAsyncTaskRunner[[]byte](opt.ReqChanSize)
 	credential := common.NewCredential(opt.SecretID, opt.SecretKey)
 
 	asq := &QCloudASR{opt: opt}
@@ -62,8 +62,8 @@ func WithQCloudASR(opt QCloudASROption) media.MediaHandlerFunc {
 	recognizer.VoiceFormat = opt.Format
 
 	executor.ConcurrentMode = false // QCloud ASR write is not blocking so we need to set this to false
-	executor.RequestBuilder = func(h media.MediaHandler, packet media.MediaPacket) (*media.PacketRequest[[]byte], error) {
-		audioPacket, ok := packet.(*media.AudioPacket)
+	executor.RequestBuilder = func(h media2.MediaHandler, packet media2.MediaPacket) (*media2.PacketRequest[[]byte], error) {
+		audioPacket, ok := packet.(*media2.AudioPacket)
 		if !ok {
 			h.EmitPacket(asq, packet)
 			return nil, nil
@@ -71,19 +71,19 @@ func WithQCloudASR(opt QCloudASROption) media.MediaHandlerFunc {
 		if asq.Handler == nil {
 			asq.Handler = h
 		}
-		req := media.PacketRequest[[]byte]{
+		req := media2.PacketRequest[[]byte]{
 			Req:       audioPacket.Payload,
 			Interrupt: true,
 		}
 		return &req, nil
 	}
 
-	executor.InitCallback = func(h media.MediaHandler) error {
+	executor.InitCallback = func(h media2.MediaHandler) error {
 		asq.Handler = h
 		return recognizer.Start()
 	}
 
-	executor.TerminateCallback = func(h media.MediaHandler) error {
+	executor.TerminateCallback = func(h media2.MediaHandler) error {
 		err := recognizer.Stop()
 		if err != nil && err.Error() == "recognizer is not running" {
 			return nil
@@ -91,25 +91,25 @@ func WithQCloudASR(opt QCloudASROption) media.MediaHandlerFunc {
 		return err
 	}
 
-	executor.StateCallback = func(h media.MediaHandler, event media.StateChange) error {
+	executor.StateCallback = func(h media2.MediaHandler, event media2.StateChange) error {
 		switch event.State {
-		case media.Hangup:
+		case media2.Hangup:
 			err := recognizer.Stop()
 			if err != nil && err.Error() == "recognizer is not running" {
 				return nil
 			}
 			return err
-		case media.StartSilence:
+		case media2.StartSilence:
 			n := time.Now()
 			asq.endReqTime = &n
-		case media.StartSpeaking:
+		case media2.StartSpeaking:
 			n := time.Now()
 			asq.sendReqTime = &n
 		}
 		return nil
 	}
 
-	executor.TaskExecutor = func(ctx context.Context, h media.MediaHandler, req media.PacketRequest[[]byte]) error {
+	executor.TaskExecutor = func(ctx context.Context, h media2.MediaHandler, req media2.PacketRequest[[]byte]) error {
 		if asq.sendReqTime == nil {
 			n := time.Now()
 			asq.sendReqTime = &n
@@ -192,12 +192,12 @@ func (asq *QCloudASR) OnRecognitionComplete(response *asr.SpeechRecognitionRespo
 
 	// 如果没有 transcribeResult 回调，尝试使用 Handler
 	if asq.Handler != nil {
-		packet := &media.TextPacket{
+		packet := &media2.TextPacket{
 			Text:          finalSentence,
 			IsTranscribed: true,
 		}
 		asq.Handler.EmitPacket(asq.Handler, packet)
-		asq.Handler.EmitState(asq, media.Completed, &media.CompletedData{
+		asq.Handler.EmitState(asq, media2.Completed, &media2.CompletedData{
 			SenderName: "asr.qcloud",
 			Result:     finalSentence,
 			Duration:   time.Since(*asq.sendReqTime),
@@ -288,6 +288,7 @@ func (asq *QCloudASR) ConnAndReceive(dialogID string) error {
 	err := recognizer.Start()
 	if err != nil {
 		logrus.WithError(err).Error("qcloud: recognizer.Start")
+		return err
 	}
 	asq.recognizer = recognizer
 	now := time.Now()
@@ -314,11 +315,12 @@ func (asq *QCloudASR) SendAudioBytes(data []byte) error {
 }
 
 func (asq *QCloudASR) SendEnd() error {
-	if asq.recognizer != nil {
-		_ = asq.recognizer.Stop()
-		asq.recognizer = nil
+	if asq.recognizer == nil {
+		return fmt.Errorf("腾讯云 ASR 会话未建立（Start 未成功或已释放），无法发送结束帧")
 	}
-	return nil
+	err := asq.recognizer.Stop()
+	asq.recognizer = nil
+	return err
 }
 
 func (asq *QCloudASR) StopConn() error {

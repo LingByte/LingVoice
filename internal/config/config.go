@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/logger"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 	"github.com/LingByte/lingstorage-sdk-go"
 )
 
@@ -176,7 +176,7 @@ var GlobalStore *lingstorage.Client
 func Load() error {
 	// 1. Load .env file based on environment (don't error if it doesn't exist, use default values)
 	env := os.Getenv("MODE")
-	err := utils.LoadEnv(env)
+	err := base.LoadEnv(env)
 	if err != nil {
 		// Only log when .env file doesn't exist, don't affect startup
 		log.Printf("Note: .env file not found or failed to load: %v (using default values)", err)
@@ -184,7 +184,7 @@ func Load() error {
 
 	// 2. Load global configuration
 	GlobalConfig = &Config{
-		MachineID: utils.GetIntEnv("MACHINE_ID"),
+		MachineID: base.GetIntEnv("MACHINE_ID"),
 		Server: ServerConfig{
 			Name:        getStringOrDefault("SERVER_NAME", ""),
 			Desc:        getStringOrDefault("SERVER_DESC", ""),
@@ -281,7 +281,7 @@ func (c *Config) Validate() error {
 
 // getStringOrDefault gets environment variable value, returns default if empty
 func getStringOrDefault(key, defaultValue string) string {
-	value := utils.GetEnv(key)
+	value := base.GetEnv(key)
 	if value == "" {
 		return defaultValue
 	}
@@ -290,16 +290,16 @@ func getStringOrDefault(key, defaultValue string) string {
 
 // getBoolOrDefault gets boolean environment variable value, returns default if empty
 func getBoolOrDefault(key string, defaultValue bool) bool {
-	value := utils.GetEnv(key)
+	value := base.GetEnv(key)
 	if value == "" {
 		return defaultValue
 	}
-	return utils.GetBoolEnv(key)
+	return base.GetBoolEnv(key)
 }
 
 // getIntOrDefault gets integer environment variable value, returns default if empty
 func getIntOrDefault(key string, defaultValue int) int {
-	value := utils.GetIntEnv(key)
+	value := base.GetIntEnv(key)
 	if value == 0 {
 		return defaultValue
 	}
@@ -308,7 +308,7 @@ func getIntOrDefault(key string, defaultValue int) int {
 
 // getInt64EnvParsed parses int64 from env; empty string returns default; allows explicit 0 (unlike getIntOrDefault).
 func getInt64EnvParsed(key string, defaultValue int64) int64 {
-	s := strings.TrimSpace(utils.GetEnv(key))
+	s := strings.TrimSpace(base.GetEnv(key))
 	if s == "" {
 		return defaultValue
 	}
@@ -321,7 +321,7 @@ func getInt64EnvParsed(key string, defaultValue int64) int64 {
 
 // getFloatOrDefault gets float environment variable value, returns default if empty
 func getFloatOrDefault(key string, defaultValue float64) float64 {
-	value := utils.GetEnv(key)
+	value := base.GetEnv(key)
 	if value == "" {
 		return defaultValue
 	}
@@ -347,12 +347,12 @@ func parseDuration(s string, defaultVal time.Duration) time.Duration {
 // generateDefaultSessionSecret returns SESSION_SECRET from env when set; otherwise a default.
 // Non-production uses a stable default so local restarts do not invalidate existing session cookies.
 func generateDefaultSessionSecret() string {
-	if secret := utils.GetEnv("SESSION_SECRET"); secret != "" {
+	if secret := base.GetEnv("SESSION_SECRET"); secret != "" {
 		return secret
 	}
-	mode := strings.ToLower(strings.TrimSpace(utils.GetEnv("MODE")))
+	mode := strings.ToLower(strings.TrimSpace(base.GetEnv("MODE")))
 	if mode == "production" {
-		return "default-secret-key-change-in-production-" + utils.RandText(16)
+		return "default-secret-key-change-in-production-" + base.RandText(16)
 	}
 	return "default-dev-session-secret-not-for-production"
 }

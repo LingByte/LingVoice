@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/LingByte/LingVoice"
 	"github.com/LingByte/LingVoice/internal/listeners"
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/middleware"
 	"github.com/LingByte/LingVoice/pkg/notification/mail"
-	"github.com/LingByte/LingVoice/pkg/response"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -79,11 +79,6 @@ func (h *Handlers) openAPIMailTemplateCreateHandler(c *gin.Context) {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
 		return
 	}
-	plain := utils.HTMLToPlainText(req.HTMLBody)
-	vars := strings.TrimSpace(req.Variables)
-	if vars == "" {
-		vars = utils.DeriveTemplateVariables(req.HTMLBody, plain)
-	}
 	orgID := uint(0)
 	if cred.UserId > 0 {
 		var u models.User
@@ -96,18 +91,16 @@ func (h *Handlers) openAPIMailTemplateCreateHandler(c *gin.Context) {
 		OrgID:       orgID,
 		Code:        req.Code,
 		Name:        req.Name,
-		HTMLBody:    req.HTMLBody,
-		TextBody:    plain,
 		Description: req.Description,
-		Variables:   vars,
 		Locale:      req.Locale,
 		Enabled:     true,
 	}
+	models.ApplyMailTemplateHTMLDerivedFields(&tpl, req.HTMLBody, req.Variables)
 	if req.Enabled != nil {
 		tpl.Enabled = *req.Enabled
 	}
 	tpl.SetCreateInfo(fmt.Sprintf("openapi-credential:%d", cred.Id))
-	if err := h.db.Create(&tpl).Error; err != nil {
+	if err := models.CreateMailTemplate(h.db, &tpl); err != nil {
 		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
 		return
 	}
@@ -139,8 +132,8 @@ func (h *Handlers) openAPIMailSendHandler(c *gin.Context) {
 			orgID = u.DefaultOrgID
 		}
 	}
-	var tpl models.MailTemplate
-	if err := h.db.First(&tpl, body.TemplateID).Error; err != nil {
+	tpl, err := models.GetMailTemplateByID(h.db, body.TemplateID)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithCode(c, 404, "模版不存在", nil)
 			return
@@ -160,7 +153,7 @@ func (h *Handlers) openAPIMailSendHandler(c *gin.Context) {
 	if params == nil {
 		params = map[string]any{}
 	}
-	htmlOut, err := utils.RenderMailHTML(tpl.HTMLBody, params)
+	htmlOut, err := LingVoice.RenderMailHTML(tpl.HTMLBody, params)
 	if err != nil {
 		response.FailWithCode(c, 400, "正文模版渲染失败", gin.H{"error": err.Error()})
 		return
@@ -172,16 +165,31 @@ func (h *Handlers) openAPIMailSendHandler(c *gin.Context) {
 			subject = tpl.Code
 		}
 	} else if strings.Contains(subject, "{{") {
-		subject, err = utils.RenderMailText(subject, params)
+		subject, err = LingVoice.RenderMailText(subject, params)
 		if err != nil {
 			response.FailWithCode(c, 400, "主题模版渲染失败", gin.H{"error": err.Error()})
 			return
 		}
 		subject = strings.TrimSpace(subject)
 	}
-	if !cred.UnlimitedQuota && cred.RemainQuota <= 0 {
-		response.FailWithCode(c, 403, "额度不足", nil)
+	if !models.CredentialHasRemainingQuota(cred) {
+		response.FailWithCode(c, 403, "该邮件 API 凭证剩余额度已用尽", gin.H{"reason": models.OpenAPIQuotaReasonCredentialExhausted})
 		return
+	}
+	if cred.UserId > 0 {
+		ok, uerr := models.UserHasSpendableQuota(h.db, uint(cred.UserId))
+		if uerr != nil {
+			if errors.Is(uerr, gorm.ErrRecordNotFound) {
+				response.FailWithCode(c, 403, "API Key 所属用户不存在", gin.H{"reason": models.OpenAPIQuotaReasonUserNotFound})
+				return
+			}
+			response.FailWithCode(c, 500, "校验用户额度失败", gin.H{"error": uerr.Error()})
+			return
+		}
+		if !ok {
+			response.FailWithCode(c, 403, "所属用户账户剩余额度已用尽", gin.H{"reason": models.OpenAPIQuotaReasonUserExhausted})
+			return
+		}
 	}
 
 	cfgs, err := listeners.EnabledMailConfigs(h.db)
@@ -201,19 +209,7 @@ func (h *Handlers) openAPIMailSendHandler(c *gin.Context) {
 		return
 	}
 
-	if !cred.UnlimitedQuota {
-		if err := h.db.Model(&models.Credential{}).Where("id = ? AND remain_quota > ?", cred.Id, 0).
-			Update("remain_quota", gorm.Expr("remain_quota - ?", 1)).Error; err != nil {
-			_ = err
-		}
-		if err := h.db.Model(&models.Credential{}).Where("id = ?", cred.Id).
-			Update("used_quota", gorm.Expr("used_quota + ?", 1)).Error; err != nil {
-			_ = err
-		}
-	} else {
-		_ = h.db.Model(&models.Credential{}).Where("id = ?", cred.Id).
-			Update("used_quota", gorm.Expr("used_quota + ?", 1)).Error
-	}
+	_ = models.BumpCredentialUsedAndDecrementRemain(h.db, cred.Id, cred.UnlimitedQuota, 1)
 
 	response.Success(c, "已发送", gin.H{
 		"to":          to,

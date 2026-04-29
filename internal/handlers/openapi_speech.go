@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,9 +19,10 @@ import (
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/middleware"
-	"github.com/LingByte/LingVoice/pkg/response"
+	"github.com/LingByte/LingVoice/pkg/recognizer"
 	"github.com/LingByte/LingVoice/pkg/synthesizer"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
+	"github.com/LingByte/LingVoice/pkg/utils/system"
 	lingstorage "github.com/LingByte/lingstorage-sdk-go"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -156,9 +158,26 @@ func pickTTSChannel(db *gorm.DB, cred *models.Credential, groupOverride string) 
 	return &ch, nil
 }
 
+func noChannelErrDetail(err error, kind, group string) string {
+	if err == nil {
+		return ""
+	}
+	g := strings.TrimSpace(group)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if g != "" {
+			return fmt.Sprintf("未找到可用 %s 渠道（group=%s）", kind, g)
+		}
+		return fmt.Sprintf("未找到可用 %s 渠道", kind)
+	}
+	if g != "" {
+		return fmt.Sprintf("选择 %s 渠道失败（group=%s）：%s", kind, g, err.Error())
+	}
+	return fmt.Sprintf("选择 %s 渠道失败：%s", kind, err.Error())
+}
+
 // openAPIAudioURLProtection 拉取用户音频 URL：黑名单域名模式 + 禁止私网 IP（含解析结果）。
-func openAPIAudioURLProtection() *utils.SSRFProtection {
-	return &utils.SSRFProtection{
+func openAPIAudioURLProtection() *system.SSRFProtection {
+	return &system.SSRFProtection{
 		AllowPrivateIp:         false,
 		DomainFilterMode:       false,
 		DomainList:             nil,
@@ -196,6 +215,130 @@ func fetchAudioBytesFromURL(ctx context.Context, rawURL string) ([]byte, error) 
 	return data, nil
 }
 
+func mergeASRTranscribeOptions(merged map[string]interface{}, body *OpenapiASRTranscribeReq) {
+	if body == nil {
+		return
+	}
+	if body.Extra != nil {
+		if m, ok := body.Extra.(map[string]interface{}); ok {
+			for k, v := range m {
+				k = strings.TrimSpace(k)
+				if k == "" || strings.EqualFold(k, "provider") {
+					continue
+				}
+				merged[k] = v
+			}
+		}
+	}
+	// 避免 LLM 等场景下的 "model" 误入腾讯云 engine_model_type。
+	delete(merged, "model")
+	f := strings.TrimSpace(body.Format)
+	if f != "" {
+		if _, ok := merged["format"]; !ok {
+			if _, ok2 := merged["voiceFormat"]; !ok2 {
+				merged["format"] = f
+			}
+		}
+	}
+}
+
+func bindAndLoadOpenAPIASRAudio(c *gin.Context) (OpenapiASRTranscribeReq, []byte, string, error) {
+	ct := strings.ToLower(strings.TrimSpace(c.ContentType()))
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		if err := c.Request.ParseMultipartForm(int64(maxOpenAPIAudioFetchBytes)); err != nil {
+			return OpenapiASRTranscribeReq{}, nil, "", fmt.Errorf("解析 multipart 失败: %w", err)
+		}
+		var body OpenapiASRTranscribeReq
+		body.Group = strings.TrimSpace(c.PostForm("group"))
+		body.Format = strings.TrimSpace(c.PostForm("format"))
+		body.Language = strings.TrimSpace(c.PostForm("language"))
+		if ex := strings.TrimSpace(c.PostForm("extra")); ex != "" {
+			var raw any
+			if err := json.Unmarshal([]byte(ex), &raw); err == nil {
+				body.Extra = raw
+			}
+		}
+		file, ferr := c.FormFile("audio")
+		url := strings.TrimSpace(c.PostForm("audio_url"))
+		b64 := strings.TrimSpace(c.PostForm("audio_base64"))
+		n := 0
+		if ferr == nil && file != nil {
+			n++
+		}
+		if url != "" {
+			n++
+		}
+		if b64 != "" {
+			n++
+		}
+		if n > 1 {
+			return body, nil, "", fmt.Errorf("音频来源请只选一种：表单文件 audio、audio_url 或 audio_base64")
+		}
+		if ferr == nil && file != nil {
+			f, err := file.Open()
+			if err != nil {
+				return body, nil, "", err
+			}
+			defer f.Close()
+			data, err := io.ReadAll(io.LimitReader(f, maxOpenAPIAudioFetchBytes+1))
+			if err != nil {
+				return body, nil, "", err
+			}
+			if len(data) > maxOpenAPIAudioFetchBytes {
+				return body, nil, "", fmt.Errorf("audio 超过大小限制 %d 字节", maxOpenAPIAudioFetchBytes)
+			}
+			return body, data, "upload", nil
+		}
+		if url != "" {
+			body.AudioURL = url
+			data, err := fetchAudioBytesFromURL(c.Request.Context(), url)
+			if err != nil {
+				return body, nil, "url", err
+			}
+			return body, data, "url", nil
+		}
+		if b64 != "" {
+			raw, decErr := base64.StdEncoding.DecodeString(b64)
+			if decErr != nil {
+				return body, nil, "", fmt.Errorf("audio_base64 解码失败: %w", decErr)
+			}
+			if len(raw) > maxOpenAPIAudioFetchBytes {
+				return body, nil, "", fmt.Errorf("audio 超过大小限制 %d 字节", maxOpenAPIAudioFetchBytes)
+			}
+			body.AudioBase64 = b64
+			return body, raw, "base64", nil
+		}
+		return body, nil, "", fmt.Errorf("请上传表单文件字段 audio，或提供 audio_url / audio_base64")
+	}
+
+	var body OpenapiASRTranscribeReq
+	if err := c.ShouldBindJSON(&body); err != nil {
+		return body, nil, "", err
+	}
+	src, err := resolveASRAudioInput(&body)
+	if err != nil {
+		return body, nil, "", err
+	}
+	var audio []byte
+	if src == "base64" {
+		raw, decErr := base64.StdEncoding.DecodeString(strings.TrimSpace(body.AudioBase64))
+		if decErr != nil {
+			return body, nil, "", fmt.Errorf("audio_base64 解码失败: %w", decErr)
+		}
+		if len(raw) > maxOpenAPIAudioFetchBytes {
+			return body, nil, "", fmt.Errorf("audio 超过大小限制 %d 字节", maxOpenAPIAudioFetchBytes)
+		}
+		audio = raw
+	} else {
+		data, ferr := fetchAudioBytesFromURL(c.Request.Context(), strings.TrimSpace(body.AudioURL))
+		if ferr != nil {
+			return body, nil, src, ferr
+		}
+		audio = data
+	}
+	return body, audio, src, nil
+}
+
 func resolveASRAudioInput(body *OpenapiASRTranscribeReq) (source string, err error) {
 	b64 := strings.TrimSpace(body.AudioBase64)
 	u := strings.TrimSpace(body.AudioURL)
@@ -229,49 +372,79 @@ func (h *Handlers) openAPIASRTranscribeHandler(c *gin.Context) {
 		return
 	}
 	started := time.Now()
-	var body OpenapiASRTranscribeReq
-	if err := c.ShouldBindJSON(&body); err != nil {
-		h.recordOpenAPIASRUsage(c, started, cred, nil, 400, false, err.Error(), nil, gin.H{"error": err.Error()}, 0, "")
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
-		return
-	}
-	src, err := resolveASRAudioInput(&body)
+	body, audio, src, err := bindAndLoadOpenAPIASRAudio(c)
 	if err != nil {
-		h.recordOpenAPIASRUsage(c, started, cred, nil, 400, false, err.Error(), &body, gin.H{"error": err.Error()}, 0, "")
-		response.FailWithCode(c, 400, err.Error(), nil)
+		h.recordOpenAPIASRUsage(c, started, cred, nil, 400, false, err.Error(), nilIfASRBodyEmpty(body), gin.H{"error": err.Error()}, 0, "")
+		response.FailWithCode(c, 400, err.Error(), gin.H{"error": err.Error()})
 		return
 	}
-	audioLen := 0
-	if src == "base64" {
-		raw, _ := base64.StdEncoding.DecodeString(strings.TrimSpace(body.AudioBase64))
-		audioLen = len(raw)
-	} else {
-		data, ferr := fetchAudioBytesFromURL(c.Request.Context(), strings.TrimSpace(body.AudioURL))
-		if ferr != nil {
-			h.recordOpenAPIASRUsage(c, started, cred, nil, 400, false, ferr.Error(), &body, gin.H{"error": ferr.Error()}, 0, src)
-			response.FailWithCode(c, 400, "拉取 audio_url 失败", gin.H{"error": ferr.Error()})
-			return
-		}
-		audioLen = len(data)
+	audioLen := len(audio)
+	if audioLen == 0 {
+		msg := "音频内容为空"
+		h.recordOpenAPIASRUsage(c, started, cred, nil, 400, false, msg, &body, gin.H{"error": msg}, 0, src)
+		response.FailWithCode(c, 400, msg, nil)
+		return
 	}
 	ch, err := pickASRChannel(h.db, cred, body.Group)
 	if err != nil {
-		h.recordOpenAPIASRUsage(c, started, cred, nil, 503, false, err.Error(), &body, gin.H{"error": err.Error()}, int64(audioLen), src)
-		response.FailWithCode(c, 503, "无可用 ASR 渠道", gin.H{"error": err.Error()})
+		errDetail := noChannelErrDetail(err, "ASR", body.Group)
+		h.recordOpenAPIASRUsage(c, started, cred, nil, 503, false, errDetail, &body, gin.H{"error": errDetail}, int64(audioLen), src)
+		response.FailWithCode(c, 503, "无可用 ASR 渠道", gin.H{"error": errDetail})
 		return
 	}
+	merged := map[string]interface{}{
+		"provider": strings.ToLower(strings.TrimSpace(ch.Provider)),
+	}
+	if strings.TrimSpace(ch.ConfigJSON) != "" {
+		var extra map[string]interface{}
+		if err := json.Unmarshal([]byte(ch.ConfigJSON), &extra); err != nil {
+			h.recordOpenAPIASRUsage(c, started, cred, ch, 500, false, err.Error(), &body, gin.H{"error": err.Error()}, int64(audioLen), src)
+			response.FailWithCode(c, 500, "渠道 configJson 无效", gin.H{"error": err.Error()})
+			return
+		}
+		for k, v := range extra {
+			merged[k] = v
+		}
+	}
+	mergeASRTranscribeOptions(merged, &body)
+
+	lang := strings.TrimSpace(body.Language)
+	text, recErr := recognizer.RecognizeOpenAPIOnce(c.Request.Context(), ch.Provider, merged, audio, lang)
+	if recErr != nil {
+		errMsg := recErr.Error()
+		h.recordOpenAPIASRUsage(c, started, cred, ch, 502, false, errMsg, &body, gin.H{"error": errMsg}, int64(audioLen), src)
+		publicMsg := strings.TrimSpace(errMsg)
+		if publicMsg == "" {
+			publicMsg = "语音识别失败"
+		}
+		response.FailWithCode(c, 502, publicMsg, gin.H{"error": errMsg})
+		return
+	}
+
 	out := gin.H{
-		"text":         "",
+		"text":         text,
 		"segments":     []any{},
 		"provider":     ch.Provider,
 		"channel_id":   ch.ID,
 		"group":        ch.Group,
 		"audio_source": src,
 		"audio_bytes":  audioLen,
-		"message":      "HTTP 单次 ASR 已选路并完成音频入参校验；转写需接入 recognizer 流水线。",
+	}
+	if strings.TrimSpace(text) == "" {
+		out["message"] = "未识别到有效文本（可检查音频格式与渠道 configJson 中的 model/format 是否与内容一致）"
+	} else {
+		out["message"] = ""
 	}
 	h.recordOpenAPIASRUsage(c, started, cred, ch, 200, true, "", &body, out, int64(audioLen), src)
 	response.Success(c, "ok", out)
+}
+
+func nilIfASRBodyEmpty(body OpenapiASRTranscribeReq) *OpenapiASRTranscribeReq {
+	if strings.TrimSpace(body.Group) == "" && strings.TrimSpace(body.Format) == "" && strings.TrimSpace(body.Language) == "" &&
+		strings.TrimSpace(body.AudioURL) == "" && strings.TrimSpace(body.AudioBase64) == "" && body.Extra == nil {
+		return nil
+	}
+	return &body
 }
 
 type ttsBufferHandler struct {
@@ -306,6 +479,28 @@ func (h *Handlers) openAPITTSSynthesizeHandler(c *gin.Context) {
 		response.FailWithCode(c, 401, "未授权", nil)
 		return
 	}
+	// Defense-in-depth: middleware 已校验一次，这里再做一次数据库级别校验，避免并发/脏上下文放行。
+	var freshCred models.Credential
+	if err := h.db.Where("id = ? AND status = ? AND kind = ?", cred.Id, 1, models.CredentialKindTTS).First(&freshCred).Error; err != nil {
+		response.FailWithCode(c, 401, "无效或已禁用的 TTS 凭证", nil)
+		return
+	}
+	if !models.CredentialHasRemainingQuota(&freshCred) {
+		response.FailWithCode(c, 403, "该 TTS 凭证剩余额度不足", gin.H{"reason": models.OpenAPIQuotaReasonCredentialExhausted})
+		return
+	}
+	if freshCred.UserId > 0 {
+		okUser, err := models.UserHasSpendableQuota(h.db, uint(freshCred.UserId))
+		if err != nil {
+			response.FailWithCode(c, 500, "校验用户额度失败", gin.H{"error": err.Error()})
+			return
+		}
+		if !okUser {
+			response.FailWithCode(c, 403, "所属用户账户剩余额度不足", gin.H{"reason": models.OpenAPIQuotaReasonUserExhausted})
+			return
+		}
+	}
+	cred = &freshCred
 	started := time.Now()
 	var body OpenapiTTSSynthesizeReq
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -323,8 +518,9 @@ func (h *Handlers) openAPITTSSynthesizeHandler(c *gin.Context) {
 	outMode := normalizeTTSResponseType(body.ResponseType, body.Output)
 	ch, err := pickTTSChannel(h.db, cred, body.Group)
 	if err != nil {
-		h.recordOpenAPITTSUsage(c, started, cred, nil, 503, false, err.Error(), &body, nil, gin.H{"error": err.Error()}, 0, textChars)
-		response.FailWithCode(c, 503, "无可用 TTS 渠道", gin.H{"error": err.Error()})
+		errDetail := noChannelErrDetail(err, "TTS", body.Group)
+		h.recordOpenAPITTSUsage(c, started, cred, nil, 503, false, errDetail, &body, nil, gin.H{"error": errDetail}, 0, textChars)
+		response.FailWithCode(c, 503, "无可用 TTS 渠道", gin.H{"error": errDetail})
 		return
 	}
 	merged := map[string]interface{}{

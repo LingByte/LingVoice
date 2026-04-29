@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
@@ -25,7 +25,7 @@ const (
 )
 
 type BaiduASR struct {
-	handler     media.MediaHandler
+	handler     media2.MediaHandler
 	conn        *websocket.Conn
 	opt         BaiduASROption
 	ttfbDone    bool
@@ -99,14 +99,14 @@ func NewBeginParam(opt BaiduASROption) BaiduASRBeginParam {
 	}
 }
 
-func WithBaiduASR(opt BaiduASROption) media.MediaHandlerFunc {
-	executor := media.NewAsyncTaskRunner[*media.AudioPacket](opt.ReqChanSize)
+func WithBaiduASR(opt BaiduASROption) media2.MediaHandlerFunc {
+	executor := media2.NewAsyncTaskRunner[*media2.AudioPacket](opt.ReqChanSize)
 
 	baidu := &BaiduASR{}
 
 	executor.ConcurrentMode = true
-	executor.RequestBuilder = func(h media.MediaHandler, packet media.MediaPacket) (*media.PacketRequest[*media.AudioPacket], error) {
-		audioPacket, ok := packet.(*media.AudioPacket)
+	executor.RequestBuilder = func(h media2.MediaHandler, packet media2.MediaPacket) (*media2.PacketRequest[*media2.AudioPacket], error) {
+		audioPacket, ok := packet.(*media2.AudioPacket)
 		if !ok {
 			h.EmitPacket(baidu, packet)
 			return nil, nil
@@ -114,15 +114,15 @@ func WithBaiduASR(opt BaiduASROption) media.MediaHandlerFunc {
 		if baidu.handler == nil {
 			baidu.handler = h
 		}
-		audioPacket.Payload, _ = media.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
-		req := media.PacketRequest[*media.AudioPacket]{
+		audioPacket.Payload, _ = media2.ResamplePCM(audioPacket.Payload, h.GetSession().Codec().SampleRate, 16000)
+		req := media2.PacketRequest[*media2.AudioPacket]{
 			Req:       audioPacket,
 			Interrupt: true,
 		}
 		return &req, nil
 	}
 
-	executor.InitCallback = func(h media.MediaHandler) error {
+	executor.InitCallback = func(h media2.MediaHandler) error {
 		var err error
 		url := fmt.Sprintf("%s?sn=%s", opt.Url, opt.CuId)
 		baidu.conn, _, err = websocket.DefaultDialer.Dial(url, nil)
@@ -145,19 +145,19 @@ func WithBaiduASR(opt BaiduASROption) media.MediaHandlerFunc {
 		return nil
 	}
 
-	executor.TerminateCallback = func(h media.MediaHandler) error {
+	executor.TerminateCallback = func(h media2.MediaHandler) error {
 		return baidu.close()
 	}
 
-	executor.StateCallback = func(h media.MediaHandler, event media.StateChange) error {
+	executor.StateCallback = func(h media2.MediaHandler, event media2.StateChange) error {
 		switch event.State {
-		case media.Hangup:
+		case media2.Hangup:
 			return baidu.conn.WriteMessage(websocket.TextMessage, finishMessage)
 		}
 		return nil
 	}
 
-	executor.TaskExecutor = func(ctx context.Context, h media.MediaHandler, req media.PacketRequest[*media.AudioPacket]) error {
+	executor.TaskExecutor = func(ctx context.Context, h media2.MediaHandler, req media2.PacketRequest[*media2.AudioPacket]) error {
 		if baidu.sendReqTime == nil {
 			n := time.Now()
 			baidu.sendReqTime = &n
@@ -235,15 +235,15 @@ func (baidu *BaiduASR) recvFrames() {
 		}).Info("baidu asr: recv frame.")
 
 		if resp.Type == midText {
-			baidu.handler.EmitState(baidu, media.Transcribing, baidu.Sentence)
+			baidu.handler.EmitState(baidu, media2.Transcribing, baidu.Sentence)
 		}
 
 		if resp.Type == finText {
-			packet := &media.TextPacket{
+			packet := &media2.TextPacket{
 				Text:          baidu.Sentence,
 				IsTranscribed: true,
 			}
-			baidu.handler.EmitState(baidu, media.Completed, baidu.Sentence)
+			baidu.handler.EmitState(baidu, media2.Completed, baidu.Sentence)
 			baidu.handler.EmitPacket(baidu, packet)
 		}
 	}

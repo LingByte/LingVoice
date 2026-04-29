@@ -3,6 +3,7 @@ package LingVoice
 import (
 	"bytes"
 	"embed"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"mime"
@@ -12,12 +13,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	texttemplate "text/template"
 
 	"github.com/gin-gonic/gin"
 )
 
 // Copyright (c) 2026 LingByte. All rights reserved.
 // SPDX-License-Identifier: AGPL-3.0
+
+//go:embed templates/html/*.html
+var files embed.FS
 
 //go:embed all:web/dist
 var EmbedWebAssets embed.FS
@@ -206,4 +211,77 @@ func RenderNotFoundPage(c *gin.Context, path, method string) {
 		return
 	}
 	c.Data(http.StatusNotFound, "text/html; charset=utf-8", buf.Bytes())
+}
+
+// 嵌入模版路径（相对本包 embed 根）。
+const (
+	TplEmailLoginCode     = "html/email_login_code.html"
+	TplEmailVerification  = "html/email_verification.html"
+	TplVerification       = "html/verification.html"
+	TplPasswordReset      = "html/password_reset.html"
+	TplWelcome            = "html/welcome.html"
+	TplNewDeviceLogin     = "html/new_device_login.html"
+	TplDeviceVerification = "html/device_verification.html"
+	TplGroupInvitation    = "html/group_invitation.html"
+)
+
+// UsernameFromEmail 用邮箱 @ 前作为称呼占位。
+func UsernameFromEmail(email string) string {
+	email = strings.TrimSpace(strings.ToLower(email))
+	i := strings.IndexByte(email, '@')
+	if i <= 0 || i >= len(email)-1 {
+		return ""
+	}
+	return email[:i]
+}
+
+// RenderHTML 读取嵌入文件并用 html/template 渲染（自动转义文本字段）。
+func RenderHTML(relPath string, data any) (string, error) {
+	relPath = strings.TrimPrefix(relPath, "/")
+	b, err := files.ReadFile(relPath)
+	if err != nil {
+		return "", fmt.Errorf("mailstatic: read %q: %w", relPath, err)
+	}
+	name := path.Base(relPath)
+	t, err := template.New(name).Parse(string(b))
+	if err != nil {
+		return "", fmt.Errorf("mailstatic: parse %q: %w", relPath, err)
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("mailstatic: execute %q: %w", relPath, err)
+	}
+	return buf.String(), nil
+}
+
+// RenderMailHTML 使用 html/template 渲染邮件 HTML（占位符与模版中 {{.Key}} 一致，自动转义值）。
+func RenderMailHTML(tplStr string, data map[string]any) (string, error) {
+	if data == nil {
+		data = map[string]any{}
+	}
+	t, err := template.New("mail_html").Option("missingkey=zero").Parse(tplStr)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// RenderMailText 使用 text/template 渲染纯文本主题等（占位符 {{.Key}}；未传键按 zero 处理）。
+func RenderMailText(tplStr string, data map[string]any) (string, error) {
+	if data == nil {
+		data = map[string]any{}
+	}
+	t, err := texttemplate.New("mail_text").Option("missingkey=zero").Parse(tplStr)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }

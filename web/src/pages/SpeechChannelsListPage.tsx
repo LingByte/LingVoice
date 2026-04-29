@@ -37,6 +37,7 @@ import {
   speechProvidersForKind,
   type SpeechConfigField,
 } from '@/config/speechProviders'
+import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 
 const { Title, Paragraph } = Typography
 const FormItem = Form.Item
@@ -348,10 +349,30 @@ export function SpeechChannelsListPage(props: {
         pagination={false}
         scroll={{ x: 900 }}
         columns={[
-          { title: 'ID', dataIndex: 'id', width: 72 },
-          { title: '厂商', dataIndex: 'provider', width: 140, ellipsis: true },
-          { title: '名称', dataIndex: 'name', width: 180, ellipsis: true },
-          { title: '分组', dataIndex: 'group', width: 120, ellipsis: true },
+          {
+            title: 'ID',
+            dataIndex: 'id',
+            width: 90,
+            render: (v: string) => <EllipsisCopyText text={v} maxWidth={72} copiedTip="ID 已复制" tooltipMaxLen={96} />,
+          },
+          {
+            title: '厂商',
+            dataIndex: 'provider',
+            width: 140,
+            render: (v: string) => <EllipsisCopyText text={v} maxWidth={124} copiedTip="厂商已复制" />,
+          },
+          {
+            title: '名称',
+            dataIndex: 'name',
+            width: 180,
+            render: (v: string) => <EllipsisCopyText text={v} maxWidth={164} copiedTip="名称已复制" />,
+          },
+          {
+            title: '分组',
+            dataIndex: 'group',
+            width: 120,
+            render: (v: string) => <EllipsisCopyText text={v ?? ''} maxWidth={104} copiedTip="分组已复制" />,
+          },
           { title: '排序', dataIndex: 'sortOrder', width: 72 },
           {
             title: '启用',
@@ -359,7 +380,12 @@ export function SpeechChannelsListPage(props: {
             width: 72,
             render: (v: boolean) => (v ? '是' : '否'),
           },
-          { title: '更新', dataIndex: 'updateAt', width: 168, ellipsis: true },
+          {
+            title: '更新',
+            dataIndex: 'updateAt',
+            width: 168,
+            render: (v?: string) => <EllipsisCopyText text={v ?? ''} maxWidth={152} copyable={false} />,
+          },
           {
             title: '操作',
             width: 140,

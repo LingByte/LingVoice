@@ -9,8 +9,8 @@ import (
 
 	texttospeech "cloud.google.com/go/texttospeech/apiv1"
 	"cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/sirupsen/logrus"
 )
 
@@ -54,12 +54,12 @@ func NewGoogleService(opt GoogleTTSOption) *GoogleService {
 	}
 }
 
-func (gs *GoogleService) Format() media.StreamFormat {
-	return media.StreamFormat{
+func (gs *GoogleService) Format() media2.StreamFormat {
+	return media2.StreamFormat{
 		Channels:      gs.opt.Channels,
 		SampleRate:    gs.opt.SampleRate,
 		BitDepth:      gs.opt.BitDepth,
-		FrameDuration: utils.NormalizeFramePeriod(gs.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(gs.opt.FrameDuration),
 	}
 }
 
@@ -72,7 +72,7 @@ type googleSpeechSynthesisListener struct {
 }
 
 func (gs *GoogleService) CacheKey(text string) string {
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("google.tts-%s-%d-%s.pcm", gs.opt.LanguageCode, gs.opt.AudioEncoding, digest)
 }
 

@@ -6,7 +6,7 @@ package bootstrap
 import (
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 	"gorm.io/gorm"
 )
 
@@ -23,7 +23,7 @@ func (s *SeedService) SeedAll() error {
 
 func (s *SeedService) seedConfigs() error {
 	apiPrefix := config.GlobalConfig.Server.APIPrefix
-	defaults := []utils.Config{
+	defaults := []base.Config{
 		{Key: constants.KEY_SITE_URL, Desc: "Site URL", Autoload: true, Public: true, Format: "text", Value: func() string {
 			if config.GlobalConfig.Server.URL != "" {
 				return config.GlobalConfig.Server.URL
@@ -67,7 +67,7 @@ func (s *SeedService) seedConfigs() error {
 	}
 	for _, cfg := range defaults {
 		var count int64
-		err := s.db.Model(&utils.Config{}).Where("`key` = ?", cfg.Key).Count(&count).Error
+		err := s.db.Model(&base.Config{}).Where("`key` = ?", cfg.Key).Count(&count).Error
 		if err != nil {
 			return err
 		}

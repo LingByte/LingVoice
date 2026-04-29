@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/constants"
-	"github.com/LingByte/LingVoice/pkg/response"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -31,7 +31,7 @@ type BaseModel struct {
 // BeforeCreate GORM hook to generate snowflake ID before creating a record
 func (m *BaseModel) BeforeCreate(tx *gorm.DB) error {
 	if m.ID == 0 {
-		m.ID = utils.GenUintID()
+		m.ID = base.GenUintID()
 	}
 	return nil
 }

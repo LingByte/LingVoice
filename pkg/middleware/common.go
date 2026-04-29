@@ -9,7 +9,7 @@ import (
 
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-contrib/sessions/memstore"
@@ -65,20 +65,20 @@ func PoweredBy() gin.HandlerFunc {
 
 func sessionCookieOptions(maxAge int) sessions.Options {
 	secure := false
-	switch strings.ToLower(strings.TrimSpace(utils.GetEnv("SESSION_COOKIE_SECURE"))) {
+	switch strings.ToLower(strings.TrimSpace(base.GetEnv("SESSION_COOKIE_SECURE"))) {
 	case "true":
 		secure = true
 	case "false":
 		secure = false
 	default:
-		if strings.EqualFold(strings.TrimSpace(utils.GetEnv("APP_ENV")), "production") ||
-			strings.EqualFold(strings.TrimSpace(utils.GetEnv("GIN_MODE")), "release") {
+		if strings.EqualFold(strings.TrimSpace(base.GetEnv("APP_ENV")), "production") ||
+			strings.EqualFold(strings.TrimSpace(base.GetEnv("GIN_MODE")), "release") {
 			secure = true
 		}
 	}
 
 	var sameSite http.SameSite
-	switch strings.ToLower(strings.TrimSpace(utils.GetEnv("SESSION_SAMESITE"))) {
+	switch strings.ToLower(strings.TrimSpace(base.GetEnv("SESSION_SAMESITE"))) {
 	case "strict":
 		sameSite = http.SameSiteStrictMode
 	case "none":
@@ -109,7 +109,7 @@ func WithCookieSession(secret string, maxAge int) gin.HandlerFunc {
 }
 
 func GetCarrotSessionField() string {
-	v := utils.GetEnv(constants.ENV_SESSION_FIELD)
+	v := base.GetEnv(constants.ENV_SESSION_FIELD)
 	if v == "" {
 		return "lingecho"
 	}

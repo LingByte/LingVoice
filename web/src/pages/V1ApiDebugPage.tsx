@@ -1,5 +1,5 @@
 import { Alert, Button, Input, Message, Select, Space, Typography } from '@arco-design/web-react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getApiBaseURL } from '@/config/apiConfig'
 
 const { Title, Paragraph, Text } = Typography
@@ -122,16 +122,16 @@ const PRESETS: {
     ),
   },
   {
-    label: 'ASR transcribe（audio_base64，与 audio_url 二选一）',
+    label: 'ASR transcribe（JSON：audio_url 与 audio_base64 二选一；推荐本页「上传音频文件」走 multipart）',
     method: 'POST',
     path: '/v1/speech/asr/transcribe',
     authMode: 'asr',
     body: JSON.stringify(
       {
-        group: '',
-        audio_base64: '',
+        group: 'default',
         audio_url: '',
-        format: 'wav',
+        audio_base64: '',
+        format: 'mp3',
         language: 'zh-CN',
         extra: {},
       },
@@ -229,6 +229,17 @@ function useAnthropicStyleKeyHeader(requestPath: string): boolean {
   return p === '/v1/messages' || p.endsWith('/v1/messages')
 }
 
+function isHeaderLatin1Safe(v: string): boolean {
+  for (let i = 0; i < v.length; i++) {
+    if (v.charCodeAt(i) > 0xff) return false
+  }
+  return true
+}
+
+function hasHeaderControlChars(v: string): boolean {
+  return /[\u0000-\u001f\u007f]/.test(v)
+}
+
 export function V1ApiDebugPage() {
   const [apiKey, setApiKey] = useState('')
   const [authMode, setAuthMode] = useState<V1DebugAuthMode>('email')
@@ -238,11 +249,19 @@ export function V1ApiDebugPage() {
   const [sending, setSending] = useState(false)
   const [status, setStatus] = useState<number | null>(null)
   const [responseText, setResponseText] = useState('')
+  /** 与 JSON 中的 group/format/language/extra 一并用于 multipart ASR */
+  const [asrUploadFile, setAsrUploadFile] = useState<File | null>(null)
 
   const presetOptions = useMemo(
     () => PRESETS.map((p, i) => ({ label: p.label, value: String(i) })),
     [],
   )
+
+  useEffect(() => {
+    const p = path.trim().split('?')[0] ?? path.trim()
+    const isAsr = p === '/v1/speech/asr/transcribe' || p.endsWith('/v1/speech/asr/transcribe')
+    if (!isAsr) setAsrUploadFile(null)
+  }, [path])
 
   const applyPreset = useCallback((idxStr: string) => {
     const i = Number(idxStr)
@@ -251,6 +270,7 @@ export function V1ApiDebugPage() {
     setMethod(p.method)
     setPath(p.path)
     setAuthMode(p.authMode ?? 'email')
+    setAsrUploadFile(null)
     if (p.path === '/v1/mail-templates' && p.method === 'POST') {
       try {
         const o = JSON.parse(p.body || '{}') as Record<string, unknown>
@@ -290,6 +310,12 @@ export function V1ApiDebugPage() {
       const base = getApiBaseURL()
       const url = joinUrl(base, p)
       const headers: Record<string, string> = {}
+      if (!isHeaderLatin1Safe(key) || hasHeaderControlChars(key)) {
+        Message.error('API Key 包含非法字符（需使用可写入 HTTP Header 的 Latin-1/可见字符）')
+        setResponseText('API Key 包含非 ISO-8859-1 或控制字符，浏览器会拒绝写入请求头。请确认密钥未混入中文、换行或不可见字符。')
+        setSending(false)
+        return
+      }
       if (authMode === 'email') {
         const ts = Math.floor(Date.now() / 1000)
         const nonce = randomNonce()
@@ -306,8 +332,37 @@ export function V1ApiDebugPage() {
       }
       let init: RequestInit = { method, headers, credentials: 'omit' }
       if (method === 'POST') {
-        headers['Content-Type'] = 'application/json'
-        init = { ...init, body: body.trim() || '{}' }
+        const pth = path.trim().split('?')[0] ?? path.trim()
+        const isAsrTranscribe = pth === '/v1/speech/asr/transcribe' || pth.endsWith('/v1/speech/asr/transcribe')
+        if (isAsrTranscribe && asrUploadFile) {
+          let group = ''
+          let format = ''
+          let language = ''
+          let extraStr = ''
+          try {
+            const o = JSON.parse(body.trim() || '{}') as Record<string, unknown>
+            group = typeof o.group === 'string' ? o.group : ''
+            format = typeof o.format === 'string' ? o.format : ''
+            language = typeof o.language === 'string' ? o.language : ''
+            if (o.extra !== undefined && o.extra !== null) {
+              extraStr = JSON.stringify(o.extra)
+            }
+          } catch {
+            Message.warning('multipart ASR 需要 JSON Body 可解析，以读取 group、format、language、extra 字段')
+            setSending(false)
+            return
+          }
+          const fd = new FormData()
+          fd.set('group', group)
+          fd.set('format', format)
+          fd.set('language', language)
+          if (extraStr) fd.set('extra', extraStr)
+          fd.set('audio', asrUploadFile)
+          init = { ...init, body: fd }
+        } else {
+          headers['Content-Type'] = 'application/json'
+          init = { ...init, body: body.trim() || '{}' }
+        }
       }
       const res = await fetch(url, init)
       const text = await res.text()
@@ -336,8 +391,10 @@ export function V1ApiDebugPage() {
         <Text code>LAuthorization</Text>、<Text code>L-Timestamp</Text>、<Text code>L-Nonce</Text>，凭证 <Text code>kind=email</Text>
         。LLM：<Text code>POST /v1/chat/completions</Text>（OpenAI 协议，Bearer）与 <Text code>POST /v1/messages</Text>（Anthropic
         协议，推荐 <Text code>x-api-key</Text> 或 Bearer），凭证 <Text code>kind=llm</Text>，按凭证 <Text code>group</Text> 选用同组
-        LLM 渠道（协议须为 openai / anthropic）。语音：<Text code>POST /v1/speech/asr/transcribe</Text>（<Text code>kind=asr</Text>
-        ，Bearer），<Text code>audio_base64</Text> 与 <Text code>audio_url</Text> 二选一；{' '}
+        LLM 渠道（协议须为 openai / anthropic）        。语音：<Text code>POST /v1/speech/asr/transcribe</Text>（<Text code>kind=asr</Text>
+        ，Bearer）：<Text code>application/json</Text> 时 <Text code>audio_url</Text> 与 <Text code>audio_base64</Text> 二选一；推荐{' '}
+        <Text code>multipart/form-data</Text> 上传字段 <Text code>audio</Text>（文件），并附 <Text code>group</Text> / <Text code>format</Text> /{' '}
+        <Text code>language</Text> 等；{' '}
         <Text code>POST /v1/speech/tts/synthesize</Text>（<Text code>kind=tts</Text>，Bearer），<Text code>response_type</Text> 为{' '}
         <Text code>audio_base64</Text> 或 <Text code>url</Text>。发送邮件：<Text code>template_id</Text> + <Text code>params</Text>
         ，可选 <Text code>subject</Text>。
@@ -409,14 +466,40 @@ export function V1ApiDebugPage() {
           <Input value={path} onChange={setPath} placeholder="/v1/models" />
         </div>
         {method === 'POST' ? (
-          <div>
-            <Text className="mb-1 block text-[13px]">JSON Body</Text>
-            <Input.TextArea
-              value={body}
-              onChange={setBody}
-              autoSize={{ minRows: 8, maxRows: 20 }}
-              className="font-mono text-[12px]"
-            />
+          <div className="space-y-3">
+            {(path.trim().split('?')[0] ?? path.trim()) === '/v1/speech/asr/transcribe' ||
+            (path.trim().split('?')[0] ?? path.trim()).endsWith('/v1/speech/asr/transcribe') ? (
+              <div>
+                <Text className="mb-1 block text-[13px]">ASR 音频（multipart，推荐）</Text>
+                <input
+                  type="file"
+                  accept="audio/*,.mp3,.wav,.m4a,.aac,.opus,.pcm"
+                  className="block w-full max-w-xl cursor-pointer text-[13px] file:mr-3 file:rounded file:border file:border-[var(--color-border-2)] file:bg-[var(--color-fill-2)] file:px-3 file:py-1.5 file:text-[12px]"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] ?? null
+                    setAsrUploadFile(f)
+                  }}
+                />
+                {asrUploadFile ? (
+                  <Text type="secondary" className="mt-1 block text-[12px]">
+                    已选 {asrUploadFile.name}（{asrUploadFile.size < 1024 ? `${asrUploadFile.size} B` : `${Math.round(asrUploadFile.size / 1024)} KiB`}）
+                  </Text>
+                ) : null}
+                <Text type="secondary" className="mt-1 block text-[12px]">
+                  选择文件后点击发送将使用 multipart（字段 audio），下方 JSON 中的 group、format、language、extra 会一并提交；勿在 JSON 里再填
+                  audio_url / audio_base64。
+                </Text>
+              </div>
+            ) : null}
+            <div>
+              <Text className="mb-1 block text-[13px]">JSON Body</Text>
+              <Input.TextArea
+                value={body}
+                onChange={setBody}
+                autoSize={{ minRows: 8, maxRows: 20 }}
+                className="font-mono text-[12px]"
+              />
+            </div>
           </div>
         ) : null}
       </div>

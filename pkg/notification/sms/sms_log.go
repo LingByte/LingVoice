@@ -3,7 +3,7 @@ package sms
 import (
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 	"gorm.io/gorm"
 )
 
@@ -36,7 +36,7 @@ func (SMSLog) TableName() string { return "sms_logs" }
 
 func CreateSMSLog(db *gorm.DB, orgID, userID uint, provider, channelName, toPhone, template, content, messageID, status, raw, ip string) (*SMSLog, error) {
 	row := &SMSLog{
-		ID:          uint(utils.SnowflakeUtil.NextID()),
+		ID:          uint(base.SnowflakeUtil.NextID()),
 		OrgID:       orgID,
 		UserID:      userID,
 		Provider:    provider,
@@ -58,7 +58,7 @@ func CreateSMSLog(db *gorm.DB, orgID, userID uint, provider, channelName, toPhon
 
 func CreateFailedSMSLog(db *gorm.DB, orgID, userID uint, provider, channelName, toPhone, template, content, errMsg, raw, ip string) (*SMSLog, error) {
 	row := &SMSLog{
-		ID:          uint(utils.SnowflakeUtil.NextID()),
+		ID:          uint(base.SnowflakeUtil.NextID()),
 		OrgID:       orgID,
 		UserID:      userID,
 		Provider:    provider,
@@ -77,4 +77,3 @@ func CreateFailedSMSLog(db *gorm.DB, orgID, userID uint, provider, channelName, 
 	}
 	return row, nil
 }
-

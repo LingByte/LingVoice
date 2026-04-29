@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/sirupsen/logrus"
 )
 
@@ -83,7 +83,7 @@ func NewElevenLabsConfig(apiKey, voiceID string) ElevenLabsConfig {
 
 	// 从环境变量获取默认值
 	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("ELEVENLABS_API_KEY")
+		opt.APIKey = base.GetEnv("ELEVENLABS_API_KEY")
 	}
 	if opt.VoiceID == "" {
 		opt.VoiceID = "21m00Tcm4TlvDq8ikWAM" // 默认 Rachel 音色
@@ -104,21 +104,21 @@ func (es *ElevenLabsService) Provider() TTSProvider {
 	return ProviderElevenLabs
 }
 
-func (es *ElevenLabsService) Format() media.StreamFormat {
+func (es *ElevenLabsService) Format() media2.StreamFormat {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-	return media.StreamFormat{
+	return media2.StreamFormat{
 		SampleRate:    es.opt.SampleRate,
 		BitDepth:      es.opt.BitDepth,
 		Channels:      es.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(es.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(es.opt.FrameDuration),
 	}
 }
 
 func (es *ElevenLabsService) CacheKey(text string) string {
 	es.mu.Lock()
 	defer es.mu.Unlock()
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	return fmt.Sprintf("elevenlabs.tts-%s-%s-%d-%s.%s", es.opt.VoiceID, es.opt.ModelID, es.opt.SampleRate, digest, es.opt.Codec)
 }
 

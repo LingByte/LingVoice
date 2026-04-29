@@ -61,7 +61,7 @@ require (
 	github.com/xuri/excelize/v2 v2.10.1
 	github.com/yapingcat/gomedia v0.0.0-20240906162731-17feea57090c
 	go.uber.org/zap v1.27.1
-	golang.org/x/image v0.34.0
+	golang.org/x/image v0.39.0
 	golang.org/x/net v0.52.0
 	golang.org/x/sys v0.43.0
 	golang.org/x/text v0.36.0

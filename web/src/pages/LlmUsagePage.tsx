@@ -18,6 +18,7 @@ import {
   listLLMUsage,
   listMyLLMUsage,
 } from '@/api/llmUsage'
+import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 
 const { Title, Paragraph, Text } = Typography
 
@@ -30,12 +31,6 @@ function fmtTime(s?: string): string {
 
 function fmtBool(v: boolean): string {
   return v ? '是' : '否'
-}
-
-function previewText(s: string, max = 80): string {
-  const t = String(s ?? '').replace(/\s+/g, ' ').trim()
-  if (!t) return '—'
-  return t.length > max ? `${t.slice(0, max)}…` : t
 }
 
 export type LlmUsagePageProps = {
@@ -180,31 +175,60 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
     })()
   }
 
-  const columns = [
+  const columns = useMemo(() => {
+    const userCol =
+      variant === 'admin'
+        ? [
+            {
+              title: '用户',
+              dataIndex: 'user_id',
+              width: 112,
+              render: (v: string) => (
+                <EllipsisCopyText
+                  className="tabular-nums"
+                  text={v || '—'}
+                  maxWidth={96}
+                  copiedTip="user_id 已复制"
+                  tooltipMaxLen={80}
+                />
+              ),
+            },
+          ]
+        : []
+    return [
     {
       title: '请求 ID',
       dataIndex: 'request_id',
       width: 200,
-      ellipsis: true,
-      render: (v: string) => <span title={v}>{previewText(v, 36)}</span>,
+      render: (v: string) => (
+        <EllipsisCopyText text={v} maxWidth={184} copiedTip="请求 ID 已复制" tooltipMaxLen={200} />
+      ),
     },
+    ...userCol,
     {
       title: '提供商',
       dataIndex: 'provider',
       width: 100,
+      render: (v: string) => <EllipsisCopyText text={v || '—'} maxWidth={88} copiedTip="已复制" />,
     },
     {
       title: '模型',
       dataIndex: 'model',
       width: 160,
-      ellipsis: true,
+      render: (v: string) => <EllipsisCopyText text={v ?? ''} maxWidth={144} copiedTip="模型已复制" />,
     },
     {
       title: '渠道',
       dataIndex: 'channel_id',
       width: 72,
       render: (_: unknown, r: LLMUsageRow) => (
-        <span className="tabular-nums">{r.channel_id ? String(r.channel_id) : '—'}</span>
+        <EllipsisCopyText
+          className="tabular-nums"
+          text={r.channel_id ? String(r.channel_id) : '—'}
+          maxWidth={56}
+          copiedTip="渠道 ID 已复制"
+          tooltipMaxLen={48}
+        />
       ),
     },
     {
@@ -239,7 +263,7 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
       title: '完成时间',
       dataIndex: 'completed_at',
       width: 180,
-      render: (v: string) => fmtTime(v),
+      render: (v: string) => <EllipsisCopyText text={fmtTime(v)} maxWidth={164} copyable={false} />,
     },
     {
       title: '操作',
@@ -252,6 +276,7 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
       ),
     },
   ]
+  }, [variant])
 
   return (
     <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-auto bg-[var(--color-fill-1)] px-5 py-5">
@@ -329,7 +354,7 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
             data={list}
             pagination={false}
             borderCell
-            scroll={{ x: 1200 }}
+            scroll={{ x: variant === 'admin' ? 1320 : 1200 }}
           />
         </Spin>
       </div>

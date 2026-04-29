@@ -14,6 +14,12 @@ import (
 	"gorm.io/gorm"
 )
 
+// 通知渠道类型
+const (
+	NotificationChannelTypeEmail = "email"
+	NotificationChannelTypeSMS   = "sms"
+)
+
 // EmailChannelFormView is returned to the frontend for editing (no SMTP password value).
 type EmailChannelFormView struct {
 	Driver             string `json:"driver"`
@@ -48,11 +54,34 @@ type smsChannelConfigEnvelope struct {
 	Config   map[string]any `json:"config"`
 }
 
-// 通知渠道类型
-const (
-	NotificationChannelTypeEmail = "email"
-	NotificationChannelTypeSMS   = "sms"
-)
+// InternalNotificationListResult is paginated internal (in-app) notifications.
+type InternalNotificationListResult struct {
+	List      []InternalNotification
+	Total     int64
+	Page      int
+	PageSize  int
+	TotalPage int
+}
+
+// InternalNotification 站内通知
+type InternalNotification struct {
+	ID        uint           `json:"id" gorm:"primaryKey"`
+	CreatedAt time.Time      `json:"createdAt" gorm:"autoCreateTime;comment:Creation time"`
+	UpdatedAt time.Time      `json:"updatedAt,omitempty" gorm:"autoUpdateTime;comment:Update time"`
+	DeletedAt gorm.DeletedAt `json:"deletedAt,omitempty" gorm:"index"`
+	CreateBy  string         `json:"createBy,omitempty" gorm:"size:128;comment:Creator"`
+	UpdateBy  string         `json:"updateBy,omitempty" gorm:"size:128;comment:Updater"`
+	Remark    string         `json:"remark,omitempty" gorm:"size:128;comment:Remark"`
+	UserID    uint           `json:"userId" gorm:"index;not null;comment:接收用户 ID"`
+	Title     string         `json:"title" gorm:"size:255;not null;comment:标题"`
+	Content   string         `json:"content" gorm:"type:text;not null;comment:正文"`
+	Read      bool           `json:"read" gorm:"default:false;index;comment:是否已读"`
+}
+
+// TableName GORM 表名
+func (InternalNotification) TableName() string {
+	return "internal_notifications"
+}
 
 // NotificationChannel 统一描述一种可配置通知出口
 type NotificationChannel struct {
@@ -310,26 +339,6 @@ func MergeSMSSecretsOnUpdate(oldJSON, newJSON string) (string, error) {
 	return string(out), nil
 }
 
-// InternalNotification 站内通知
-type InternalNotification struct {
-	ID        uint           `json:"id" gorm:"primaryKey"`
-	CreatedAt time.Time      `json:"createdAt" gorm:"autoCreateTime;comment:Creation time"`
-	UpdatedAt time.Time      `json:"updatedAt,omitempty" gorm:"autoUpdateTime;comment:Update time"`
-	DeletedAt gorm.DeletedAt `json:"deletedAt,omitempty" gorm:"index"`
-	CreateBy  string         `json:"createBy,omitempty" gorm:"size:128;comment:Creator"`
-	UpdateBy  string         `json:"updateBy,omitempty" gorm:"size:128;comment:Updater"`
-	Remark    string         `json:"remark,omitempty" gorm:"size:128;comment:Remark"`
-	UserID    uint           `json:"userId" gorm:"index;not null;comment:接收用户 ID"`
-	Title     string         `json:"title" gorm:"size:255;not null;comment:标题"`
-	Content   string         `json:"content" gorm:"type:text;not null;comment:正文"`
-	Read      bool           `json:"read" gorm:"default:false;index;comment:是否已读"`
-}
-
-// TableName GORM 表名
-func (InternalNotification) TableName() string {
-	return "internal_notifications"
-}
-
 // SetCreateInfo 设置创建人（与 BaseModel 行为一致）
 func (m *InternalNotification) SetCreateInfo(operator string) {
 	m.CreateBy = operator
@@ -346,22 +355,8 @@ func (m *InternalNotification) IsSoftDeleted() bool {
 	return !m.DeletedAt.Time.IsZero()
 }
 
-var errNilDB = errors.New("models: nil db")
-
-// InternalNotificationListResult is paginated internal (in-app) notifications.
-type InternalNotificationListResult struct {
-	List      []InternalNotification
-	Total     int64
-	Page      int
-	PageSize  int
-	TotalPage int
-}
-
 // ListInternalNotifications lists notifications visible to actor (admin may filter by user id).
 func ListInternalNotifications(db *gorm.DB, actor *User, filterUserID *uint, page, pageSize int) (*InternalNotificationListResult, error) {
-	if db == nil {
-		return nil, errNilDB
-	}
 	if actor == nil {
 		return nil, errors.New("models: nil actor")
 	}
@@ -409,9 +404,6 @@ func ListInternalNotifications(db *gorm.DB, actor *User, filterUserID *uint, pag
 
 // GetInternalNotificationByID loads a single row by primary key.
 func GetInternalNotificationByID(db *gorm.DB, id uint) (*InternalNotification, error) {
-	if db == nil {
-		return nil, errNilDB
-	}
 	var row InternalNotification
 	if err := db.First(&row, id).Error; err != nil {
 		return nil, err
@@ -421,9 +413,6 @@ func GetInternalNotificationByID(db *gorm.DB, id uint) (*InternalNotification, e
 
 // CreateInternalNotification persists a new row.
 func CreateInternalNotification(db *gorm.DB, row *InternalNotification) error {
-	if db == nil {
-		return errNilDB
-	}
 	if row == nil {
 		return errors.New("models: nil internal notification")
 	}
@@ -432,25 +421,16 @@ func CreateInternalNotification(db *gorm.DB, row *InternalNotification) error {
 
 // SaveInternalNotification persists updates to an existing row.
 func SaveInternalNotification(db *gorm.DB, row *InternalNotification) error {
-	if db == nil || row == nil {
-		return errNilDB
-	}
 	return db.Save(row).Error
 }
 
 // DeleteInternalNotification hard-deletes the row.
 func DeleteInternalNotification(db *gorm.DB, row *InternalNotification) error {
-	if db == nil || row == nil {
-		return errNilDB
-	}
 	return db.Delete(row).Error
 }
 
 // PatchInternalNotificationRead updates read flag and update_by.
 func PatchInternalNotificationRead(db *gorm.DB, id uint, read bool, updateBy string) error {
-	if db == nil {
-		return errNilDB
-	}
 	return db.Model(&InternalNotification{}).Where("id = ?", id).Updates(map[string]interface{}{
 		"read":      read,
 		"update_by": updateBy,

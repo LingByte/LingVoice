@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 )
 
 // LLMRequestTracker LLM请求跟踪器
@@ -28,7 +28,7 @@ type LLMRequestTracker struct {
 	statusCode      int
 }
 
-// SetChannelUsageMeta 可选：绑定本次调用命中的上游渠道 id 与多渠道路由尝试明细（如经网关轮询）。
+// SetChannelUsageMeta
 func (t *LLMRequestTracker) SetChannelUsageMeta(channelID int, attempts []UsageChannelAttempt) {
 	t.channelID = channelID
 	if len(attempts) > 0 {
@@ -38,7 +38,7 @@ func (t *LLMRequestTracker) SetChannelUsageMeta(channelID int, attempts []UsageC
 
 // NewLLMRequestTracker 创建LLM请求跟踪器
 func NewLLMRequestTracker(sessionID, userID, provider, model, baseURL, requestType string) *LLMRequestTracker {
-	requestID := "ling-chatimpl-" + utils.SnowflakeUtil.GenID()
+	requestID := "ling-chatimpl-" + base.SnowflakeUtil.GenID()
 	now := time.Now()
 	tracker := &LLMRequestTracker{
 		requestID:   requestID,
@@ -60,7 +60,7 @@ func NewLLMRequestTracker(sessionID, userID, provider, model, baseURL, requestTy
 		RequestType: requestType,
 		RequestedAt: tracker.startTime.UnixMilli(),
 	}
-	utils.Sig().Emit(SignalLLMRequestStart, tracker, startData)
+	base.Sig().Emit(SignalLLMRequestStart, tracker, startData)
 	return tracker
 }
 
@@ -166,7 +166,7 @@ func (t *LLMRequestTracker) Complete(response *QueryResponse) {
 		CompletedAt:  endTime.UnixMilli(),
 	}
 
-	utils.Sig().Emit(SignalLLMRequestEnd, t, endData)
+	base.Sig().Emit(SignalLLMRequestEnd, t, endData)
 
 	respClip := ClipOpenAPIUsageBody(output)
 	if strings.TrimSpace(t.responseContent) != "" {
@@ -200,20 +200,17 @@ func (t *LLMRequestTracker) Complete(response *QueryResponse) {
 		FirstTokenAtMs:  t.firstTokenAt.UnixMilli(),
 		CompletedAtMs:   endTime.UnixMilli(),
 	}
-	utils.Sig().Emit(SignalLLMUsage, &payload)
+	base.Sig().Emit(SignalLLMUsage, &payload)
 }
 
 // Error 记录请求错误
 func (t *LLMRequestTracker) Error(errCode, errorMessage string) {
 	endTime := time.Now()
 	latencyMs := endTime.Sub(t.startTime).Milliseconds()
-
-	// 计算排队时间
 	var queueTimeMs int64 = 0
 	if !t.startedAt.IsZero() {
 		queueTimeMs = t.startedAt.Sub(t.startTime).Milliseconds()
 	}
-
 	errorData := LLMRequestErrorData{
 		RequestID:    t.requestID,
 		SessionID:    t.sessionID,
@@ -227,8 +224,7 @@ func (t *LLMRequestTracker) Error(errCode, errorMessage string) {
 		RequestedAt:  t.startTime.UnixMilli(),
 		CompletedAt:  endTime.UnixMilli(),
 	}
-	utils.Sig().Emit(SignalLLMRequestError, t, errorData)
-
+	base.Sig().Emit(SignalLLMRequestError, t, errorData)
 	payload := LLMUsageSignalPayload{
 		RequestID:       t.requestID,
 		UserID:          t.userID,
@@ -254,35 +250,8 @@ func (t *LLMRequestTracker) Error(errCode, errorMessage string) {
 		FirstTokenAtMs:  t.firstTokenAt.UnixMilli(),
 		CompletedAtMs:   endTime.UnixMilli(),
 	}
-	utils.Sig().Emit(SignalLLMUsage, &payload)
+	base.Sig().Emit(SignalLLMUsage, &payload)
 }
 
-// CreateSession 创建会话并发送信号
-func CreateSession(sessionID, userID, title, provider, model, systemPrompt string) {
-	startData := SessionCreatedData{
-		SessionID:    sessionID,
-		UserID:       userID,
-		Title:        title,
-		Provider:     provider,
-		Model:        model,
-		SystemPrompt: systemPrompt,
-		CreatedAt:    time.Now().UnixMilli(),
-	}
-	utils.Sig().Emit(SignalSessionCreated, nil, startData)
-}
-
-// CreateMessage 创建消息并发送信号
-func CreateMessage(messageID, sessionID, role, content string, tokenCount int, model, provider, requestID string) {
-	startData := MessageCreatedData{
-		MessageID:  messageID,
-		SessionID:  sessionID,
-		Role:       role,
-		Content:    content,
-		TokenCount: tokenCount,
-		Model:      model,
-		Provider:   provider,
-		RequestID:  requestID,
-		CreatedAt:  time.Now().UnixMilli(),
-	}
-	utils.Sig().Emit(SignalMessageCreated, nil, startData)
-}
+// CreateSession/CreateMessage 暂未在代码中调用。
+// 如需会话/消息追踪，可在对接端补回后广播对应信号。

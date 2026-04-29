@@ -13,8 +13,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/LingByte/LingVoice/pkg/utils/base"
+	media2 "github.com/LingByte/LingVoice/pkg/utils/media"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
@@ -156,17 +156,17 @@ func (ms *MinimaxService) Provider() TTSProvider {
 	return ProviderMinimax
 }
 
-func (ms *MinimaxService) Format() media.StreamFormat {
-	return media.StreamFormat{
+func (ms *MinimaxService) Format() media2.StreamFormat {
+	return media2.StreamFormat{
 		SampleRate:    ms.opt.SampleRate,
 		BitDepth:      16,
 		Channels:      ms.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(ms.opt.FrameDuration),
+		FrameDuration: base.NormalizeFramePeriod(ms.opt.FrameDuration),
 	}
 }
 
 func (ms *MinimaxService) CacheKey(text string) string {
-	digest := media.MediaCache().BuildKey(text)
+	digest := media2.MediaCache().BuildKey(text)
 	speedRatio := int(ms.opt.SpeedRatio * 100)
 	return fmt.Sprintf("minimax.tts-%s-%s-%d-%s-%d-%d.%s", ms.opt.VoiceID, ms.opt.Emotion, ms.opt.SampleRate, digest, ms.opt.TrainingTimes, speedRatio, ms.opt.Format)
 }
