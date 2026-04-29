@@ -3,6 +3,7 @@ package models
 import (
 	"time"
 
+	"github.com/LingByte/LingVoice/pkg/utils"
 	"gorm.io/gorm"
 )
 
@@ -12,13 +13,21 @@ const (
 )
 
 type BaseModel struct {
-	ID        uint           `json:"id" gorm:"primaryKey"`
+	ID        uint           `json:"id,string" gorm:"primaryKey;autoIncrement:false"`
 	CreatedAt time.Time      `json:"createdAt" gorm:"autoCreateTime;comment:Creation time"`
 	UpdatedAt time.Time      `json:"updatedAt,omitempty" gorm:"autoUpdateTime;comment:Update time"`
 	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
 	CreateBy  string         `json:"createBy,omitempty" gorm:"size:128;comment:Creator"`
 	UpdateBy  string         `json:"updateBy,omitempty" gorm:"size:128;comment:Updater"`
 	Remark    string         `json:"remark,omitempty" gorm:"size:128;comment:Remark"`
+}
+
+// BeforeCreate GORM hook to generate snowflake ID before creating a record
+func (m *BaseModel) BeforeCreate(tx *gorm.DB) error {
+	if m.ID == 0 {
+		m.ID = utils.GenUintID()
+	}
+	return nil
 }
 
 // IsSoftDeleted 判断是否已删除

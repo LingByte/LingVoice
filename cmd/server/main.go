@@ -11,15 +11,16 @@ import (
 
 	"github.com/LingByte/LingVoice"
 	"github.com/LingByte/LingVoice/cmd/bootstrap"
+	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/handlers"
 	"github.com/LingByte/LingVoice/internal/listeners"
 	"github.com/LingByte/LingVoice/internal/migrations"
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/middleware"
-	"github.com/LingByte/LingVoice/pkg/notification"
+	"github.com/LingByte/LingVoice/pkg/notification/mail"
+	"github.com/LingByte/LingVoice/pkg/notification/sms"
 	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -80,7 +81,10 @@ func main() {
 		MigrateModels: func() []any {
 			return []any{
 				utils.Config{},
-				notification.MailLog{},
+				mail.MailLog{},
+				sms.SMSLog{},
+				models.Organization{},
+				models.OrgMember{},
 				models.MailTemplate{},
 				models.InternalNotification{},
 				models.NotificationChannel{},
@@ -109,6 +113,11 @@ func main() {
 		return
 	}
 	listeners.InitApplicationListeners(db, zap.L())
+	if err := bootstrap.InitializeKeyManager(); err != nil {
+		logger.Error("key manager initialization failed", zap.Error(err))
+		return
+	}
+
 	migrations.DropMailTemplateSubjectTplColumn(db)
 	migrations.DropLLMUsageSessionIDColumn(db)
 
@@ -160,6 +169,9 @@ func main() {
 		LingVoice.EmbedFS{EmbedRoot: "web/dist", Embedfs: LingVoice.EmbedWebAssets},
 	)
 	LingVoice.Mount(r, webAssets)
+	r.NoRoute(LingVoice.WebFallback(webAssets, func(c *gin.Context) {
+		LingVoice.RenderNotFoundPage(c, c.Request.URL.Path, c.Request.Method)
+	}))
 	logger.Info("already embed static resource for CombineEmbedFS")
 
 	// 19. Emit system initialization signal

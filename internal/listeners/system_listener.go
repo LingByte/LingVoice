@@ -7,7 +7,7 @@ import (
 	"crypto/tls"
 	"sync"
 
-	"github.com/LingByte/LingVoice/pkg/config"
+	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/utils"

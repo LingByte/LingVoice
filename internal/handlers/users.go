@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LingByte/LingVoice/cmd/bootstrap"
+	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/response"
@@ -180,6 +181,8 @@ func (h *Handlers) postRegister(c *gin.Context) {
 		response.FailWithCode(c, 500, "注册失败", nil)
 		return
 	}
+	// Ensure personal organization and default org binding for multi-tenancy.
+	_ = models.EnsurePersonalOrg(h.db, user)
 	utils.Sig().Emit(constants.SigUserCreate, user, c)
 	models.Login(c, user)
 	payload, err := buildAuthLoginResponse(user)
@@ -254,7 +257,17 @@ func (h *Handlers) postRefresh(c *gin.Context) {
 		return
 	}
 	rt := strings.TrimSpace(req.RefreshToken)
-	payload, err := utils.ParseRefreshToken(rt, config.GlobalConfig.Auth.RefreshJWTSigningKey())
+	var payload *utils.RefreshPayload
+	var err error
+	if bootstrap.GlobalKeyManager != nil {
+		payload, err = utils.ParseRefreshTokenWithKey(rt, bootstrap.GlobalKeyManager)
+		if err != nil {
+			// Backward-compat: allow HS256 refresh tokens issued before JWKS rollout.
+			payload, err = utils.ParseRefreshToken(rt, config.GlobalConfig.Auth.RefreshJWTSigningKey())
+		}
+	} else {
+		payload, err = utils.ParseRefreshToken(rt, config.GlobalConfig.Auth.RefreshJWTSigningKey())
+	}
 	if err != nil {
 		response.FailWithCode(c, 401, "刷新令牌无效或已过期", nil)
 		return

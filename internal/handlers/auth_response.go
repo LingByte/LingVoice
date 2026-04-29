@@ -8,8 +8,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/LingByte/LingVoice/cmd/bootstrap"
+	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/utils"
 )
 
@@ -33,10 +34,10 @@ type AuthUserResponse struct {
 	EmailVerified   bool   `json:"emailVerified"`
 	PhoneVerified   bool   `json:"phoneVerified"`
 	ProfileComplete int    `json:"profileComplete"`
-	LoginCount       int    `json:"loginCount"`
-	RemainQuota      int    `json:"remainQuota"`
-	UsedQuota        int    `json:"usedQuota"`
-	UnlimitedQuota   bool   `json:"unlimitedQuota"`
+	LoginCount      int    `json:"loginCount"`
+	RemainQuota     int    `json:"remainQuota"`
+	UsedQuota       int    `json:"usedQuota"`
+	UnlimitedQuota  bool   `json:"unlimitedQuota"`
 	CreatedAt       string `json:"createdAt,omitempty"` // RFC3339 UTC
 	LastLogin       string `json:"lastLogin,omitempty"` // RFC3339 UTC
 }
@@ -85,10 +86,10 @@ func newAuthUserResponse(u *models.User) AuthUserResponse {
 		EmailVerified:   u.EmailVerified,
 		PhoneVerified:   u.PhoneVerified,
 		ProfileComplete: u.ProfileComplete,
-		LoginCount:       u.LoginCount,
-		RemainQuota:      u.RemainQuota,
-		UsedQuota:        u.UsedQuota,
-		UnlimitedQuota:   u.UnlimitedQuota,
+		LoginCount:      u.LoginCount,
+		RemainQuota:     u.RemainQuota,
+		UsedQuota:       u.UsedQuota,
+		UnlimitedQuota:  u.UnlimitedQuota,
 		CreatedAt:       u.CreatedAt.UTC().Format(time.RFC3339),
 		LastLogin:       authTimeRFC3339UTC(u.LastLogin),
 	}
@@ -104,15 +105,30 @@ func buildAuthLoginResponse(u *models.User) (*AuthLoginResponse, error) {
 	}
 	accessTTL := cfg.Auth.AccessTokenTTL()
 	refreshTTL := cfg.Auth.RefreshTokenTTL()
-	access, err := utils.SignAccessToken(utils.AccessPayload{
-		UserID: u.ID,
-		Email:  u.Email,
-		Role:   u.Role,
-	}, cfg.Auth.JWTSigningKey(), accessTTL)
+	var access string
+	var err error
+	if bootstrap.GlobalKeyManager != nil {
+		access, err = utils.SignAccessTokenWithKey(utils.AccessPayload{
+			UserID: u.ID,
+			Email:  u.Email,
+			Role:   u.Role,
+		}, bootstrap.GlobalKeyManager, accessTTL)
+	} else {
+		access, err = utils.SignAccessToken(utils.AccessPayload{
+			UserID: u.ID,
+			Email:  u.Email,
+			Role:   u.Role,
+		}, cfg.Auth.JWTSigningKey(), accessTTL)
+	}
 	if err != nil {
 		return nil, err
 	}
-	refresh, err := utils.SignRefreshToken(utils.RefreshPayload{UserID: u.ID}, cfg.Auth.RefreshJWTSigningKey(), refreshTTL)
+	var refresh string
+	if bootstrap.GlobalKeyManager != nil {
+		refresh, err = utils.SignRefreshTokenWithKey(utils.RefreshPayload{UserID: u.ID}, bootstrap.GlobalKeyManager, refreshTTL)
+	} else {
+		refresh, err = utils.SignRefreshToken(utils.RefreshPayload{UserID: u.ID}, cfg.Auth.RefreshJWTSigningKey(), refreshTTL)
+	}
 	if err != nil {
 		return nil, err
 	}

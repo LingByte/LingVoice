@@ -1,7 +1,9 @@
 package LingVoice
 
 import (
+	"bytes"
 	"embed"
+	"html/template"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -19,6 +21,9 @@ import (
 
 //go:embed all:web/dist
 var EmbedWebAssets embed.FS
+
+//go:embed templates/not_found.html
+var NotFoundHTML string
 
 type EmbedFS struct {
 	EmbedRoot string
@@ -80,6 +85,7 @@ func isAPIPath(p string) bool {
 }
 
 // Mount 挂载 Vite 产物根（含 index.html、assets/）。不可使用 StaticFS("", …)，会与 /api 等根前缀冲突。
+// Note: Mount no longer sets NoRoute. Use WebFallback(dist, ...) explicitly to control 404 behavior.
 func Mount(r *gin.Engine, dist fs.FS) {
 	indexHTML, err := fs.ReadFile(dist, "index.html")
 	if err != nil {
@@ -102,26 +108,6 @@ func Mount(r *gin.Engine, dist fs.FS) {
 
 	r.GET("/", serveIndex)
 	r.HEAD("/", serveIndexHead)
-
-	r.NoRoute(func(c *gin.Context) {
-		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
-			c.Status(http.StatusNotFound)
-			return
-		}
-		p := c.Request.URL.Path
-		if isAPIPath(p) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		if tryServeDistFile(c, dist, p) {
-			return
-		}
-		if c.Request.Method == http.MethodHead {
-			serveIndexHead(c)
-			return
-		}
-		serveIndex(c)
-	})
 }
 
 func tryServeDistFile(c *gin.Context, dist fs.FS, urlPath string) bool {
@@ -144,4 +130,80 @@ func tryServeDistFile(c *gin.Context, dist fs.FS, urlPath string) bool {
 	}
 	c.Data(http.StatusOK, ct, b)
 	return true
+}
+
+// WebFallback returns a gin.NoRoute handler for embedded web assets.
+//
+// - For GET/HEAD non-API paths: serves dist files when present; otherwise serves index.html (SPA fallback).
+// - For API paths ("/api", "/v1"): delegates to apiFallback when provided, otherwise returns {"error":"not found"}.
+// - For non-GET/HEAD: always 404.
+func WebFallback(dist fs.FS, apiFallback gin.HandlerFunc) gin.HandlerFunc {
+	indexHTML, err := fs.ReadFile(dist, "index.html")
+	if err != nil {
+		panic("webembed: missing index.html in dist fs: " + err.Error())
+	}
+	serveIndex := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
+	}
+	serveIndexHead := func(c *gin.Context) {
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.Header("Content-Length", strconv.Itoa(len(indexHTML)))
+		c.Status(http.StatusOK)
+	}
+	defaultAPIFallback := func(c *gin.Context) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+	}
+	if apiFallback == nil {
+		apiFallback = defaultAPIFallback
+	}
+
+	return func(c *gin.Context) {
+		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		p := c.Request.URL.Path
+		if isAPIPath(p) {
+			apiFallback(c)
+			return
+		}
+		if tryServeDistFile(c, dist, p) {
+			return
+		}
+		if c.Request.Method == http.MethodHead {
+			serveIndexHead(c)
+			return
+		}
+		serveIndex(c)
+	}
+}
+
+// RenderNotFoundPage 渲染 404 页面
+func RenderNotFoundPage(c *gin.Context, path, method string) {
+	tmpl, err := template.New("404").Parse(NotFoundHTML)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":  "Page not found",
+			"path":   path,
+			"method": method,
+		})
+		return
+	}
+
+	data := map[string]string{
+		"path":   path,
+		"method": method,
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":  "Page not found",
+			"path":   path,
+			"method": method,
+		})
+		return
+	}
+	c.Data(http.StatusNotFound, "text/html; charset=utf-8", buf.Bytes())
 }

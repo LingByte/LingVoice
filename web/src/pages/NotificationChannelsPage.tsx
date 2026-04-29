@@ -2,6 +2,7 @@ import { Button, Input, Message, Pagination, Popconfirm, Space, Table, Typograph
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { deleteNotificationChannel, listNotificationChannels, type NotificationChannelRow } from '@/api/mailAdmin'
+import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 
 const { Title, Paragraph } = Typography
 
@@ -32,7 +33,7 @@ export function NotificationChannelsPage() {
     void load()
   }, [load])
 
-  const onDelete = async (id: number) => {
+  const onDelete = async (id: string) => {
     try {
       await deleteNotificationChannel(id)
       Message.success('已删除')
@@ -48,7 +49,7 @@ export function NotificationChannelsPage() {
         通知渠道
       </Title>
       <Paragraph type="secondary" className="!mb-4 !mt-0 text-[13px]">
-        邮件渠道编码由服务端生成；在编辑页填写 SMTP 或 SendCloud 表单。当前接口未鉴权，仅用于开发调试。
+        渠道编码由服务端生成；邮件在编辑页填写 SMTP / SendCloud；短信渠道在编辑页选择 provider 并填写配置。当前接口未鉴权，仅用于开发调试。
       </Paragraph>
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
@@ -80,10 +81,10 @@ export function NotificationChannelsPage() {
         pagination={false}
         scroll={{ x: 960 }}
         columns={[
-          { title: 'ID', dataIndex: 'id', width: 70 },
-          { title: '类型', dataIndex: 'type', width: 88 },
-          { title: '编码', dataIndex: 'code', width: 160, ellipsis: true },
-          { title: '名称', dataIndex: 'name', width: 160, ellipsis: true },
+          { title: 'ID', dataIndex: 'id', width: 90, render: (v: string) => <EllipsisCopyText text={v} maxWidth={70} copiedTip="ID 已复制" /> },
+          { title: '类型', dataIndex: 'type', width: 100, render: (v: string) => <EllipsisCopyText text={v} maxWidth={84} copiedTip="类型已复制" /> },
+          { title: '编码', dataIndex: 'code', width: 220, render: (v?: string) => <EllipsisCopyText text={v ?? ''} maxWidth={200} copiedTip="编码已复制" /> },
+          { title: '名称', dataIndex: 'name', width: 220, render: (v: string) => <EllipsisCopyText text={v} maxWidth={200} copiedTip="名称已复制" /> },
           { title: '排序', dataIndex: 'sortOrder', width: 72 },
           {
             title: '启用',
@@ -91,7 +92,7 @@ export function NotificationChannelsPage() {
             width: 80,
             render: (v: boolean) => (v ? '是' : '否'),
           },
-          { title: '更新', dataIndex: 'updateAt', width: 168, ellipsis: true },
+          { title: '更新', dataIndex: 'updateAt', width: 180, render: (v?: string) => <EllipsisCopyText text={v ?? ''} maxWidth={164} copyable={false} /> },
           {
             title: '操作',
             width: 180,

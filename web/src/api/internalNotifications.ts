@@ -11,7 +11,7 @@ function assertOk<T>(r: ApiResponse<T>): T {
 
 /** 与后端 `InternalNotification` JSON 对齐 */
 export type InternalNotificationRow = {
-  id: number
+  id: string
   userId: number
   title: string
   content: string
@@ -30,7 +30,7 @@ export async function listMyInternalNotifications(page = 1, pageSize = 50) {
   return assertOk(r)
 }
 
-export async function markInternalNotificationRead(id: number, read = true) {
+export async function markInternalNotificationRead(id: string, read = true) {
   const r = await patch<InternalNotificationRow>(`/api/internal-notifications/${encodeURIComponent(String(id))}/read`, {
     read,
   })

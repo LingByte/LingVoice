@@ -1,7 +1,7 @@
 // Copyright (c) 2026 LingByte. All rights reserved.
 // SPDX-License-Identifier: AGPL-3.0
 
-package notification
+package mail
 
 import (
 	"time"
@@ -10,34 +10,21 @@ import (
 	"gorm.io/gorm"
 )
 
-func nextMailLogSnowflakeID() int64 {
-	if utils.SnowflakeUtil != nil {
-		if id := utils.SnowflakeUtil.NextID(); id > 0 {
-			return id
-		}
-	}
-	return time.Now().UnixNano()
-}
-
-// NextMailLogSnowflakeID allocates a primary key for mail_logs (system sends or admin API).
-func NextMailLogSnowflakeID() int64 {
-	return nextMailLogSnowflakeID()
-}
-
 // MailLog is a persisted record of an outbound email (optional when DB is wired).
 type MailLog struct {
-	ID int64 `gorm:"primaryKey;autoIncrement:false" json:"id,string"`
-	UserID      uint   `gorm:"index" json:"user_id"`
-	Provider    string `gorm:"size:32;index" json:"provider"` // smtp | sendcloud | multi
-	ChannelName string `gorm:"size:128;index" json:"channel_name"` // MailConfig.Name when set
-	ToEmail     string `gorm:"index" json:"to_email"`
-	Subject     string `json:"subject"`
-	Status      string `gorm:"index" json:"status"`
-	HtmlBody    string `gorm:"type:longtext" json:"html_body"` // 邮件 HTML，管理端可预览
-	ErrorMsg    string `gorm:"type:text" json:"error_msg"`
-	MessageID   string `gorm:"type:varchar(255);index" json:"message_id"`
-	IPAddress   string `gorm:"size:64" json:"ip_address"`
-	RetryCount  int    `json:"retry_count"`
+	ID          uint      `gorm:"primaryKey;autoIncrement:false" json:"id,string"`
+	OrgID       uint      `gorm:"index;not null;default:0" json:"org_id"`
+	UserID      uint      `gorm:"index" json:"user_id"`
+	Provider    string    `gorm:"size:32;index" json:"provider"`      // smtp | sendcloud | multi
+	ChannelName string    `gorm:"size:128;index" json:"channel_name"` // MailConfig.Name when set
+	ToEmail     string    `gorm:"index" json:"to_email"`
+	Subject     string    `json:"subject"`
+	Status      string    `gorm:"index" json:"status"`
+	HtmlBody    string    `gorm:"type:longtext" json:"html_body"` // 邮件 HTML，管理端可预览
+	ErrorMsg    string    `gorm:"type:text" json:"error_msg"`
+	MessageID   string    `gorm:"type:varchar(255);index" json:"message_id"`
+	IPAddress   string    `gorm:"size:64" json:"ip_address"`
+	RetryCount  int       `json:"retry_count"`
 	SentAt      time.Time `json:"sent_at"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -49,9 +36,10 @@ func (MailLog) TableName() string {
 }
 
 // CreateMailLog records a successful send (or send accepted by provider).
-func CreateMailLog(db *gorm.DB, userID uint, provider, channelName, toEmail, subject, htmlBody, messageID, status string, ip string) (*MailLog, error) {
+func CreateMailLog(db *gorm.DB, orgID uint, userID uint, provider, channelName, toEmail, subject, htmlBody, messageID, status string, ip string) (*MailLog, error) {
 	log := &MailLog{
-		ID:          nextMailLogSnowflakeID(),
+		ID:          uint(utils.SnowflakeUtil.NextID()),
+		OrgID:       orgID,
 		UserID:      userID,
 		Provider:    provider,
 		ChannelName: channelName,
@@ -70,9 +58,10 @@ func CreateMailLog(db *gorm.DB, userID uint, provider, channelName, toEmail, sub
 }
 
 // CreateFailedMailLog records a send that failed after all retries.
-func CreateFailedMailLog(db *gorm.DB, userID uint, provider, channelName, toEmail, subject, htmlBody, errMsg string, retries int, ip string) (*MailLog, error) {
+func CreateFailedMailLog(db *gorm.DB, orgID uint, userID uint, provider, channelName, toEmail, subject, htmlBody, errMsg string, retries int, ip string) (*MailLog, error) {
 	log := &MailLog{
-		ID:          nextMailLogSnowflakeID(),
+		ID:          uint(utils.SnowflakeUtil.NextID()),
+		OrgID:       orgID,
 		UserID:      userID,
 		Provider:    provider,
 		ChannelName: channelName,

@@ -1,46 +1,47 @@
-// Copyright (c) 2026 LingByte. All rights reserved.
-// SPDX-License-Identifier: AGPL-3.0
-
-// Package notification provides unified HTML email sending (SMTP or SendCloud),
-// optional persistence on mail_logs, retries, and SendCloud webhook-driven status updates.
-package notification
+package mail
 
 import (
 	"context"
+	"fmt"
+	"mime"
+	"net/mail"
 	"strings"
 	"time"
+	"unicode"
 )
 
-// ProviderKind identifies how mail is sent and how status is tracked.
-type ProviderKind string
+// Copyright (c) 2026 LingByte
+// SPDX-License-Identifier: MIT
 
-const (
-	ProviderSMTP      ProviderKind = "smtp"
-	ProviderSendCloud ProviderKind = "sendcloud"
-)
-
-// Mail delivery / engagement status stored on MailLog.
 // SMTP: after a successful handoff to the server we only record StatusSent (no callbacks).
 // SendCloud: starts as StatusSent after API success; webhooks may refine to delivered, opened, etc.
 const (
-	StatusQueued        = "queued"
-	StatusSent          = "sent"
+	StatusSent         = "sent"
 	StatusDelivered    = "delivered"
-	StatusFailed        = "failed"
-	StatusSoftBounce    = "soft_bounce"
-	StatusBounced       = "bounced"
-	StatusInvalid       = "invalid"
-	StatusSpam          = "spam"
-	StatusClicked       = "clicked"
-	StatusOpened        = "opened"
-	StatusUnsubscribed  = "unsubscribed"
-	StatusUnknown       = "unknown"
+	StatusFailed       = "failed"
+	StatusSoftBounce   = "soft_bounce"
+	StatusInvalid      = "invalid"
+	StatusSpam         = "spam"
+	StatusClicked      = "clicked"
+	StatusOpened       = "opened"
+	StatusUnsubscribed = "unsubscribed"
+	StatusUnknown      = "unknown"
 )
 
-// MailProvider sends HTML mail and reports a provider-specific message id (may be empty).
+const (
+	ProviderSMTP      = "smtp"
+	ProviderSendCloud = "sendcloud"
+)
+
 type MailProvider interface {
-	Kind() ProviderKind
-	SendHTML(to, subject, htmlBody string) (messageID string, err error)
+	// Kind Mail Provider
+	Kind() string
+
+	// SendHTMLWith Send HTML Email with variable substitution (supports {{VarName}} placeholders)
+	SendHTMLWith(to, subject, htmlBody string, vars map[string]any) (messageID string, err error)
+
+	// SendTextWith Send Text Email with variable substitution (supports {{VarName}} placeholders)
+	SendTextWith(to, subject, textBody string, vars map[string]any) (messageID string, err error)
 }
 
 // MailConfig selects provider and credentials (JSON tags for config files).
@@ -48,16 +49,13 @@ type MailProvider interface {
 type MailConfig struct {
 	Provider string `json:"provider"` // "smtp" | "sendcloud"
 	Name     string `json:"name"`     // channel label, e.g. "primary-smtp", "backup-sendcloud"
-
 	Host     string `json:"host"`
 	Port     int64  `json:"port"`
 	Username string `json:"username"`
 	Password string `json:"password"`
-
-	APIUser string `json:"api_user"`
-	APIKey  string `json:"api_key"`
-
-	From     string `json:"from"`               // 发件邮箱；也可写 RFC 格式「显示名 <email>」
+	APIUser  string `json:"api_user"`
+	APIKey   string `json:"api_key"`
+	From     string `json:"from"`                // 发件邮箱；也可写 RFC 格式「显示名 <email>」
 	FromName string `json:"from_name,omitempty"` // 可选显示名；与 From 中 Name 二选一，此项在纯邮箱 From 时生效
 }
 
@@ -104,6 +102,7 @@ type MailerOption func(*mailerOptions)
 type mailerOptions struct {
 	retry         RetryPolicy
 	mailLogUserID *uint // 写入 mail_logs.user_id；与 NewMailerMultiWithDB 的显式 userID 同时存在时以后者为准
+	mailLogOrgID  *uint // 写入 mail_logs.org_id；默认 0（系统/未绑定）
 }
 
 // WithRetry sets retry policy (merged with defaults for zero fields if you only set MaxAttempts).
@@ -125,8 +124,20 @@ func WithMailLogUserID(uid uint) MailerOption {
 	}
 }
 
+// WithMailLogOrgID sets mail_logs.org_id for DB logging.
+func WithMailLogOrgID(orgID uint) MailerOption {
+	return func(o *mailerOptions) {
+		if orgID == 0 {
+			o.mailLogOrgID = nil
+			return
+		}
+		v := orgID
+		o.mailLogOrgID = &v
+	}
+}
+
 // InitialMailStatus returns the DB status right after a successful provider send.
-func InitialMailStatus(kind ProviderKind) string {
+func InitialMailStatus(kind string) string {
 	switch kind {
 	case ProviderSMTP:
 		return StatusSent
@@ -172,4 +183,77 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+// ReplacePlaceholders replaces {{VarName}} placeholders in template with values from vars map.
+func ReplacePlaceholders(template string, vars map[string]any) string {
+	result := template
+	for key, value := range vars {
+		placeholder := "{{" + key + "}}"
+		result = strings.ReplaceAll(result, placeholder, fmt.Sprintf("%v", value))
+	}
+	return result
+}
+
+// ParsedSender is the envelope address (SMTP MAIL FROM / SendCloud `from`) plus display name and full RFC From header line.
+type ParsedSender struct {
+	Envelope   string // bare email only
+	Display    string // UTF-8 display name for SendCloud fromName; may be empty
+	HeaderFrom string // value for MIME "From:" header (includes encoded-word if needed)
+}
+
+// ParseMailSender parses MailConfig.from (optional "Name <email>") and optional from_name fallback.
+func ParseMailSender(fromField, nameFallback string) (ParsedSender, error) {
+	fromField = strings.TrimSpace(fromField)
+	nameFallback = strings.TrimSpace(nameFallback)
+	if fromField == "" {
+		return ParsedSender{}, fmt.Errorf("empty from address")
+	}
+	if a, err := mail.ParseAddress(fromField); err == nil && a.Address != "" {
+		envelope := strings.TrimSpace(a.Address)
+		disp := strings.TrimSpace(a.Name)
+		if disp == "" {
+			disp = nameFallback
+		}
+		return ParsedSender{
+			Envelope:   envelope,
+			Display:    disp,
+			HeaderFrom: formatMailFromHeader(disp, envelope),
+		}, nil
+	}
+	if strings.Contains(fromField, "@") && !strings.ContainsAny(fromField, "<>") {
+		envelope := strings.TrimSpace(fromField)
+		return ParsedSender{
+			Envelope:   envelope,
+			Display:    nameFallback,
+			HeaderFrom: formatMailFromHeader(nameFallback, envelope),
+		}, nil
+	}
+	return ParsedSender{}, fmt.Errorf("invalid from address %q", fromField)
+}
+
+func formatMailFromHeader(displayName, email string) string {
+	dn := strings.TrimSpace(displayName)
+	em := strings.TrimSpace(email)
+	if em == "" {
+		return ""
+	}
+	if dn == "" {
+		return em
+	}
+	if isASCIIString(dn) {
+		esc := strings.ReplaceAll(dn, `\`, `\\`)
+		esc = strings.ReplaceAll(esc, `"`, `\"`)
+		return fmt.Sprintf("\"%s\" <%s>", esc, em)
+	}
+	return fmt.Sprintf("%s <%s>", mime.QEncoding.Encode("UTF-8", dn), em)
+}
+
+func isASCIIString(s string) bool {
+	for _, r := range s {
+		if r > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
 }

@@ -9,9 +9,42 @@ import (
 	"strings"
 
 	"github.com/LingByte/LingVoice/internal/models"
+	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/response"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
+
+const orgHeader = "X-Org-ID"
+
+// currentOrgID resolves organization id for this request.
+// Resolution: header X-Org-ID (if member) -> user's DefaultOrgID -> 0 (system).
+func currentOrgID(c *gin.Context) uint {
+	u := models.CurrentUser(c)
+	if u == nil {
+		return 0
+	}
+	// Ensure personal org exists.
+	if dbAny, ok := c.Get(constants.DbField); ok {
+		if db, ok := dbAny.(*gorm.DB); ok && db != nil {
+			_ = models.EnsurePersonalOrg(db, u)
+		}
+	}
+	if raw := strings.TrimSpace(c.GetHeader(orgHeader)); raw != "" {
+		if n, err := strconv.ParseUint(raw, 10, 64); err == nil && n > 0 {
+			orgID := uint(n)
+			// Enforce membership when header override is used.
+			if dbAny, ok := c.Get(constants.DbField); ok {
+				if db, ok := dbAny.(*gorm.DB); ok && db != nil {
+					if okm, _ := models.IsOrgMember(db, orgID, u.ID); okm {
+						return orgID
+					}
+				}
+			}
+		}
+	}
+	return u.DefaultOrgID
+}
 
 func operatorFromUser(u *models.User) string {
 	if u == nil {

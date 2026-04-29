@@ -2,6 +2,7 @@ import { Button, Message, Pagination, Popconfirm, Space, Table, Typography } fro
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { deleteMailTemplate, listMailTemplates, type MailTemplateRow } from '@/api/mailAdmin'
+import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 
 const { Title, Paragraph } = Typography
 
@@ -30,7 +31,7 @@ export function MailTemplatesPage() {
     void load()
   }, [load])
 
-  const onDelete = async (id: number) => {
+  const onDelete = async (id: string) => {
     try {
       await deleteMailTemplate(id)
       Message.success('已删除')
@@ -62,10 +63,9 @@ export function MailTemplatesPage() {
         pagination={false}
         scroll={{ x: 1000 }}
         columns={[
-          { title: 'ID', dataIndex: 'id', width: 64 },
-          { title: 'Code', dataIndex: 'code', width: 120, ellipsis: true },
-          { title: '名称', dataIndex: 'name', width: 140, ellipsis: true },
-          { title: '纯文本摘要', dataIndex: 'textBody', width: 220, ellipsis: true },
+          { title: 'ID', dataIndex: 'id', width: 90, render: (v: string) => <EllipsisCopyText text={v} maxWidth={70} copiedTip="ID 已复制" /> },
+          { title: 'Code', dataIndex: 'code', width: 180, render: (v: string) => <EllipsisCopyText text={v} maxWidth={160} copiedTip="Code 已复制" /> },
+          { title: '名称', dataIndex: 'name', width: 220, render: (v: string) => <EllipsisCopyText text={v} maxWidth={200} copiedTip="名称已复制" /> },
           { title: '语言', dataIndex: 'locale', width: 100 },
           {
             title: '启用',
@@ -73,7 +73,7 @@ export function MailTemplatesPage() {
             width: 72,
             render: (v: boolean) => (v ? '是' : '否'),
           },
-          { title: '更新', dataIndex: 'updateAt', width: 168, ellipsis: true },
+          { title: '更新', dataIndex: 'updateAt', width: 180, render: (v?: string) => <EllipsisCopyText text={v ?? ''} maxWidth={164} copyable={false} /> },
           {
             title: '操作',
             width: 180,

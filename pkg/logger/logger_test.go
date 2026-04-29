@@ -1,8 +1,5 @@
 package logger
 
-// Copyright (c) 2026 LingByte. All rights reserved.
-// SPDX-License-Identifier: AGPL-3.0
-
 import (
 	"bufio"
 	"bytes"
@@ -12,12 +9,20 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"strings"
 	"testing"
 	"time"
 
 	"go.uber.org/zap"
 )
+
+func resetLoggerStateForTest() {
+	once = sync.Once{}
+	Lg = nil
+	cfg = nil
+	currentDate = ""
+}
 
 func makeTmpLogFile(t *testing.T, name string) string {
 	t.Helper()
@@ -96,6 +101,7 @@ func captureStdoutStderr(t *testing.T, fn func()) (string, string) {
 }
 
 func TestInitProdModeAndFileWrite(t *testing.T) {
+	resetLoggerStateForTest()
 	logPath := makeTmpLogFile(t, "app.log")
 	cfg := &LogConfig{
 		Level:      "debug",
@@ -140,6 +146,7 @@ func TestInitProdModeAndFileWrite(t *testing.T) {
 }
 
 func TestInitDevModeConsoleSplit(t *testing.T) {
+	resetLoggerStateForTest()
 	logPath := makeTmpLogFile(t, "dev.log")
 	cfg := &LogConfig{
 		Level:      "debug",
@@ -180,6 +187,7 @@ func TestInitDevModeConsoleSplit(t *testing.T) {
 }
 
 func TestInitInvalidLevel(t *testing.T) {
+	resetLoggerStateForTest()
 	logPath := makeTmpLogFile(t, "bad.log")
 	cfg := &LogConfig{
 		Level:      "not-a-level",
@@ -196,6 +204,7 @@ func TestInitInvalidLevel(t *testing.T) {
 
 // 仅验证 Sync 在 nil logger 时不崩（当前实现会 panic，保持原测试+recover 以覆盖路径）
 func TestSyncSafeWhenNoLogger(t *testing.T) {
+	resetLoggerStateForTest()
 	logPath := makeTmpLogFile(t, "sync.log")
 	cfg := &LogConfig{
 		Level:      "info",
@@ -219,6 +228,7 @@ func TestSyncSafeWhenNoLogger(t *testing.T) {
 // 由于包装函数存在，caller 会显示在 logger/logger.go（而非测试文件）
 // 因此这里验证 ShortCallerEncoder 是否生效，并包含生产文件路径。
 func TestAddCallerEnabled(t *testing.T) {
+	resetLoggerStateForTest()
 	logPath := makeTmpLogFile(t, "caller.log")
 	cfg := &LogConfig{
 		Level:      "debug",

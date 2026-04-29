@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/LingByte/LingVoice/pkg/config"
+	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/gin-contrib/sessions"

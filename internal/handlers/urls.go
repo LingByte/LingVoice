@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"github.com/LingByte/LingVoice/cmd/bootstrap"
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/middleware"
 	"github.com/gin-gonic/gin"
@@ -22,11 +23,17 @@ func NewHandlers(db *gorm.DB) *Handlers {
 
 func (h *Handlers) Register(engine *gin.Engine) {
 	engine.Use(middleware.InjectDB(h.db))
-
+	// JWKS endpoint for public key discovery
+	engine.GET("/.well-known/jwks.json", h.JWKSHandler)
+	// SendCloud webhook callback (updates mail_logs status)
+	engine.POST("/webhooks/sendcloud", h.sendCloudWebhookHandler)
 	// OpenAI 兼容网关：根路径 /v1（与 new-api 一致），不经 /api 前缀
 	h.registerV1RelayRoutes(engine)
-
 	api := engine.Group("/api")
+	h.registerMailLogRoutes(api)
+	h.registerSMSLogRoutes(api)
+	h.registerMailTemplatesRoutes(api)
+	h.registerNotificationChannelRoutes(api)
 
 	llmCat := api.Group("/llm-channels")
 	llmCat.Use(models.AuthRequired)
@@ -92,26 +99,6 @@ func (h *Handlers) Register(engine *gin.Engine) {
 		tts.DELETE("/:id", h.deleteTTSChannel)
 	}
 
-	nc := api.Group("/notification-channels")
-	{
-		nc.GET("", h.listNotificationChannels)
-		nc.POST("", h.createNotificationChannel)
-		nc.GET("/:id", h.getNotificationChannel)
-		nc.PUT("/:id", h.updateNotificationChannel)
-		nc.DELETE("/:id", h.deleteNotificationChannel)
-	}
-
-	mt := api.Group("/mail-templates")
-	{
-		mt.POST("/translate", h.translateMailTemplate)
-		mt.GET("/presets", h.listMailTemplatePresets)
-		mt.GET("", h.listMailTemplates)
-		mt.POST("", h.createMailTemplate)
-		mt.GET("/:id", h.getMailTemplate)
-		mt.PUT("/:id", h.updateMailTemplate)
-		mt.DELETE("/:id", h.deleteMailTemplate)
-	}
-
 	lu := api.Group("/llm-usage")
 	lu.Use(models.AuthRequired)
 	{
@@ -146,15 +133,6 @@ func (h *Handlers) Register(engine *gin.Engine) {
 		admin.POST("/announcements", h.createSiteAnnouncement)
 		admin.PUT("/announcements/:id", h.updateSiteAnnouncement)
 		admin.DELETE("/announcements/:id", h.deleteSiteAnnouncement)
-	}
-
-	ml := api.Group("/mail-logs")
-	{
-		ml.GET("", h.listMailLogs)
-		ml.POST("", h.createMailLog)
-		ml.GET("/:id", h.getMailLog)
-		ml.PUT("/:id", h.updateMailLog)
-		ml.DELETE("/:id", h.deleteMailLog)
 	}
 
 	dash := api.Group("/dashboard")
@@ -220,4 +198,20 @@ func (h *Handlers) registerAuthRoutes(api *gin.RouterGroup) {
 		user.GET("/llm-usage", h.listLLMUsageMe)
 		user.GET("/llm-usage/:id", h.getLLMUsageMe)
 	}
+}
+
+// JWKSHandler returns the JSON Web Key Set (JWKS) endpoint
+func (h *Handlers) JWKSHandler(c *gin.Context) {
+	c.Header("Content-Type", "application/json")
+	c.Header("Cache-Control", "public, max-age=3600")
+	if bootstrap.GlobalKeyManager == nil {
+		c.JSON(500, gin.H{"error": "key manager not initialized"})
+		return
+	}
+	jwksJSON, err := bootstrap.GlobalKeyManager.GetJWKSJSON()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to generate JWKS"})
+		return
+	}
+	c.String(200, jwksJSON)
 }

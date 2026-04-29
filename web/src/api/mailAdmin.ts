@@ -26,7 +26,7 @@ export interface MailTemplatePreset {
 }
 
 export interface MailTemplateRow {
-  id: number
+  id: string
   createAt?: string
   updateAt?: string
   createBy?: string
@@ -43,7 +43,7 @@ export interface MailTemplateRow {
 }
 
 export interface NotificationChannelRow {
-  id: number
+  id: string
   createAt?: string
   updateAt?: string
   createBy?: string
@@ -71,9 +71,16 @@ export interface EmailChannelFormView {
   sendcloudFrom?: string
 }
 
+export interface SMSChannelFormView {
+  provider: string
+  config: Record<string, unknown>
+  secretKeys?: string[]
+}
+
 export interface NotificationChannelDetail {
   channel: NotificationChannelRow
   emailForm?: EmailChannelFormView
+  smsForm?: SMSChannelFormView
 }
 
 export interface MailLogRow {
@@ -99,6 +106,7 @@ const api = {
   mailTemplates: '/api/mail-templates',
   notificationChannels: '/api/notification-channels',
   mailLogs: '/api/mail-logs',
+  smsLogs: '/api/sms-logs',
 }
 
 export async function listMailTemplates(page: number, pageSize: number) {
@@ -113,7 +121,7 @@ export async function listMailTemplatePresets() {
   return assertOk(r)
 }
 
-export async function getMailTemplate(id: number) {
+export async function getMailTemplate(id: string) {
   const r = await get<MailTemplateRow>(`${api.mailTemplates}/${id}`)
   return assertOk(r)
 }
@@ -131,7 +139,7 @@ export async function createMailTemplate(body: {
 }
 
 export async function updateMailTemplate(
-  id: number,
+  id: string,
   body: {
     name: string
     htmlBody: string
@@ -144,7 +152,7 @@ export async function updateMailTemplate(
   return assertOk(r)
 }
 
-export async function deleteMailTemplate(id: number) {
+export async function deleteMailTemplate(id: string) {
   const r = await del<{ id: number }>(`${api.mailTemplates}/${id}`)
   return assertOk(r)
 }
@@ -189,6 +197,18 @@ export type EmailChannelUpsertBody = {
   remark?: string
 }
 
+export type SMSChannelUpsertBody = {
+  channelType: 'sms'
+  name: string
+  sortOrder?: number
+  enabled?: boolean
+  remark?: string
+  smsProvider: string
+  smsConfig: Record<string, unknown>
+}
+
+export type NotificationChannelUpsertBody = EmailChannelUpsertBody | SMSChannelUpsertBody
+
 export async function listNotificationChannels(page: number, pageSize: number, type?: string) {
   const r = await get<Paginated<NotificationChannelRow>>(api.notificationChannels, {
     params: { page, pageSize, ...(type ? { type } : {}) },
@@ -196,22 +216,23 @@ export async function listNotificationChannels(page: number, pageSize: number, t
   return assertOk(r)
 }
 
-export async function getNotificationChannelDetail(id: number) {
+export async function getNotificationChannelDetail(id: string) {
   const r = await get<NotificationChannelDetail>(`${api.notificationChannels}/${id}`)
   return assertOk(r)
 }
 
-export async function createNotificationChannel(body: EmailChannelUpsertBody) {
+export async function createNotificationChannel(body: NotificationChannelUpsertBody) {
   const r = await post<NotificationChannelRow>(api.notificationChannels, body)
   return assertOk(r)
 }
 
-export async function updateNotificationChannel(id: number, body: EmailChannelUpsertBody) {
+export async function updateNotificationChannel(id: string, body: NotificationChannelUpsertBody) {
   const r = await put<NotificationChannelRow>(`${api.notificationChannels}/${id}`, body)
   return assertOk(r)
 }
 
-export async function deleteNotificationChannel(id: number) {
+
+export async function deleteNotificationChannel(id: string) {
   const r = await del<{ id: number }>(`${api.notificationChannels}/${id}`)
   return assertOk(r)
 }
@@ -248,43 +269,37 @@ export async function getMailLog(id: string | number): Promise<MailLogRow> {
   return { ...(row as unknown as MailLogRow), html_body: html }
 }
 
-export type MailLogCreateBody = {
-  user_id?: number
+export interface SMSLogRow {
+  id: string | number
+  org_id: number
+  user_id: number
   provider: string
   channel_name?: string
-  to_email: string
-  subject: string
+  to_phone: string
+  template?: string
+  content?: string
   status: string
-  html_body?: string
   error_msg?: string
   message_id?: string
+  raw?: string
   ip_address?: string
-  retry_count?: number
+  sent_at?: string
+  created_at?: string
+  updated_at?: string
 }
 
-export async function createMailLog(body: MailLogCreateBody) {
-  const r = await post<MailLogRow>(api.mailLogs, body)
-  return assertOk(r)
-}
-
-export async function updateMailLog(
-  id: string | number,
-  body: {
-    subject?: string
-    status: string
-    error_msg?: string
-    message_id?: string
-    channel_name?: string
-    html_body?: string
-    to_email?: string
-    provider?: string
-  },
+export async function listSMSLogs(
+  page: number,
+  pageSize: number,
+  filters?: { user_id?: number; status?: string; provider?: string; channel_name?: string; to_phone?: string },
 ) {
-  const r = await put<MailLogRow>(`${api.mailLogs}/${encodeURIComponent(String(id))}`, body)
+  const r = await get<Paginated<SMSLogRow>>(api.smsLogs, {
+    params: { page, pageSize, ...filters },
+  })
   return assertOk(r)
 }
 
-export async function deleteMailLog(id: string | number) {
-  const r = await del<{ id: number }>(`${api.mailLogs}/${encodeURIComponent(String(id))}`)
+export async function getSMSLog(id: string | number): Promise<SMSLogRow> {
+  const r = await get<SMSLogRow>(`${api.smsLogs}/${encodeURIComponent(String(id))}`)
   return assertOk(r)
 }

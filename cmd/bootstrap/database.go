@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/LingByte/LingVoice/pkg/config"
+	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/utils"
 	"go.uber.org/zap"

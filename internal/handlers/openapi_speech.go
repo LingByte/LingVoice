@@ -15,14 +15,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/middleware"
 	"github.com/LingByte/LingVoice/pkg/response"
 	"github.com/LingByte/LingVoice/pkg/synthesizer"
 	"github.com/LingByte/LingVoice/pkg/utils"
-	"github.com/gin-gonic/gin"
 	lingstorage "github.com/LingByte/lingstorage-sdk-go"
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
@@ -440,7 +440,7 @@ func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 			"response_type": outMode,
 			"format":        base["format"],
 			"provider":      base["provider"],
-			"channel_id":     base["channel_id"],
+			"channel_id":    base["channel_id"],
 			"group":         base["group"],
 			"size":          up.Size,
 			"key":           up.Key,
@@ -455,12 +455,12 @@ func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 	b64 := base64.StdEncoding.EncodeToString(handler.buf)
 	base["audio_base64"] = b64
 	respSnap := gin.H{
-		"response_type": outMode,
-		"format":        base["format"],
-		"provider":      base["provider"],
-		"channel_id":    base["channel_id"],
-		"group":         base["group"],
-		"audio_bytes":   len(handler.buf),
+		"response_type":            outMode,
+		"format":                   base["format"],
+		"provider":                 base["provider"],
+		"channel_id":               base["channel_id"],
+		"group":                    base["group"],
+		"audio_bytes":              len(handler.buf),
 		"audio_base64_in_response": true,
 	}
 	h.recordOpenAPITTSUsage(c, started, cred, ch, 200, true, "", &body, respSnap, audioOut, textChars)

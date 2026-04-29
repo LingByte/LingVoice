@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/config"
 	"github.com/LingByte/LingVoice/pkg/llm"
 	"github.com/LingByte/LingVoice/pkg/middleware"
 	"github.com/gin-gonic/gin"

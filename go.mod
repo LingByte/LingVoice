@@ -8,6 +8,7 @@ require (
 	github.com/LingByte/lingstorage-sdk-go v0.0.0-20260113030255-ff9d0501909c
 	github.com/abema/go-mp4 v1.5.0
 	github.com/alibabacloud-go/darabonba-openapi/v2 v2.1.16
+	github.com/alibabacloud-go/dysmsapi-20170525/v4 v4.1.3
 	github.com/alibabacloud-go/green-20220302/v2 v2.23.0
 	github.com/alibabacloud-go/tea v1.4.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.16
@@ -53,6 +54,7 @@ require (
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/asr v1.3.69
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.86
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ims v1.3.85
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/sms v1.3.86
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/tms v1.3.10
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/vod v1.3.84
 	github.com/tencentcloud/tencentcloud-speech-sdk-go v1.0.21
@@ -79,6 +81,8 @@ require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/alibabacloud-go/alibabacloud-gateway-spi v0.0.5 // indirect
 	github.com/alibabacloud-go/debug v1.0.1 // indirect
+	github.com/alibabacloud-go/endpoint-util v1.1.0 // indirect
+	github.com/alibabacloud-go/openapi-util v0.1.1 // indirect
 	github.com/alibabacloud-go/tea-utils/v2 v2.0.7 // indirect
 	github.com/aliyun/credentials-go v1.4.5 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.41.6 // indirect

@@ -7,7 +7,6 @@ import (
 )
 
 func StartPyroScope() error {
-
 	pyroscopeUrl := GetEnv("PYROSCOPE_URL")
 	if pyroscopeUrl == "" {
 		return nil

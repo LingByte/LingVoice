@@ -9,12 +9,12 @@ import (
 	"strings"
 
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/notification"
+	"github.com/LingByte/LingVoice/pkg/notification/mail"
 	"gorm.io/gorm"
 )
 
 // EnabledMailConfigs returns enabled email notification channels ordered by SortOrder.
-func EnabledMailConfigs(db *gorm.DB) ([]notification.MailConfig, error) {
+func EnabledMailConfigs(db *gorm.DB) ([]mail.MailConfig, error) {
 	if db == nil {
 		return nil, errors.New("nil db")
 	}
@@ -23,13 +23,13 @@ func EnabledMailConfigs(db *gorm.DB) ([]notification.MailConfig, error) {
 		Order("sort_order ASC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	out := make([]notification.MailConfig, 0, len(rows))
+	out := make([]mail.MailConfig, 0, len(rows))
 	for _, row := range rows {
 		raw := strings.TrimSpace(row.ConfigJSON)
 		if raw == "" {
 			continue
 		}
-		var cfg notification.MailConfig
+		var cfg mail.MailConfig
 		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 			continue
 		}

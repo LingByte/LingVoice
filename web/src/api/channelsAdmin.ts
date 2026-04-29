@@ -129,7 +129,7 @@ export async function deleteLLMChannel(id: number) {
 }
 
 export type SpeechChannelRow = {
-  id: number
+  id: string
   createAt?: string
   updateAt?: string
   createBy?: string
@@ -161,7 +161,7 @@ export async function listASRChannels(page: number, pageSize: number, filters?: 
   return assertOk(r)
 }
 
-export async function getASRChannel(id: number) {
+export async function getASRChannel(id: string) {
   const r = await get<SpeechChannelDetail>(`${asr}/${id}`)
   return assertOk(r)
 }
@@ -171,12 +171,12 @@ export async function createASRChannel(body: SpeechChannelUpsert) {
   return assertOk(r)
 }
 
-export async function updateASRChannel(id: number, body: SpeechChannelUpsert) {
+export async function updateASRChannel(id: string, body: SpeechChannelUpsert) {
   const r = await put<SpeechChannelRow>(`${asr}/${id}`, body)
   return assertOk(r)
 }
 
-export async function deleteASRChannel(id: number) {
+export async function deleteASRChannel(id: string) {
   const r = await del<{ id: number }>(`${asr}/${id}`)
   assertOk(r)
 }
@@ -188,7 +188,7 @@ export async function listTTSChannels(page: number, pageSize: number, filters?: 
   return assertOk(r)
 }
 
-export async function getTTSChannel(id: number) {
+export async function getTTSChannel(id: string) {
   const r = await get<SpeechChannelDetail>(`${tts}/${id}`)
   return assertOk(r)
 }
@@ -198,12 +198,12 @@ export async function createTTSChannel(body: SpeechChannelUpsert) {
   return assertOk(r)
 }
 
-export async function updateTTSChannel(id: number, body: SpeechChannelUpsert) {
+export async function updateTTSChannel(id: string, body: SpeechChannelUpsert) {
   const r = await put<SpeechChannelRow>(`${tts}/${id}`, body)
   return assertOk(r)
 }
 
-export async function deleteTTSChannel(id: number) {
+export async function deleteTTSChannel(id: string) {
   const r = await del<{ id: number }>(`${tts}/${id}`)
   assertOk(r)
 }

@@ -4,7 +4,7 @@ package bootstrap
 // SPDX-License-Identifier: AGPL-3.0
 
 import (
-	"github.com/LingByte/LingVoice/pkg/config"
+	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/utils"
 	"gorm.io/gorm"

@@ -13,7 +13,7 @@ import (
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/mailtemplate"
-	"github.com/LingByte/LingVoice/pkg/notification"
+	"github.com/LingByte/LingVoice/pkg/notification/mail"
 	"github.com/LingByte/LingVoice/pkg/task"
 	"github.com/LingByte/LingVoice/pkg/utils"
 	"go.uber.org/zap"
@@ -57,7 +57,6 @@ func registerUserSignalHandlers(lg *zap.Logger) {
 	utils.Sig().Connect(constants.SigUserLogin, func(sender any, params ...any) {
 		u, _ := sender.(*models.User)
 		lg.Info("signal user.login",
-			zap.Uint("userId", idOf(u)),
 			zap.String("email", emailOf(u)),
 			zap.Int("extraParams", len(params)),
 		)
@@ -66,7 +65,6 @@ func registerUserSignalHandlers(lg *zap.Logger) {
 	utils.Sig().Connect(constants.SigUserLogout, func(sender any, params ...any) {
 		u, _ := sender.(*models.User)
 		lg.Info("signal user.logout",
-			zap.Uint("userId", idOf(u)),
 			zap.String("email", emailOf(u)),
 		)
 	})
@@ -74,7 +72,6 @@ func registerUserSignalHandlers(lg *zap.Logger) {
 	utils.Sig().Connect(constants.SigUserCreate, func(sender any, params ...any) {
 		u, _ := sender.(*models.User)
 		lg.Info("signal user.create",
-			zap.Uint("userId", idOf(u)),
 			zap.String("email", emailOf(u)),
 		)
 	})
@@ -114,13 +111,6 @@ func registerUserSignalHandlers(lg *zap.Logger) {
 	})
 }
 
-func idOf(u *models.User) uint {
-	if u == nil {
-		return 0
-	}
-	return u.ID
-}
-
 func emailOf(u *models.User) string {
 	if u == nil {
 		return ""
@@ -138,7 +128,13 @@ func sendEmailLoginCodeHTML(ctx context.Context, job emailVerifyCodeJob) (struct
 		logger.Warn("email login code mail: no mail channels", zap.Error(err))
 		return out, err
 	}
-	mailer, err := notification.NewMailerMultiWithIP(cfgs, job.db, job.clientIP, notification.WithMailLogUserID(job.userID))
+	orgID := uint(0)
+	var u models.User
+	if err := job.db.Where("id = ?", job.userID).First(&u).Error; err == nil {
+		_ = models.EnsurePersonalOrg(job.db, &u)
+		orgID = u.DefaultOrgID
+	}
+	mailer, err := mail.NewMailer(cfgs, job.db, job.clientIP, mail.WithMailLogUserID(job.userID), mail.WithMailLogOrgID(orgID))
 	if err != nil {
 		logger.Warn("email login code mail: mailer", zap.Error(err))
 		return out, err

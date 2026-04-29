@@ -33,21 +33,29 @@ type Config struct {
 	Auth       AuthConfig       `mapstructure:"auth"`
 	Services   ServicesConfig   `mapstructure:"services"`
 	Middleware MiddlewareConfig `mapstructure:"middleware"`
+	JWT        JWTConfig
+}
+
+// JWTConfig JWT related configuration
+type JWTConfig struct {
+	Algorithm    string `env:"JWT_ALGORITHM"`
+	KeyFile      string `env:"JWT_KEY_FILE"`
+	RotationDays int    `env:"JWT_ROTATION_DAYS"`
+	KeepOldKeys  int    `env:"JWT_KEEP_OLD_KEYS"`
 }
 
 // ServerConfig server configuration
 type ServerConfig struct {
-	Name       string `env:"SERVER_NAME"`
-	Desc       string `env:"SERVER_DESC"`
-	URL        string `env:"SERVER_URL"`
-	Logo       string `env:"SERVER_LOGO"`
-	TermsURL   string `env:"SERVER_TERMS_URL"`
-	Version    string `env:"SERVER_VERSION"`
-	Addr       string `env:"ADDR"`
-	Mode       string `env:"MODE"`
-	DocsPrefix string `env:"DOCS_PREFIX"`
-	APIPrefix  string `env:"API_PREFIX"`
-	// WebAppURL is the browser origin for the SPA (e.g. http://localhost:5173). Used in magic-link emails; falls back to URL when empty.
+	Name        string `env:"SERVER_NAME"`
+	Desc        string `env:"SERVER_DESC"`
+	URL         string `env:"SERVER_URL"`
+	Logo        string `env:"SERVER_LOGO"`
+	TermsURL    string `env:"SERVER_TERMS_URL"`
+	Version     string `env:"SERVER_VERSION"`
+	Addr        string `env:"ADDR"`
+	Mode        string `env:"MODE"`
+	DocsPrefix  string `env:"DOCS_PREFIX"`
+	APIPrefix   string `env:"API_PREFIX"`
 	WebAppURL   string `env:"WEB_APP_URL"`
 	SSLEnabled  bool   `env:"SSL_ENABLED"`
 	SSLCertFile string `env:"SSL_CERT_FILE"`
@@ -240,6 +248,12 @@ func Load() error {
 			},
 		},
 		Middleware: loadMiddlewareConfig(),
+		JWT: JWTConfig{
+			Algorithm:    getStringOrDefault("JWT_ALGORITHM", "RS256"),
+			KeyFile:      getStringOrDefault("JWT_KEY_FILE", "./keys/jwks.json"),
+			RotationDays: getIntOrDefault("JWT_ROTATION_DAYS", 30),
+			KeepOldKeys:  getIntOrDefault("JWT_KEEP_OLD_KEYS", 2),
+		},
 	}
 	GlobalStore = lingstorage.NewClient(&lingstorage.Config{
 		BaseURL:   GlobalConfig.Services.Storage.BaseURL,

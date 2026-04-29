@@ -14,7 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/config"
+	"github.com/LingByte/LingVoice/cmd/bootstrap"
+	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/response"
@@ -177,6 +178,7 @@ type User struct {
 	LastPasswordChange         *time.Time `json:"lastPasswordChange,omitempty"`                 // 最后密码修改时间
 	ProfileComplete            int        `json:"profileComplete" gorm:"default:0"`             // 资料完整度百分比
 	Role                       string     `json:"role,omitempty" gorm:"size:50;default:'user'"` // 用户角色
+	DefaultOrgID               uint       `json:"defaultOrgId" gorm:"index;not null;default:0;comment:default organization id"`
 	AccountDeletionRequestedAt *time.Time `json:"accountDeletionRequestedAt,omitempty"`
 	AccountDeletionEffectiveAt *time.Time `json:"accountDeletionEffectiveAt,omitempty" gorm:"index"`
 }
@@ -188,6 +190,7 @@ func (u *User) TableName() string {
 // Login Handle-User-Login
 func Login(c *gin.Context, user *User) {
 	db := c.MustGet(constants.DbField).(*gorm.DB)
+	_ = EnsurePersonalOrg(db, user)
 	err := SetLastLogin(db, user, c.ClientIP())
 	if err != nil {
 		logger.Error("user.login", zap.Error(err))
@@ -324,8 +327,18 @@ func CurrentUser(c *gin.Context) *User {
 	if raw == "" {
 		return nil
 	}
-	payload, err := utils.ParseAccessToken(raw, config.GlobalConfig.Auth.JWTSigningKey())
-	if err != nil {
+	var payload *utils.AccessPayload
+	var err error
+	if bootstrap.GlobalKeyManager != nil {
+		payload, err = utils.ParseAccessTokenWithKey(raw, bootstrap.GlobalKeyManager)
+		if err != nil {
+			// Backward-compat: allow HS256 tokens issued before JWKS rollout.
+			payload, err = utils.ParseAccessToken(raw, config.GlobalConfig.Auth.JWTSigningKey())
+		}
+	} else {
+		payload, err = utils.ParseAccessToken(raw, config.GlobalConfig.Auth.JWTSigningKey())
+	}
+	if err != nil || payload == nil {
 		return nil
 	}
 	db := c.MustGet(constants.DbField).(*gorm.DB)
@@ -364,7 +377,6 @@ func HashPassword(password string) string {
 	if password == "" {
 		return ""
 	}
-	// 如果已经是哈希格式（sha256$...），直接返回
 	if strings.HasPrefix(password, "sha256$") {
 		return password
 	}
@@ -489,11 +501,7 @@ func CreateUserByEmailWithMeta(db *gorm.DB, username, display, email, password, 
 		operator = "system"
 	}
 	user.SetCreateInfo(operator)
-	if utils.SnowflakeUtil != nil {
-		if id := utils.SnowflakeUtil.NextID(); id > 0 {
-			user.ID = uint(id)
-		}
-	}
+	user.ID = utils.GenUintID()
 	result := db.Create(&user)
 	return &user, result.Error
 }
@@ -517,11 +525,7 @@ func CreateUserWithMeta(db *gorm.DB, email, password, source, status string) (*U
 		operator = "system"
 	}
 	user.SetCreateInfo(operator)
-	if utils.SnowflakeUtil != nil {
-		if id := utils.SnowflakeUtil.NextID(); id > 0 {
-			user.ID = uint(id)
-		}
-	}
+	user.ID = utils.GenUintID()
 
 	result := db.Create(&user)
 	return &user, result.Error
@@ -531,7 +535,6 @@ func UpdateUserFields(db *gorm.DB, user *User, vals map[string]any) error {
 		vals["update_by"] = "system"
 	}
 	result := db.Model(user).Updates(vals)
-
 	return result.Error
 }
 
@@ -543,9 +546,7 @@ func SetLastLogin(db *gorm.DB, user *User, lastIp string) error {
 	}
 	user.LastLogin = &now
 	user.LastLoginIP = lastIp
-
 	result := db.Model(user).Updates(vals)
-
 	return result.Error
 }
 
@@ -899,7 +900,6 @@ func UpdateProfileComplete(db *gorm.DB, user *User) error {
 	if err != nil {
 		return err
 	}
-
 	user.ProfileComplete = complete
 	return nil
 }

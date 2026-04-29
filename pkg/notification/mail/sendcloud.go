@@ -1,7 +1,7 @@
+package mail
+
 // Copyright (c) 2026 LingByte. All rights reserved.
 // SPDX-License-Identifier: AGPL-3.0
-
-package notification
 
 import (
 	"encoding/json"
@@ -40,6 +40,19 @@ type SendCloudWebhookEvent struct {
 	SmtpError  string `json:"smtpError"`
 }
 
+type sendCloudSendResponse struct {
+	Result    bool   `json:"result"`
+	Message   string `json:"message"`
+	MessageID string `json:"messageId"`
+	Data      struct {
+		MessageID string `json:"messageId"`
+	} `json:"data"`
+	Info struct {
+		EmailIDList []string `json:"emailIdList"`
+		MessageID   string   `json:"messageId"`
+	} `json:"info"`
+}
+
 // NewSendCloudClient creates a SendCloud provider with default HTTP timeout.
 func NewSendCloudClient(config SendCloudConfig) (*SendCloudClient, error) {
 	p, err := ParseMailSender(config.From, config.FromName)
@@ -54,12 +67,22 @@ func NewSendCloudClient(config SendCloudConfig) (*SendCloudClient, error) {
 }
 
 // Kind implements MailProvider.
-func (s *SendCloudClient) Kind() ProviderKind {
+func (s *SendCloudClient) Kind() string {
 	return ProviderSendCloud
 }
 
-// SendHTML sends HTML mail via SendCloud apiv2.
-func (s *SendCloudClient) SendHTML(to, subject, htmlBody string) (string, error) {
+// SendHTMLWith sends HTML mail with variable substitution.
+func (s *SendCloudClient) SendHTMLWith(to, subject, htmlBody string, vars map[string]any) (string, error) {
+	return s.sendMail(to, subject, htmlBody, vars, "html")
+}
+
+// SendTextWith sends plain text mail with variable substitution.
+func (s *SendCloudClient) SendTextWith(to, subject, textBody string, vars map[string]any) (string, error) {
+	return s.sendMail(to, subject, textBody, vars, "plainText")
+}
+
+// sendMail is the shared implementation for SendHTMLWith and SendTextWith.
+func (s *SendCloudClient) sendMail(to, subject, body string, vars map[string]any, bodyType string) (string, error) {
 	const apiURL = "https://api.sendcloud.net/apiv2/mail/send"
 	data := url.Values{}
 	data.Set("apiUser", s.Config.APIUser)
@@ -69,8 +92,8 @@ func (s *SendCloudClient) SendHTML(to, subject, htmlBody string) (string, error)
 	if s.sender.Display != "" {
 		data.Set("fromName", s.sender.Display)
 	}
-	data.Set("subject", subject)
-	data.Set("html", htmlBody)
+	data.Set("subject", ReplacePlaceholders(subject, vars))
+	data.Set(bodyType, ReplacePlaceholders(body, vars))
 
 	req, err := http.NewRequest(http.MethodPost, apiURL, strings.NewReader(data.Encode()))
 	if err != nil {
@@ -84,47 +107,46 @@ func (s *SendCloudClient) SendHTML(to, subject, htmlBody string) (string, error)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("sendcloud read body: %w", err)
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
+	var result sendCloudSendResponse
+	if err := json.Unmarshal(responseBody, &result); err != nil {
 		return "", fmt.Errorf("sendcloud json: %w", err)
 	}
 
-	if ok, has := result["result"].(bool); has && !ok {
-		if msg, ok := result["message"].(string); ok {
-			return "", fmt.Errorf("sendcloud: %s", msg)
+	if resp.StatusCode/100 != 2 {
+		msg := strings.TrimSpace(result.Message)
+		if msg == "" {
+			msg = strings.TrimSpace(string(responseBody))
 		}
-		return "", fmt.Errorf("sendcloud: request failed")
-	}
-
-	messageID := extractSendCloudMessageID(result)
-	return messageID, nil
-}
-
-func extractSendCloudMessageID(result map[string]interface{}) string {
-	if info, ok := result["info"].(map[string]interface{}); ok {
-		if list, ok := info["emailIdList"].([]interface{}); ok && len(list) > 0 {
-			if id, ok := list[0].(string); ok {
-				return id
-			}
+		if msg == "" {
+			msg = resp.Status
 		}
-		if id, ok := info["messageId"].(string); ok && id != "" {
-			return id
+		return "", fmt.Errorf("sendcloud http %d: %s", resp.StatusCode, msg)
+	}
+	if !result.Result {
+		msg := strings.TrimSpace(result.Message)
+		if msg == "" {
+			msg = "request failed"
 		}
+		return "", fmt.Errorf("sendcloud: %s", msg)
 	}
-	if dataObj, ok := result["data"].(map[string]interface{}); ok {
-		if id, ok := dataObj["messageId"].(string); ok && id != "" {
-			return id
-		}
+	if len(result.Info.EmailIDList) > 0 && result.Info.EmailIDList[0] != "" {
+		return result.Info.EmailIDList[0], nil
 	}
-	if id, ok := result["messageId"].(string); ok {
-		return id
+	if result.Info.MessageID != "" {
+		return result.Info.MessageID, nil
 	}
-	return ""
+	if result.Data.MessageID != "" {
+		return result.Data.MessageID, nil
+	}
+	if result.MessageID != "" {
+		return result.MessageID, nil
+	}
+	return "", nil
 }
 
 // ParseSendCloudWebhookEvent parses JSON or x-www-form-urlencoded webhook bodies.
@@ -138,7 +160,6 @@ func ParseSendCloudWebhookEvent(data []byte) (*SendCloudWebhookEvent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("webhook parse: %w", err)
 	}
-
 	messageID := params.Get("messageId")
 	if messageID == "" {
 		messageID = params.Get("emailId")
@@ -149,7 +170,6 @@ func ParseSendCloudWebhookEvent(data []byte) (*SendCloudWebhookEvent, error) {
 			messageID = parts[0]
 		}
 	}
-
 	event = SendCloudWebhookEvent{
 		Event:      params.Get("event"),
 		MessageID:  messageID,
@@ -157,7 +177,6 @@ func ParseSendCloudWebhookEvent(data []byte) (*SendCloudWebhookEvent, error) {
 		SmtpStatus: params.Get("smtpStatus"),
 		SmtpError:  params.Get("smtpError"),
 	}
-
 	if event.Email == "" {
 		if emailID := params.Get("emailId"); strings.Contains(emailID, "@") {
 			parts := strings.Split(emailID, "@")
@@ -166,13 +185,11 @@ func ParseSendCloudWebhookEvent(data []byte) (*SendCloudWebhookEvent, error) {
 			}
 		}
 	}
-
 	if ts := params.Get("timestamp"); ts != "" {
 		if t, err := time.Parse("2006-01-02 15:04:05", ts); err == nil {
 			event.Timestamp = t.Unix()
 		}
 	}
-
 	return &event, nil
 }
 

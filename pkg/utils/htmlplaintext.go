@@ -4,6 +4,7 @@
 package utils
 
 import (
+	"encoding/json"
 	"io"
 	"regexp"
 	"strings"
@@ -66,4 +67,61 @@ func HTMLToPlainText(s string) string {
 	out = multiSpace.ReplaceAllString(out, " ")
 	out = multiNL.ReplaceAllString(out, "\n\n")
 	return strings.TrimSpace(out)
+}
+
+var mailTemplateVarRe = regexp.MustCompile(`\{\{\s*\.?([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}`)
+
+// DeriveTemplateVariables 从 HTML / 纯文本中解析 {{.Name}}、{{Name}} 占位符，生成 JSON 数组写入 variables。
+func DeriveTemplateVariables(html, plain string) string {
+	text := html + "\n" + plain
+	seen := map[string]struct{}{}
+	var names []string
+	for _, m := range mailTemplateVarRe.FindAllStringSubmatch(text, -1) {
+		if len(m) < 2 {
+			continue
+		}
+		k := m[1]
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		names = append(names, k)
+	}
+	b, _ := json.Marshal(names)
+	return string(b)
+}
+
+// SplitHTMLBodyForTranslation splits full HTML into: prefix (through opening <body…>), inner (body children only), suffix (from </body> onward).
+// If there is no <body>…</body> pair, returns prefix="", inner=full, suffix="" so callers may translate the whole fragment.
+func SplitHTMLBodyForTranslation(s string) (prefix, inner, suffix string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", "", ""
+	}
+	low := strings.ToLower(s)
+	bi := strings.Index(low, "<body")
+	if bi < 0 {
+		return "", s, ""
+	}
+	rest := s[bi:]
+	gt := strings.Index(rest, ">")
+	if gt < 0 {
+		return "", s, ""
+	}
+	openEnd := bi + gt + 1
+	prefix = s[:openEnd]
+	tail := s[openEnd:]
+	ci := strings.Index(strings.ToLower(tail), "</body>")
+	if ci < 0 {
+		// Unclosed body: treat remainder as inner (no suffix)
+		return prefix, tail, ""
+	}
+	inner = tail[:ci]
+	suffix = tail[ci:]
+	return prefix, inner, suffix
+}
+
+// JoinHTMLBodyAfterTranslation reverses SplitHTMLBodyForTranslation.
+func JoinHTMLBodyAfterTranslation(prefix, translatedInner, suffix string) string {
+	return prefix + translatedInner + suffix
 }

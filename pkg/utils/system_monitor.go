@@ -51,7 +51,6 @@ func StartSystemMonitor() {
 
 func updateSystemStatus() {
 	var status SystemStatus
-
 	// CPU
 	// 注意：cpu.Percent(0, false) 返回自上次调用以来的 CPU 使用率
 	// 如果是第一次调用，可能会返回错误或不准确的值，但在循环中会逐渐正常

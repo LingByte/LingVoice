@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/config"
+	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -397,12 +397,12 @@ func PrintBannerFromFile(filename string, defaultText string) error {
 	}
 	lines := strings.Split(string(data), "\n")
 	colors := []string{
-		"\x1b[38;5;165m",
-		"\x1b[38;5;189m",
-		"\x1b[38;5;207m",
-		"\x1b[38;5;219m",
-		"\x1b[38;5;225m",
-		"\x1b[38;5;231m",
+		"\x1b[38;5;117m", // light blue
+		"\x1b[38;5;111m",
+		"\x1b[38;5;75m",
+		"\x1b[38;5;39m",
+		"\x1b[38;5;33m",
+		"\x1b[38;5;27m", // dark blue
 	}
 	for i, line := range lines {
 		if strings.TrimSpace(line) == "" {

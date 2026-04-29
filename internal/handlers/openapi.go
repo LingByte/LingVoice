@@ -12,7 +12,7 @@ import (
 	"github.com/LingByte/LingVoice/internal/listeners"
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/middleware"
-	"github.com/LingByte/LingVoice/pkg/notification"
+	"github.com/LingByte/LingVoice/pkg/notification/mail"
 	"github.com/LingByte/LingVoice/pkg/response"
 	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/gin-gonic/gin"
@@ -29,14 +29,13 @@ type openapiSendMailBody struct {
 }
 
 func (h *Handlers) registerV1RelayRoutes(engine *gin.Engine) {
-	// 邮件 OpenAPI（kind=email，LAuthorization + L-Timestamp + L-Nonce）
 	v1mail := engine.Group("/v1")
 	v1mail.Use(middleware.OpenAPIEmailCredential(h.db))
 	{
-		v1mail.GET("/mail-templates", h.listMailTemplates)
+		v1mail.GET("/mail-templates", h.mailTemplatesListHandler)
 		v1mail.POST("/mail-templates", h.openAPICreateMailTemplate)
-		v1mail.GET("/mail-logs", h.listMailLogs)
-		v1mail.GET("/mail-logs/:id", h.getMailLog)
+		v1mail.GET("/mail-logs", h.mailLogsListHandler)
+		v1mail.GET("/mail-logs/:id", h.mailLogDetailHandler)
 		v1mail.POST("/mail/send", h.openAPISendMail)
 	}
 
@@ -75,7 +74,7 @@ func (h *Handlers) openAPICreateMailTemplate(c *gin.Context) {
 		response.FailWithCode(c, 401, "未授权", nil)
 		return
 	}
-	var req mailTemplateCreateReq
+	var req MailTemplateCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
 		return
@@ -83,9 +82,18 @@ func (h *Handlers) openAPICreateMailTemplate(c *gin.Context) {
 	plain := utils.HTMLToPlainText(req.HTMLBody)
 	vars := strings.TrimSpace(req.Variables)
 	if vars == "" {
-		vars = deriveTemplateVariables(req.HTMLBody, plain)
+		vars = utils.DeriveTemplateVariables(req.HTMLBody, plain)
+	}
+	orgID := uint(0)
+	if cred.UserId > 0 {
+		var u models.User
+		if err := h.db.Where("id = ?", uint(cred.UserId)).First(&u).Error; err == nil {
+			_ = models.EnsurePersonalOrg(h.db, &u)
+			orgID = u.DefaultOrgID
+		}
 	}
 	tpl := models.MailTemplate{
+		OrgID:       orgID,
 		Code:        req.Code,
 		Name:        req.Name,
 		HTMLBody:    req.HTMLBody,
@@ -121,6 +129,16 @@ func (h *Handlers) openAPISendMail(c *gin.Context) {
 		response.FailWithCode(c, 400, "缺少有效的 template_id", nil)
 		return
 	}
+	orgID := uint(0)
+	var logUID uint
+	if cred.UserId > 0 {
+		logUID = uint(cred.UserId)
+		var u models.User
+		if err := h.db.Where("id = ?", logUID).First(&u).Error; err == nil {
+			_ = models.EnsurePersonalOrg(h.db, &u)
+			orgID = u.DefaultOrgID
+		}
+	}
 	var tpl models.MailTemplate
 	if err := h.db.First(&tpl, body.TemplateID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -128,6 +146,10 @@ func (h *Handlers) openAPISendMail(c *gin.Context) {
 			return
 		}
 		response.Fail(c, "查询模版失败", gin.H{"error": err.Error()})
+		return
+	}
+	if orgID != 0 && tpl.OrgID != 0 && tpl.OrgID != orgID {
+		response.FailWithCode(c, 403, "无权访问该模版", nil)
 		return
 	}
 	if !tpl.Enabled {
@@ -167,11 +189,7 @@ func (h *Handlers) openAPISendMail(c *gin.Context) {
 		response.FailWithCode(c, 503, "未配置可用发信渠道", gin.H{"error": err.Error()})
 		return
 	}
-	var logUID uint
-	if cred.UserId > 0 {
-		logUID = uint(cred.UserId)
-	}
-	mailer, err := notification.NewMailerMultiWithIP(cfgs, h.db, c.ClientIP(), notification.WithMailLogUserID(logUID))
+	mailer, err := mail.NewMailer(cfgs, h.db, c.ClientIP(), mail.WithMailLogUserID(logUID), mail.WithMailLogOrgID(orgID))
 	if err != nil {
 		response.FailWithCode(c, 503, "发信服务不可用", gin.H{"error": err.Error()})
 		return

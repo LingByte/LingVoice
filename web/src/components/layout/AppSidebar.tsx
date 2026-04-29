@@ -83,8 +83,8 @@ const menuGroups: MenuGroup[] = [
     ],
   },
   {
-    key: 'admin',
-    title: '管理',
+    key: 'llm',
+    title: 'LLM',
     adminOnly: true,
     items: [
       {
@@ -103,6 +103,18 @@ const menuGroups: MenuGroup[] = [
         icon: <BookOpen size={16} strokeWidth={1.85} />,
       },
       {
+        key: '/notify/llm-usage',
+        label: 'LLM 用量',
+        icon: <BarChart3 size={16} strokeWidth={1.85} />,
+      },
+    ],
+  },
+  {
+    key: 'speech',
+    title: '语音',
+    adminOnly: true,
+    items: [
+      {
         key: '/channels/asr',
         label: 'ASR 渠道',
         icon: <Mic size={16} strokeWidth={1.85} />,
@@ -112,6 +124,18 @@ const menuGroups: MenuGroup[] = [
         label: 'TTS 渠道',
         icon: <Volume2 size={16} strokeWidth={1.85} />,
       },
+      {
+        key: '/notify/speech-usage',
+        label: '语音用量',
+        icon: <Mic2 size={16} strokeWidth={1.85} />,
+      },
+    ],
+  },
+  {
+    key: 'notify',
+    title: '通知',
+    adminOnly: true,
+    items: [
       {
         key: '/notify/channels',
         label: '通知渠道',
@@ -128,15 +152,17 @@ const menuGroups: MenuGroup[] = [
         icon: <ScrollText size={16} strokeWidth={1.85} />,
       },
       {
-        key: '/notify/llm-usage',
-        label: 'LLM 用量',
-        icon: <BarChart3 size={16} strokeWidth={1.85} />,
+        key: '/notify/sms-logs',
+        label: '短信日志',
+        icon: <ScrollText size={16} strokeWidth={1.85} />,
       },
-      {
-        key: '/notify/speech-usage',
-        label: '语音用量',
-        icon: <Mic2 size={16} strokeWidth={1.85} />,
-      },
+    ],
+  },
+  {
+    key: 'system',
+    title: '系统',
+    adminOnly: true,
+    items: [
       {
         key: '/admin/agent-runs',
         label: 'Agent 运行',
@@ -160,6 +186,8 @@ function menuPathSelected(pathname: string, itemKey: string): boolean {
   if (itemKey === '/dashboard') return pathname === '/dashboard' || pathname === '/quotas'
   if (itemKey === '/notify/channels') return pathname.startsWith('/notify/channels')
   if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
+  if (itemKey === '/notify/mail-logs') return pathname.startsWith('/notify/mail-logs')
+  if (itemKey === '/notify/sms-logs') return pathname.startsWith('/notify/sms-logs')
   if (itemKey === '/notify/llm-usage') return pathname === '/notify/llm-usage'
   if (itemKey === '/usage/llm-logs') return pathname === '/usage/llm-logs'
   if (itemKey === '/notify/speech-usage') return pathname === '/notify/speech-usage'

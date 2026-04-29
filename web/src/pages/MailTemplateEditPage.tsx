@@ -71,8 +71,8 @@ export function MailTemplateEditPage() {
       setLoading(false)
       return
     }
-    const id = Number(templateId)
-    if (!id) {
+    const id = templateId
+    if (!id || id === 'new') {
       Message.error('无效的 id')
       navigate('/notify/mail-templates')
       return
@@ -162,7 +162,7 @@ export function MailTemplateEditPage() {
         })
         Message.success('已创建')
       } else {
-        await updateMailTemplate(Number(templateId), {
+        await updateMailTemplate(templateId, {
           name: v.name,
           htmlBody: v.htmlBody,
           description: v.description,

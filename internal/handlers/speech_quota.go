@@ -6,7 +6,7 @@ package handlers
 import (
 	"math"
 
-	"github.com/LingByte/LingVoice/pkg/config"
+	"github.com/LingByte/LingVoice/internal/config"
 )
 
 // speechBillableSeconds 计费秒数：墙钟（识别/合成耗时）与按字节估算的播放/输入时长取较大值，避免极短墙钟但长音频时少计。
@@ -65,11 +65,11 @@ func speechOpenAPIQuotaDelta(
 func speechQuotaCfg() config.SpeechQuotaConfig {
 	if config.GlobalConfig == nil {
 		return config.SpeechQuotaConfig{
-			ASRUnitsPerBillableSecond:  1,
-			TTSUnitsPerBillableSecond:  1,
-			ASRInputBytesPerSec:        32000,
-			TTSOutputBytesPerSec:       16000,
-			MinDeltaOnSuccess:          1,
+			ASRUnitsPerBillableSecond: 1,
+			TTSUnitsPerBillableSecond: 1,
+			ASRInputBytesPerSec:       32000,
+			TTSOutputBytesPerSec:      16000,
+			MinDeltaOnSuccess:         1,
 		}
 	}
 	return config.GlobalConfig.Services.SpeechQuota

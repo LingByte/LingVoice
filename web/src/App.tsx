@@ -9,6 +9,7 @@ import { RegisterPage } from '@/pages/RegisterPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { MailLogsPage } from '@/pages/MailLogsPage'
+import { SmsLogsPage } from '@/pages/SmsLogsPage'
 import { MailTemplateEditPage } from '@/pages/MailTemplateEditPage'
 import { MailTemplatesPage } from '@/pages/MailTemplatesPage'
 import { NotificationChannelEditPage } from '@/pages/NotificationChannelEditPage'
@@ -49,6 +50,7 @@ export default function App() {
           <Route path="notify/mail-templates" element={<MailTemplatesPage />} />
           <Route path="notify/mail-templates/:templateId" element={<MailTemplateEditPage />} />
           <Route path="notify/mail-logs" element={<MailLogsPage />} />
+          <Route path="notify/sms-logs" element={<SmsLogsPage />} />
           <Route path="notify/llm-usage" element={<LlmUsagePage />} />
           <Route path="usage/llm-logs" element={<UsageLogsPage />} />
           <Route path="notify/speech-usage" element={<SpeechUsagePage />} />

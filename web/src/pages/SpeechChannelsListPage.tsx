@@ -113,7 +113,7 @@ export function SpeechChannelsListPage(props: {
 
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerMode, setDrawerMode] = useState<'create' | 'edit'>('create')
-  const [editingId, setEditingId] = useState<number | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [drawerLoading, setDrawerLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -167,7 +167,7 @@ export function SpeechChannelsListPage(props: {
     setDrawerOpen(true)
   }
 
-  const openEdit = async (id: number) => {
+  const openEdit = async (id: string) => {
     setDrawerMode('edit')
     setEditingId(id)
     setDrawerOpen(true)
@@ -247,7 +247,7 @@ export function SpeechChannelsListPage(props: {
     }
   }
 
-  const onDelete = async (id: number) => {
+  const onDelete = async (id: string) => {
     try {
       if (kind === 'asr') await deleteASRChannel(id)
       else await deleteTTSChannel(id)
