@@ -13,17 +13,17 @@ import (
 	"gorm.io/gorm"
 )
 
-// listAgentRuns GET /api/agent/runs
+// agentRunsListHandler GET /api/agent/runs
 // 管理员：分页查询 AgentRun（可按 user_id、session_id、status、时间筛选）。
-func (h *Handlers) listAgentRuns(c *gin.Context) {
-	if !requireAdmin(c) {
+func (h *Handlers) agentRunsListHandler(c *gin.Context) {
+	if !models.RequireAdmin(c) {
 		return
 	}
-	page := parseQueryInt(c, "page", 1)
+	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
 	}
-	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
 	offset := (page - 1) * pageSize
 
 	q := h.db.Model(&models.AgentRun{})
@@ -95,9 +95,9 @@ func (h *Handlers) listAgentRuns(c *gin.Context) {
 	})
 }
 
-// getAgentRun GET /api/agent/runs/:id
-func (h *Handlers) getAgentRun(c *gin.Context) {
-	if !requireAdmin(c) {
+// agentRunDetailHandler GET /api/agent/runs/:id
+func (h *Handlers) agentRunDetailHandler(c *gin.Context) {
+	if !models.RequireAdmin(c) {
 		return
 	}
 	id := strings.TrimSpace(c.Param("id"))
@@ -117,9 +117,9 @@ func (h *Handlers) getAgentRun(c *gin.Context) {
 	response.Success(c, "ok", gin.H{"run": row})
 }
 
-// listAgentRunSteps GET /api/agent/runs/:id/steps
-func (h *Handlers) listAgentRunSteps(c *gin.Context) {
-	if !requireAdmin(c) {
+// agentRunStepsListHandler GET /api/agent/runs/:id/steps
+func (h *Handlers) agentRunStepsListHandler(c *gin.Context) {
+	if !models.RequireAdmin(c) {
 		return
 	}
 	rid := strings.TrimSpace(c.Param("id"))

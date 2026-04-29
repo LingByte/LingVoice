@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/LingByte/LingVoice/pkg/notification/mail"
 	"gorm.io/gorm"
@@ -33,6 +34,18 @@ type NotificationChannelListResult struct {
 	Page      int
 	PageSize  int
 	TotalPage int
+}
+
+// SMSChannelFormView is returned to the frontend for editing (secrets not echoed).
+type SMSChannelFormView struct {
+	Provider   string         `json:"provider"`
+	Config     map[string]any `json:"config"`
+	SecretKeys []string       `json:"secretKeys,omitempty"` // which fields are secrets
+}
+
+type smsChannelConfigEnvelope struct {
+	Provider string         `json:"provider"`
+	Config   map[string]any `json:"config"`
 }
 
 // 通知渠道类型
@@ -196,4 +209,250 @@ func MergeEmailSecretsOnUpdate(oldJSON, newJSON string) (string, error) {
 		return newJSON, err
 	}
 	return string(out), nil
+}
+
+func BuildSMSChannelConfigJSON(provider string, cfg any) (string, error) {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	if p == "" {
+		return "", errors.New("sms provider 不能为空")
+	}
+	// cfg may be object or nil; normalize to map.
+	var m map[string]any
+	switch v := cfg.(type) {
+	case map[string]any:
+		m = v
+	default:
+		// attempt marshal/unmarshal
+		if cfg == nil {
+			m = map[string]any{}
+		} else {
+			b, err := json.Marshal(cfg)
+			if err != nil {
+				return "", err
+			}
+			_ = json.Unmarshal(b, &m)
+		}
+	}
+	env := smsChannelConfigEnvelope{Provider: p, Config: m}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		return "", err
+	}
+	// Minimal validation: must contain at least one key.
+	if len(env.Config) == 0 {
+		return "", fmt.Errorf("sms provider=%s 缺少配置", p)
+	}
+	return string(raw), nil
+}
+
+func DecodeSMSChannelForm(configJSON string) (*SMSChannelFormView, error) {
+	var env smsChannelConfigEnvelope
+	if err := json.Unmarshal([]byte(configJSON), &env); err != nil {
+		return nil, err
+	}
+	out := &SMSChannelFormView{
+		Provider: strings.ToLower(strings.TrimSpace(env.Provider)),
+		Config:   env.Config,
+	}
+	// Mark known secrets (frontend will show "已设置" instead of value).
+	switch out.Provider {
+	case "yunpian", "luosimao", "juhe":
+		out.SecretKeys = []string{"apiKey", "appKey"}
+	case "twilio":
+		out.SecretKeys = []string{"token"}
+	case "huyi":
+		out.SecretKeys = []string{"apiKey"}
+	case "submail":
+		out.SecretKeys = []string{"appKey"}
+	case "chuanglan":
+		out.SecretKeys = []string{"password"}
+	}
+	// Strip secret values by best-effort: replace with empty string.
+	for _, k := range out.SecretKeys {
+		if _, ok := out.Config[k]; ok {
+			out.Config[k] = ""
+		}
+	}
+	return out, nil
+}
+
+// MergeSMSSecretsOnUpdate keeps secret fields when client sends empty string on update.
+func MergeSMSSecretsOnUpdate(oldJSON, newJSON string) (string, error) {
+	var oldE, newE smsChannelConfigEnvelope
+	if err := json.Unmarshal([]byte(oldJSON), &oldE); err != nil {
+		return newJSON, err
+	}
+	if err := json.Unmarshal([]byte(newJSON), &newE); err != nil {
+		return newJSON, err
+	}
+	if strings.ToLower(strings.TrimSpace(oldE.Provider)) != strings.ToLower(strings.TrimSpace(newE.Provider)) {
+		return newJSON, nil
+	}
+	if newE.Config == nil {
+		newE.Config = map[string]any{}
+	}
+	// heuristic: any key present in old with non-empty string, but new empty string => keep old
+	for k, ov := range oldE.Config {
+		os, ok := ov.(string)
+		if !ok || strings.TrimSpace(os) == "" {
+			continue
+		}
+		if nv, ok := newE.Config[k]; ok {
+			if ns, ok := nv.(string); ok && strings.TrimSpace(ns) == "" {
+				newE.Config[k] = os
+			}
+		}
+	}
+	out, err := json.Marshal(newE)
+	if err != nil {
+		return newJSON, err
+	}
+	return string(out), nil
+}
+
+// InternalNotification 站内通知
+type InternalNotification struct {
+	ID        uint           `json:"id" gorm:"primaryKey"`
+	CreatedAt time.Time      `json:"createdAt" gorm:"autoCreateTime;comment:Creation time"`
+	UpdatedAt time.Time      `json:"updatedAt,omitempty" gorm:"autoUpdateTime;comment:Update time"`
+	DeletedAt gorm.DeletedAt `json:"deletedAt,omitempty" gorm:"index"`
+	CreateBy  string         `json:"createBy,omitempty" gorm:"size:128;comment:Creator"`
+	UpdateBy  string         `json:"updateBy,omitempty" gorm:"size:128;comment:Updater"`
+	Remark    string         `json:"remark,omitempty" gorm:"size:128;comment:Remark"`
+	UserID    uint           `json:"userId" gorm:"index;not null;comment:接收用户 ID"`
+	Title     string         `json:"title" gorm:"size:255;not null;comment:标题"`
+	Content   string         `json:"content" gorm:"type:text;not null;comment:正文"`
+	Read      bool           `json:"read" gorm:"default:false;index;comment:是否已读"`
+}
+
+// TableName GORM 表名
+func (InternalNotification) TableName() string {
+	return "internal_notifications"
+}
+
+// SetCreateInfo 设置创建人（与 BaseModel 行为一致）
+func (m *InternalNotification) SetCreateInfo(operator string) {
+	m.CreateBy = operator
+	m.UpdateBy = operator
+}
+
+// SetUpdateInfo 设置更新人
+func (m *InternalNotification) SetUpdateInfo(operator string) {
+	m.UpdateBy = operator
+}
+
+// IsSoftDeleted 是否已软删除（与 BaseModel 判定方式一致）
+func (m *InternalNotification) IsSoftDeleted() bool {
+	return !m.DeletedAt.Time.IsZero()
+}
+
+var errNilDB = errors.New("models: nil db")
+
+// InternalNotificationListResult is paginated internal (in-app) notifications.
+type InternalNotificationListResult struct {
+	List      []InternalNotification
+	Total     int64
+	Page      int
+	PageSize  int
+	TotalPage int
+}
+
+// ListInternalNotifications lists notifications visible to actor (admin may filter by user id).
+func ListInternalNotifications(db *gorm.DB, actor *User, filterUserID *uint, page, pageSize int) (*InternalNotificationListResult, error) {
+	if db == nil {
+		return nil, errNilDB
+	}
+	if actor == nil {
+		return nil, errors.New("models: nil actor")
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	scope := func(q *gorm.DB) *gorm.DB {
+		q = q.Model(&InternalNotification{})
+		if actor.IsAdmin() {
+			if filterUserID != nil {
+				q = q.Where("user_id = ?", *filterUserID)
+			}
+			return q
+		}
+		return q.Where("user_id = ?", actor.ID)
+	}
+
+	var total int64
+	if err := scope(db).Count(&total).Error; err != nil {
+		return nil, err
+	}
+	offset := (page - 1) * pageSize
+	var list []InternalNotification
+	if err := scope(db).Order("id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
+		return nil, err
+	}
+	totalPage := int(total) / pageSize
+	if int(total)%pageSize != 0 {
+		totalPage++
+	}
+	return &InternalNotificationListResult{
+		List:      list,
+		Total:     total,
+		Page:      page,
+		PageSize:  pageSize,
+		TotalPage: totalPage,
+	}, nil
+}
+
+// GetInternalNotificationByID loads a single row by primary key.
+func GetInternalNotificationByID(db *gorm.DB, id uint) (*InternalNotification, error) {
+	if db == nil {
+		return nil, errNilDB
+	}
+	var row InternalNotification
+	if err := db.First(&row, id).Error; err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// CreateInternalNotification persists a new row.
+func CreateInternalNotification(db *gorm.DB, row *InternalNotification) error {
+	if db == nil {
+		return errNilDB
+	}
+	if row == nil {
+		return errors.New("models: nil internal notification")
+	}
+	return db.Create(row).Error
+}
+
+// SaveInternalNotification persists updates to an existing row.
+func SaveInternalNotification(db *gorm.DB, row *InternalNotification) error {
+	if db == nil || row == nil {
+		return errNilDB
+	}
+	return db.Save(row).Error
+}
+
+// DeleteInternalNotification hard-deletes the row.
+func DeleteInternalNotification(db *gorm.DB, row *InternalNotification) error {
+	if db == nil || row == nil {
+		return errNilDB
+	}
+	return db.Delete(row).Error
+}
+
+// PatchInternalNotificationRead updates read flag and update_by.
+func PatchInternalNotificationRead(db *gorm.DB, id uint, read bool, updateBy string) error {
+	if db == nil {
+		return errNilDB
+	}
+	return db.Model(&InternalNotification{}).Where("id = ?", id).Updates(map[string]interface{}{
+		"read":      read,
+		"update_by": updateBy,
+	}).Error
 }

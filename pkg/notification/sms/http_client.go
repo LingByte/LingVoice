@@ -34,6 +34,26 @@ func postForm(ctx context.Context, endpoint string, form url.Values, headers map
 	return resp.StatusCode, b, nil
 }
 
+func getURL(ctx context.Context, endpoint string, headers map[string]string, basicUser, basicPass string) (status int, body []byte, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	if basicUser != "" || basicPass != "" {
+		req.SetBasicAuth(basicUser, basicPass)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, b, nil
+}
+
 func postJSON(ctx context.Context, endpoint string, jsonBody []byte, headers map[string]string, basicUser, basicPass string) (status int, body []byte, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(jsonBody)))
 	if err != nil {
@@ -108,4 +128,3 @@ func normalizeContent(content, fallbackSignature string) string {
 }
 
 var errProviderRejected = errors.New("sms: provider rejected")
-

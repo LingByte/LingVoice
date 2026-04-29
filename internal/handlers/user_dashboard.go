@@ -24,15 +24,15 @@ type dashboardModelAgg struct {
 	Quota  int64  `json:"quota"`
 }
 
-// getDashboardOverview GET /api/dashboard/overview?days=30
+// dashboardOverviewHandler GET /api/dashboard/overview?days=30
 // 当前登录用户：账户额度、周期内 LLM 用量聚合与模型排行（对齐 new-api 数据面板信息架构）。
-func (h *Handlers) getDashboardOverview(c *gin.Context) {
+func (h *Handlers) dashboardOverviewHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
 		response.FailWithCode(c, 401, "未登录", nil)
 		return
 	}
-	days := parseQueryInt(c, "days", 30)
+	days := models.ParseQueryInt(c, "days", 30)
 	if days < 1 {
 		days = 1
 	}

@@ -34,169 +34,210 @@ func (h *Handlers) Register(engine *gin.Engine) {
 	h.registerSMSLogRoutes(api)
 	h.registerMailTemplatesRoutes(api)
 	h.registerNotificationChannelRoutes(api)
+	h.registerInnerNotificationRoutes(api)
+	h.registerLLMChannelRoutes(api)
+	h.registerLLMAbilityRoutes(api)
+	h.registerLLMModelMetaRoutes(api)
+	h.registerLLMAdminRoutes(api)
+	h.registerLLMModelPlazaRoutes(api)
+	h.registerSitePublicRoutes(api)
+	h.registerASRChannelRoutes(api)
+	h.registerTTSChannelRoutes(api)
+	h.registerLLMUsageRoutes(api)
+	h.registerSpeechUsageRoutes(api)
+	h.registerAgentRunRoutes(api)
+	h.registerAdminRoutes(api)
+	h.registerDashboardRoutes(api)
+	h.registerChatRoutes(api)
+	h.registerCredentialRoutes(api)
+	h.registerAuthRoutes(api)
+}
 
+func (h *Handlers) registerLLMChannelRoutes(api *gin.RouterGroup) {
 	llmCat := api.Group("/llm-channels")
 	llmCat.Use(models.AuthRequired)
 	{
-		llmCat.GET("/catalog", h.listLLMChannelsCatalog)
+		llmCat.GET("/catalog", h.llmChannelsCatalogHandler)
 	}
 	llm := api.Group("/llm-channels")
 	llm.Use(models.AuthRequired, models.AdminRequired)
 	{
-		llm.GET("", h.listLLMChannels)
-		llm.POST("", h.createLLMChannel)
-		llm.GET("/:id", h.getLLMChannel)
-		llm.PUT("/:id", h.updateLLMChannel)
-		llm.DELETE("/:id", h.deleteLLMChannel)
+		llm.GET("", h.llmChannelsListHandler)
+		llm.POST("", h.llmChannelCreateHandler)
+		llm.GET("/:id", h.llmChannelDetailHandler)
+		llm.PUT("/:id", h.llmChannelUpdateHandler)
+		llm.DELETE("/:id", h.llmChannelDeleteHandler)
 	}
+}
+
+func (h *Handlers) registerLLMAbilityRoutes(api *gin.RouterGroup) {
 	la := api.Group("/llm-abilities")
 	la.Use(models.AuthRequired, models.AdminRequired)
 	{
-		la.GET("", h.listLLMAbilities)
-		la.POST("", h.createLLMAbility)
-		la.PATCH("", h.patchLLMAbility)
-		la.DELETE("", h.deleteLLMAbility)
-		la.POST("/sync-channel/:id", h.postLLMAbilitiesSyncChannel)
+		la.GET("", h.llmAbilitiesListHandler)
+		la.POST("", h.llmAbilityCreateHandler)
+		la.PATCH("", h.llmAbilityPatchHandler)
+		la.DELETE("", h.llmAbilityDeleteHandler)
+		la.POST("/sync-channel/:id", h.llmAbilitiesSyncChannelHandler)
 	}
+}
+
+func (h *Handlers) registerLLMModelMetaRoutes(api *gin.RouterGroup) {
 	lm := api.Group("/llm-model-metas")
 	lm.Use(models.AuthRequired, models.AdminRequired)
 	{
-		lm.GET("", h.listLLMModelMetas)
-		lm.POST("", h.createLLMModelMeta)
-		lm.GET("/:id", h.getLLMModelMeta)
-		lm.PUT("/:id", h.updateLLMModelMeta)
-		lm.DELETE("/:id", h.deleteLLMModelMeta)
+		lm.GET("", h.llmModelMetasListHandler)
+		lm.POST("", h.llmModelMetaCreateHandler)
+		lm.GET("/:id", h.llmModelMetaDetailHandler)
+		lm.PUT("/:id", h.llmModelMetaUpdateHandler)
+		lm.DELETE("/:id", h.llmModelMetaDeleteHandler)
 	}
+}
+
+func (h *Handlers) registerLLMAdminRoutes(api *gin.RouterGroup) {
 	ladm := api.Group("/llm-admin")
 	ladm.Use(models.AuthRequired, models.AdminRequired)
 	{
-		ladm.GET("/form-options", h.getLLMAdminFormOptions)
+		ladm.GET("/form-options", h.llmAdminFormOptionsHandler)
 	}
+}
+
+func (h *Handlers) registerLLMModelPlazaRoutes(api *gin.RouterGroup) {
 	lp := api.Group("/llm-model-plaza")
 	lp.Use(models.AuthRequired)
 	{
-		lp.GET("", h.listLLMModelPlaza)
+		lp.GET("", h.llmModelPlazaListHandler)
 	}
+}
 
+func (h *Handlers) registerSitePublicRoutes(api *gin.RouterGroup) {
 	site := api.Group("/site")
 	{
-		site.GET("/announcements", h.listPublicAnnouncements)
+		site.GET("/announcements", h.siteAnnouncementsListHandler)
 	}
+}
+
+func (h *Handlers) registerASRChannelRoutes(api *gin.RouterGroup) {
 	asr := api.Group("/asr-channels")
 	{
-		asr.GET("", h.listASRChannels)
-		asr.POST("", h.createASRChannel)
-		asr.GET("/:id", h.getASRChannel)
-		asr.PUT("/:id", h.updateASRChannel)
-		asr.DELETE("/:id", h.deleteASRChannel)
+		asr.GET("", h.asrChannelsListHandler)
+		asr.POST("", h.asrChannelCreateHandler)
+		asr.GET("/:id", h.asrChannelDetailHandler)
+		asr.PUT("/:id", h.asrChannelUpdateHandler)
+		asr.DELETE("/:id", h.asrChannelDeleteHandler)
 	}
+}
+
+func (h *Handlers) registerTTSChannelRoutes(api *gin.RouterGroup) {
 	tts := api.Group("/tts-channels")
 	{
-		tts.GET("", h.listTTSChannels)
-		tts.POST("", h.createTTSChannel)
-		tts.GET("/:id", h.getTTSChannel)
-		tts.PUT("/:id", h.updateTTSChannel)
-		tts.DELETE("/:id", h.deleteTTSChannel)
+		tts.GET("", h.ttsChannelsListHandler)
+		tts.POST("", h.ttsChannelCreateHandler)
+		tts.GET("/:id", h.ttsChannelDetailHandler)
+		tts.PUT("/:id", h.ttsChannelUpdateHandler)
+		tts.DELETE("/:id", h.ttsChannelDeleteHandler)
 	}
+}
 
+func (h *Handlers) registerLLMUsageRoutes(api *gin.RouterGroup) {
 	lu := api.Group("/llm-usage")
 	lu.Use(models.AuthRequired)
 	{
-		lu.GET("", h.listLLMUsage)
-		lu.GET("/:id", h.getLLMUsage)
+		lu.GET("", h.llmUsageListHandler)
+		lu.GET("/:id", h.llmUsageDetailHandler)
 	}
+}
 
+func (h *Handlers) registerSpeechUsageRoutes(api *gin.RouterGroup) {
 	su := api.Group("/speech-usage")
 	su.Use(models.AuthRequired)
 	{
-		su.GET("", h.listSpeechUsage)
-		su.GET("/:id", h.getSpeechUsage)
+		su.GET("", h.speechUsageListHandler)
+		su.GET("/:id", h.speechUsageDetailHandler)
 	}
+}
 
+func (h *Handlers) registerAgentRunRoutes(api *gin.RouterGroup) {
 	agent := api.Group("/agent")
 	agent.Use(models.AuthRequired)
 	{
 		ar := agent.Group("/runs")
-		ar.GET("", h.listAgentRuns)
-		ar.GET("/:id/steps", h.listAgentRunSteps)
-		ar.GET("/:id", h.getAgentRun)
+		ar.GET("", h.agentRunsListHandler)
+		ar.GET("/:id/steps", h.agentRunStepsListHandler)
+		ar.GET("/:id", h.agentRunDetailHandler)
 	}
+}
 
+func (h *Handlers) registerAdminRoutes(api *gin.RouterGroup) {
 	admin := api.Group("/admin")
 	admin.Use(models.AuthRequired)
 	{
-		admin.GET("/users", h.listAdminUsers)
-		admin.GET("/users/:id", h.getAdminUser)
-		admin.PATCH("/users/:id", h.patchAdminUser)
-		admin.DELETE("/users/:id", h.deleteAdminUser)
-		admin.GET("/announcements", h.listAdminAnnouncements)
-		admin.POST("/announcements", h.createSiteAnnouncement)
-		admin.PUT("/announcements/:id", h.updateSiteAnnouncement)
-		admin.DELETE("/announcements/:id", h.deleteSiteAnnouncement)
+		admin.GET("/users", h.adminUsersListHandler)
+		admin.GET("/users/:id", h.adminUserDetailHandler)
+		admin.PATCH("/users/:id", h.adminUserPatchHandler)
+		admin.DELETE("/users/:id", h.adminUserDeleteHandler)
+		admin.GET("/announcements", h.adminSiteAnnouncementsListHandler)
+		admin.POST("/announcements", h.adminSiteAnnouncementCreateHandler)
+		admin.PUT("/announcements/:id", h.adminSiteAnnouncementUpdateHandler)
+		admin.DELETE("/announcements/:id", h.adminSiteAnnouncementDeleteHandler)
 	}
+}
 
+func (h *Handlers) registerDashboardRoutes(api *gin.RouterGroup) {
 	dash := api.Group("/dashboard")
 	dash.Use(models.AuthRequired)
 	{
-		dash.GET("/overview", h.getDashboardOverview)
+		dash.GET("/overview", h.dashboardOverviewHandler)
 	}
+}
 
+func (h *Handlers) registerChatRoutes(api *gin.RouterGroup) {
 	chat := api.Group("/chat")
 	chat.Use(models.AuthRequired)
 	{
-		chat.GET("/sessions", h.listChatSessions)
-		chat.POST("/sessions", h.createChatSession)
-		chat.GET("/sessions/:id/messages", h.listChatMessages)
-		chat.POST("/sessions/:id/messages", h.appendChatMessage)
-		chat.GET("/sessions/:id", h.getChatSession)
-		chat.PATCH("/sessions/:id", h.patchChatSession)
-		chat.DELETE("/sessions/:id", h.deleteChatSession)
+		chat.GET("/sessions", h.chatSessionsListHandler)
+		chat.POST("/sessions", h.chatSessionCreateHandler)
+		chat.GET("/sessions/:id/messages", h.chatSessionMessagesListHandler)
+		chat.POST("/sessions/:id/messages", h.chatSessionMessageCreateHandler)
+		chat.GET("/sessions/:id", h.chatSessionDetailHandler)
+		chat.PATCH("/sessions/:id", h.chatSessionPatchHandler)
+		chat.DELETE("/sessions/:id", h.chatSessionDeleteHandler)
 	}
+}
 
+func (h *Handlers) registerCredentialRoutes(api *gin.RouterGroup) {
 	cr := api.Group("/credentials")
 	cr.Use(models.AuthRequired)
 	{
-		cr.GET("", h.listCredentials)
-		cr.GET("/groups", h.listCredentialGroups)
-		cr.GET("/llm-available-models", h.listLLMAvailableModelsForCredentialGroup)
-		cr.POST("", h.createCredential)
-		cr.GET("/:id", h.getCredential)
-		cr.PUT("/:id", h.updateCredential)
-		cr.DELETE("/:id", h.deleteCredential)
+		cr.GET("", h.credentialsListHandler)
+		cr.GET("/groups", h.credentialGroupsListHandler)
+		cr.GET("/llm-available-models", h.credentialsLLMAvailableModelsHandler)
+		cr.POST("", h.credentialCreateHandler)
+		cr.GET("/:id", h.credentialDetailHandler)
+		cr.PUT("/:id", h.credentialUpdateHandler)
+		cr.DELETE("/:id", h.credentialDeleteHandler)
 	}
-
-	in := api.Group("/internal-notifications")
-	in.Use(models.AuthRequired)
-	{
-		in.GET("", h.listInternalNotifications)
-		in.POST("", h.createInternalNotification)
-		in.GET("/:id", h.getInternalNotification)
-		in.PUT("/:id", h.updateInternalNotification)
-		in.PATCH("/:id/read", h.markInternalNotificationRead)
-		in.DELETE("/:id", h.deleteInternalNotification)
-	}
-	h.registerAuthRoutes(api)
 }
 
 func (h *Handlers) registerAuthRoutes(api *gin.RouterGroup) {
 	auth := api.Group("/auth")
 	{
-		auth.GET("/me", models.AuthRequired, h.getAuthMe)
-		auth.POST("/send-verify-email", h.postSendVerifyEmail)
-		auth.POST("/verify-email-login", h.postVerifyEmailLogin)
-		auth.POST("/login", h.postLogin)
-		auth.POST("/register", h.postRegister)
-		auth.POST("/refresh", h.postRefresh)
-		auth.POST("/logout", models.AuthRequired, h.postLogout)
+		auth.GET("/me", models.AuthRequired, h.authMeHandler)
+		auth.POST("/send-verify-email", h.authSendVerifyEmailHandler)
+		auth.POST("/verify-email-login", h.authVerifyEmailLoginHandler)
+		auth.POST("/login", h.authLoginHandler)
+		auth.POST("/register", h.authRegisterHandler)
+		auth.POST("/refresh", h.authRefreshHandler)
+		auth.POST("/logout", models.AuthRequired, h.authLogoutHandler)
 	}
 
 	user := api.Group("/user")
 	user.Use(models.AuthRequired)
 	{
-		user.PATCH("/profile", h.patchUserProfile)
-		user.POST("/avatar", h.postUserAvatar)
-		user.GET("/llm-usage", h.listLLMUsageMe)
-		user.GET("/llm-usage/:id", h.getLLMUsageMe)
+		user.PATCH("/profile", h.userProfilePatchHandler)
+		user.POST("/avatar", h.userAvatarUploadHandler)
+		user.GET("/llm-usage", h.userLLMUsageListHandler)
+		user.GET("/llm-usage/:id", h.userLLMUsageDetailHandler)
 	}
 }
 

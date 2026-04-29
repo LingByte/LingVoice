@@ -1,7 +1,8 @@
 // Copyright (c) 2026 LingByte. All rights reserved.
 // SPDX-License-Identifier: AGPL-3.0
 
-package handlers
+// Package authdto holds JSON shapes and builders for /api/auth and related user payloads.
+package authdto
 
 import (
 	"errors"
@@ -14,8 +15,8 @@ import (
 	"github.com/LingByte/LingVoice/pkg/utils"
 )
 
-// AuthUserResponse is the public user slice returned on auth endpoints.
-type AuthUserResponse struct {
+// UserResponse is the public user slice returned on auth endpoints.
+type UserResponse struct {
 	// 字符串避免雪花 ID 超过 JS Number 安全整数时前端精度丢失。
 	ID              string `json:"id"`
 	Email           string `json:"email"`
@@ -42,19 +43,19 @@ type AuthUserResponse struct {
 	LastLogin       string `json:"lastLogin,omitempty"` // RFC3339 UTC
 }
 
-// AuthLoginResponse is returned after login, register, magic-link login, or token refresh.
-type AuthLoginResponse struct {
-	User             AuthUserResponse `json:"user"`
-	AccessToken      string           `json:"accessToken"`
-	RefreshToken     string           `json:"refreshToken"`
-	TokenType        string           `json:"tokenType"` // "Bearer"
-	ExpiresIn        int64            `json:"expiresIn"` // access lifetime seconds
-	RefreshExpiresIn int64            `json:"refreshExpiresIn"`
+// LoginResponse is returned after login, register, magic-link login, or token refresh.
+type LoginResponse struct {
+	User             UserResponse `json:"user"`
+	AccessToken      string       `json:"accessToken"`
+	RefreshToken     string       `json:"refreshToken"`
+	TokenType        string       `json:"tokenType"` // "Bearer"
+	ExpiresIn        int64        `json:"expiresIn"` // access lifetime seconds
+	RefreshExpiresIn int64        `json:"refreshExpiresIn"`
 }
 
-// AuthMeResponse is returned by GET /api/auth/me.
-type AuthMeResponse struct {
-	User AuthUserResponse `json:"user"`
+// MeResponse is returned by GET /api/auth/me.
+type MeResponse struct {
+	User UserResponse `json:"user"`
 }
 
 func authTimeRFC3339UTC(t *time.Time) string {
@@ -64,11 +65,12 @@ func authTimeRFC3339UTC(t *time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-func newAuthUserResponse(u *models.User) AuthUserResponse {
+// NewUserResponse maps a domain user to the public auth JSON shape.
+func NewUserResponse(u *models.User) UserResponse {
 	if u == nil {
-		return AuthUserResponse{}
+		return UserResponse{}
 	}
-	return AuthUserResponse{
+	return UserResponse{
 		ID:              strconv.FormatUint(uint64(u.ID), 10),
 		Email:           u.Email,
 		DisplayName:     u.DisplayName,
@@ -95,7 +97,8 @@ func newAuthUserResponse(u *models.User) AuthUserResponse {
 	}
 }
 
-func buildAuthLoginResponse(u *models.User) (*AuthLoginResponse, error) {
+// BuildLoginResponse issues access/refresh tokens and wraps the user payload.
+func BuildLoginResponse(u *models.User) (*LoginResponse, error) {
 	if u == nil {
 		return nil, errors.New("nil user")
 	}
@@ -132,8 +135,8 @@ func buildAuthLoginResponse(u *models.User) (*AuthLoginResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &AuthLoginResponse{
-		User:             newAuthUserResponse(u),
+	return &LoginResponse{
+		User:             NewUserResponse(u),
 		AccessToken:      access,
 		RefreshToken:     refresh,
 		TokenType:        "Bearer",

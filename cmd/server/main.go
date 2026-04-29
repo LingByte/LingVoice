@@ -14,7 +14,6 @@ import (
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/handlers"
 	"github.com/LingByte/LingVoice/internal/listeners"
-	"github.com/LingByte/LingVoice/internal/migrations"
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
@@ -117,9 +116,6 @@ func main() {
 		logger.Error("key manager initialization failed", zap.Error(err))
 		return
 	}
-
-	migrations.DropMailTemplateSubjectTplColumn(db)
-	migrations.DropLLMUsageSessionIDColumn(db)
 
 	// 8. Load Base Configs
 	var addr = config.GlobalConfig.Server.Addr

@@ -77,9 +77,9 @@ func writeNDJSONLine(c *gin.Context, fl http.Flusher, v any) bool {
 	return true
 }
 
-// openAPIAgentChatStream POST /v1/agent/chat/stream
+// openAPIAgentChatStreamHandler POST /v1/agent/chat/stream
 // 按行 NDJSON：{"event":"...","data":{...}}；使用凭证分组下 OpenAI 协议 LLM 渠道执行 pkg/agent 规划与执行。
-func (h *Handlers) openAPIAgentChatStream(c *gin.Context) {
+func (h *Handlers) openAPIAgentChatStreamHandler(c *gin.Context) {
 	cred, ok := middleware.OpenAPILLMCredentialFromContext(c)
 	if !ok || cred == nil {
 		return

@@ -70,12 +70,12 @@ func mergeLLMModelMetaQuota(row *models.LLMModelMeta, body *llmModelMetaWrite, o
 	}
 }
 
-func (h *Handlers) listLLMModelMetas(c *gin.Context) {
-	page := parseQueryInt(c, "page", 1)
+func (h *Handlers) llmModelMetasListHandler(c *gin.Context) {
+	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
 	}
-	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
 	offset := (page - 1) * pageSize
 
 	q := h.db.Model(&models.LLMModelMeta{})
@@ -122,8 +122,8 @@ func (h *Handlers) listLLMModelMetas(c *gin.Context) {
 	})
 }
 
-func (h *Handlers) getLLMModelMeta(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+func (h *Handlers) llmModelMetaDetailHandler(c *gin.Context) {
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -140,7 +140,7 @@ func (h *Handlers) getLLMModelMeta(c *gin.Context) {
 	response.Success(c, "ok", gin.H{"meta": row})
 }
 
-func (h *Handlers) createLLMModelMeta(c *gin.Context) {
+func (h *Handlers) llmModelMetaCreateHandler(c *gin.Context) {
 	var body llmModelMetaWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
@@ -173,8 +173,8 @@ func (h *Handlers) createLLMModelMeta(c *gin.Context) {
 	response.Success(c, "创建成功", gin.H{"meta": row})
 }
 
-func (h *Handlers) updateLLMModelMeta(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+func (h *Handlers) llmModelMetaUpdateHandler(c *gin.Context) {
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -219,8 +219,8 @@ func (h *Handlers) updateLLMModelMeta(c *gin.Context) {
 	response.Success(c, "更新成功", gin.H{"meta": row})
 }
 
-func (h *Handlers) deleteLLMModelMeta(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+func (h *Handlers) llmModelMetaDeleteHandler(c *gin.Context) {
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return

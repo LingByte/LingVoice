@@ -33,42 +33,42 @@ func (h *Handlers) registerV1RelayRoutes(engine *gin.Engine) {
 	v1mail.Use(middleware.OpenAPIEmailCredential(h.db))
 	{
 		v1mail.GET("/mail-templates", h.mailTemplatesListHandler)
-		v1mail.POST("/mail-templates", h.openAPICreateMailTemplate)
+		v1mail.POST("/mail-templates", h.openAPIMailTemplateCreateHandler)
 		v1mail.GET("/mail-logs", h.mailLogsListHandler)
 		v1mail.GET("/mail-logs/:id", h.mailLogDetailHandler)
-		v1mail.POST("/mail/send", h.openAPISendMail)
+		v1mail.POST("/mail/send", h.openAPIMailSendHandler)
 	}
 
 	// OpenAI 协议：Authorization: Bearer（凭证 kind=llm）
 	v1llm := engine.Group("/v1")
 	v1llm.Use(middleware.OpenAPILLMProxyAuth(h.db, middleware.OpenAPILLMStyleOpenAI))
 	{
-		v1llm.GET("/models", h.openAPIListModels)
-		v1llm.POST("/chat/completions", h.openAPIOpenAIChatCompletions)
-		v1llm.POST("/agent/chat/stream", h.openAPIAgentChatStream)
+		v1llm.GET("/models", h.openAPIModelsListHandler)
+		v1llm.POST("/chat/completions", h.openAPIOpenAIChatCompletionsHandler)
+		v1llm.POST("/agent/chat/stream", h.openAPIAgentChatStreamHandler)
 	}
 
 	v1asr := engine.Group("/v1/speech/asr")
 	v1asr.Use(middleware.OpenAPISpeechProxyAuth(h.db, models.CredentialKindASR))
 	{
-		v1asr.POST("/transcribe", h.openAPIASRTranscribe)
+		v1asr.POST("/transcribe", h.openAPIASRTranscribeHandler)
 	}
 	v1tts := engine.Group("/v1/speech/tts")
 	v1tts.Use(middleware.OpenAPISpeechProxyAuth(h.db, models.CredentialKindTTS))
 	{
-		v1tts.POST("/synthesize", h.openAPITTSSynthesize)
+		v1tts.POST("/synthesize", h.openAPITTSSynthesizeHandler)
 	}
 
 	// Anthropic Messages：与官方一致 POST /v1/messages；x-api-key 或 Bearer（凭证 kind=llm）
 	v1anthropic := engine.Group("/v1")
 	v1anthropic.Use(middleware.OpenAPILLMProxyAuth(h.db, middleware.OpenAPILLMStyleAnthropic))
 	{
-		v1anthropic.POST("/messages", h.openAPIAnthropicMessages)
+		v1anthropic.POST("/messages", h.openAPIAnthropicMessagesHandler)
 	}
 }
 
-// openAPICreateMailTemplate 与控制台创建模版逻辑一致，创建人记为 openapi 凭证。
-func (h *Handlers) openAPICreateMailTemplate(c *gin.Context) {
+// openAPIMailTemplateCreateHandler 与控制台创建模版逻辑一致，创建人记为 openapi 凭证。
+func (h *Handlers) openAPIMailTemplateCreateHandler(c *gin.Context) {
 	cred, ok := middleware.OpenAPICredentialFromContext(c)
 	if !ok || cred == nil {
 		response.FailWithCode(c, 401, "未授权", nil)
@@ -114,7 +114,7 @@ func (h *Handlers) openAPICreateMailTemplate(c *gin.Context) {
 	response.Success(c, "创建成功", tpl)
 }
 
-func (h *Handlers) openAPISendMail(c *gin.Context) {
+func (h *Handlers) openAPIMailSendHandler(c *gin.Context) {
 	cred, ok := middleware.OpenAPICredentialFromContext(c)
 	if !ok || cred == nil {
 		response.FailWithCode(c, 401, "未授权", nil)

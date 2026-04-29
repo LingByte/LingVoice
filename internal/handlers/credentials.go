@@ -33,12 +33,12 @@ type credentialCreateBody struct {
 }
 
 type credentialUpdateBody struct {
-	Name                    string  `json:"name" binding:"required,min=1,max=128"`
-	Status                  int     `json:"status"` // 0 或 1
-	RemainQuota             int     `json:"remain_quota"`
-	UnlimitedQuota          bool    `json:"unlimited_quota"`
-	AllowIps                string  `json:"allow_ips"`
-	Group                   string  `json:"group" binding:"max=128"`
+	Name                    string `json:"name" binding:"required,min=1,max=128"`
+	Status                  int    `json:"status"` // 0 或 1
+	RemainQuota             int    `json:"remain_quota"`
+	UnlimitedQuota          bool   `json:"unlimited_quota"`
+	AllowIps                string `json:"allow_ips"`
+	Group                   string `json:"group" binding:"max=128"`
 	CrossGroupRetry         bool   `json:"cross_group_retry"`
 	ExpiredTime             int64  `json:"expired_time"`
 	OpenAPIModelCatalogJSON string `json:"openapi_model_catalog"`
@@ -71,25 +71,25 @@ func credentialToPublic(row *models.Credential) gin.H {
 		allow = *row.AllowIps
 	}
 	return gin.H{
-		"id":                   row.Id,
-		"user_id":              row.UserId,
-		"kind":                 row.Kind,
-		"key_masked":           models.MaskTokenKey(row.Key),
-		"status":               row.Status,
-		"name":                 row.Name,
-		"extra":                jsonRawIfObject(row.ExtraJSON),
+		"id":                    row.Id,
+		"user_id":               row.UserId,
+		"kind":                  row.Kind,
+		"key_masked":            models.MaskTokenKey(row.Key),
+		"status":                row.Status,
+		"name":                  row.Name,
+		"extra":                 jsonRawIfObject(row.ExtraJSON),
 		"openapi_model_catalog": jsonRawIfJSONArray(row.OpenAPIModelCatalogJSON),
-		"created_time":         row.CreatedTime,
-		"accessed_time":        row.AccessedTime,
-		"expired_time":         row.ExpiredTime,
-		"remain_quota":         row.RemainQuota,
-		"unlimited_quota":      row.UnlimitedQuota,
-		"used_quota":           row.UsedQuota,
-		"model_limits_enabled": row.ModelLimitsEnabled,
-		"model_limits":         row.ModelLimits,
-		"allow_ips":            allow,
-		"group":                row.Group,
-		"cross_group_retry":    row.CrossGroupRetry,
+		"created_time":          row.CreatedTime,
+		"accessed_time":         row.AccessedTime,
+		"expired_time":          row.ExpiredTime,
+		"remain_quota":          row.RemainQuota,
+		"unlimited_quota":       row.UnlimitedQuota,
+		"used_quota":            row.UsedQuota,
+		"model_limits_enabled":  row.ModelLimitsEnabled,
+		"model_limits":          row.ModelLimits,
+		"allow_ips":             allow,
+		"group":                 row.Group,
+		"cross_group_retry":     row.CrossGroupRetry,
 	}
 }
 
@@ -121,7 +121,7 @@ func jsonRawIfJSONArray(s string) any {
 	return s
 }
 
-func (h *Handlers) listCredentials(c *gin.Context) {
+func (h *Handlers) credentialsListHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
 		response.FailWithCode(c, 401, "未登录", nil)
@@ -151,8 +151,8 @@ func (h *Handlers) listCredentials(c *gin.Context) {
 	response.Success(c, "ok", gin.H{"list": out})
 }
 
-// listCredentialGroups 返回当前用户凭证中已使用过的分组名（去重、非空），供前端筛选。
-func (h *Handlers) listCredentialGroups(c *gin.Context) {
+// credentialGroupsListHandler 返回当前用户凭证中已使用过的分组名（去重、非空），供前端筛选。
+func (h *Handlers) credentialGroupsListHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
 		response.FailWithCode(c, 401, "未登录", nil)
@@ -170,7 +170,7 @@ func (h *Handlers) listCredentialGroups(c *gin.Context) {
 	response.Success(c, "ok", gin.H{"groups": groups})
 }
 
-func (h *Handlers) createCredential(c *gin.Context) {
+func (h *Handlers) credentialCreateHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
 		response.FailWithCode(c, 401, "未登录", nil)
@@ -227,13 +227,13 @@ func (h *Handlers) createCredential(c *gin.Context) {
 	response.FailWithCode(c, 500, "无法生成唯一密钥，请重试", nil)
 }
 
-func (h *Handlers) getCredential(c *gin.Context) {
+func (h *Handlers) credentialDetailHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
 		response.FailWithCode(c, 401, "未登录", nil)
 		return
 	}
-	id, ok := parseIntParam(c, "id")
+	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -250,13 +250,13 @@ func (h *Handlers) getCredential(c *gin.Context) {
 	response.Success(c, "ok", credentialToPublic(&row))
 }
 
-func (h *Handlers) updateCredential(c *gin.Context) {
+func (h *Handlers) credentialUpdateHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
 		response.FailWithCode(c, 401, "未登录", nil)
 		return
 	}
-	id, ok := parseIntParam(c, "id")
+	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -302,9 +302,9 @@ func (h *Handlers) updateCredential(c *gin.Context) {
 	response.Success(c, "更新成功", credentialToPublic(&row))
 }
 
-// listLLMAvailableModelsForCredentialGroup GET /api/credentials/llm-available-models?group=
+// credentialsLLMAvailableModelsHandler GET /api/credentials/llm-available-models?group=
 // 返回当前分组下可用于 OpenAPI 模型目录勾选的模型 id（与 /v1/models 无 catalog 时同源）。
-func (h *Handlers) listLLMAvailableModelsForCredentialGroup(c *gin.Context) {
+func (h *Handlers) credentialsLLMAvailableModelsHandler(c *gin.Context) {
 	if models.CurrentUser(c) == nil {
 		response.FailWithCode(c, 401, "未登录", nil)
 		return
@@ -325,13 +325,13 @@ func (h *Handlers) listLLMAvailableModelsForCredentialGroup(c *gin.Context) {
 	response.Success(c, "ok", gin.H{"group": eff, "models": ids})
 }
 
-func (h *Handlers) deleteCredential(c *gin.Context) {
+func (h *Handlers) credentialDeleteHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
 		response.FailWithCode(c, 401, "未登录", nil)
 		return
 	}
-	id, ok := parseIntParam(c, "id")
+	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return

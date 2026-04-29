@@ -86,16 +86,16 @@ func applyLLMWrite(w *llmChannelWrite, row *models.LLMChannel, keepKey bool) {
 	row.ChannelInfo = w.ChannelInfo
 }
 
-func (h *Handlers) listLLMChannels(c *gin.Context) {
+func (h *Handlers) llmChannelsListHandler(c *gin.Context) {
 	q := h.db.Model(&models.LLMChannel{})
 	if g := strings.TrimSpace(c.Query("group")); g != "" {
 		q = q.Where("`group` = ?", g)
 	}
-	page := parseQueryInt(c, "page", 1)
+	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
 	}
-	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
 	offset := (page - 1) * pageSize
 
 	var total int64
@@ -135,17 +135,17 @@ type llmChannelCatalogItem struct {
 	Status   int    `json:"status"`
 }
 
-// listLLMChannelsCatalog GET /api/llm-channels/catalog 与 list 相同筛选与分页，但不返回 API Key 等敏感字段。
-func (h *Handlers) listLLMChannelsCatalog(c *gin.Context) {
+// llmChannelsCatalogHandler GET /api/llm-channels/catalog 与 list 相同筛选与分页，但不返回 API Key 等敏感字段。
+func (h *Handlers) llmChannelsCatalogHandler(c *gin.Context) {
 	q := h.db.Model(&models.LLMChannel{})
 	if g := strings.TrimSpace(c.Query("group")); g != "" {
 		q = q.Where("`group` = ?", g)
 	}
-	page := parseQueryInt(c, "page", 1)
+	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
 	}
-	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
 	if pageSize > 500 {
 		pageSize = 500
 	}
@@ -190,8 +190,8 @@ func (h *Handlers) listLLMChannelsCatalog(c *gin.Context) {
 	})
 }
 
-func (h *Handlers) getLLMChannel(c *gin.Context) {
-	id, ok := parseIntParam(c, "id")
+func (h *Handlers) llmChannelDetailHandler(c *gin.Context) {
+	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -208,7 +208,7 @@ func (h *Handlers) getLLMChannel(c *gin.Context) {
 	response.Success(c, "ok", gin.H{"channel": row})
 }
 
-func (h *Handlers) createLLMChannel(c *gin.Context) {
+func (h *Handlers) llmChannelCreateHandler(c *gin.Context) {
 	var body llmChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
@@ -244,8 +244,8 @@ func (h *Handlers) createLLMChannel(c *gin.Context) {
 	response.Success(c, "创建成功", row)
 }
 
-func (h *Handlers) updateLLMChannel(c *gin.Context) {
-	id, ok := parseIntParam(c, "id")
+func (h *Handlers) llmChannelUpdateHandler(c *gin.Context) {
+	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -288,8 +288,8 @@ func (h *Handlers) updateLLMChannel(c *gin.Context) {
 	response.Success(c, "更新成功", row)
 }
 
-func (h *Handlers) deleteLLMChannel(c *gin.Context) {
-	id, ok := parseIntParam(c, "id")
+func (h *Handlers) llmChannelDeleteHandler(c *gin.Context) {
+	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -390,20 +390,20 @@ func speechWriteToTTS(w *speechChannelWrite, row *models.TTSChannel) {
 	row.ConfigJSON = strings.TrimSpace(w.ConfigJSON)
 }
 
-func (h *Handlers) listASRChannels(c *gin.Context) {
+func (h *Handlers) asrChannelsListHandler(c *gin.Context) {
 	h.listSpeechLike(c, "asr")
 }
 
-func (h *Handlers) listTTSChannels(c *gin.Context) {
+func (h *Handlers) ttsChannelsListHandler(c *gin.Context) {
 	h.listSpeechLike(c, "tts")
 }
 
 func (h *Handlers) listSpeechLike(c *gin.Context, kind string) {
-	page := parseQueryInt(c, "page", 1)
+	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
 	}
-	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
 	offset := (page - 1) * pageSize
 
 	switch kind {
@@ -472,8 +472,8 @@ func (h *Handlers) listSpeechLike(c *gin.Context, kind string) {
 	}
 }
 
-func (h *Handlers) getASRChannel(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+func (h *Handlers) asrChannelDetailHandler(c *gin.Context) {
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -490,8 +490,8 @@ func (h *Handlers) getASRChannel(c *gin.Context) {
 	response.Success(c, "ok", gin.H{"channel": row})
 }
 
-func (h *Handlers) getTTSChannel(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+func (h *Handlers) ttsChannelDetailHandler(c *gin.Context) {
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -508,7 +508,7 @@ func (h *Handlers) getTTSChannel(c *gin.Context) {
 	response.Success(c, "ok", gin.H{"channel": row})
 }
 
-func (h *Handlers) createASRChannel(c *gin.Context) {
+func (h *Handlers) asrChannelCreateHandler(c *gin.Context) {
 	var body speechChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
@@ -521,7 +521,7 @@ func (h *Handlers) createASRChannel(c *gin.Context) {
 	row := models.ASRChannel{}
 	speechWriteToASR(&body, &row)
 	u := models.CurrentUser(c)
-	row.SetCreateInfo(operatorFromUser(u))
+	row.SetCreateInfo(models.OperatorFromUser(u))
 	if err := h.db.Create(&row).Error; err != nil {
 		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
 		return
@@ -529,7 +529,7 @@ func (h *Handlers) createASRChannel(c *gin.Context) {
 	response.Success(c, "创建成功", row)
 }
 
-func (h *Handlers) createTTSChannel(c *gin.Context) {
+func (h *Handlers) ttsChannelCreateHandler(c *gin.Context) {
 	var body speechChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
@@ -542,7 +542,7 @@ func (h *Handlers) createTTSChannel(c *gin.Context) {
 	row := models.TTSChannel{}
 	speechWriteToTTS(&body, &row)
 	u := models.CurrentUser(c)
-	row.SetCreateInfo(operatorFromUser(u))
+	row.SetCreateInfo(models.OperatorFromUser(u))
 	if err := h.db.Create(&row).Error; err != nil {
 		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
 		return
@@ -550,8 +550,8 @@ func (h *Handlers) createTTSChannel(c *gin.Context) {
 	response.Success(c, "创建成功", row)
 }
 
-func (h *Handlers) updateASRChannel(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+func (h *Handlers) asrChannelUpdateHandler(c *gin.Context) {
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -575,7 +575,7 @@ func (h *Handlers) updateASRChannel(c *gin.Context) {
 		return
 	}
 	speechWriteToASR(&body, &row)
-	row.SetUpdateInfo(operatorFromUser(models.CurrentUser(c)))
+	row.SetUpdateInfo(models.OperatorFromUser(models.CurrentUser(c)))
 	if err := h.db.Save(&row).Error; err != nil {
 		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
 		return
@@ -583,8 +583,8 @@ func (h *Handlers) updateASRChannel(c *gin.Context) {
 	response.Success(c, "更新成功", row)
 }
 
-func (h *Handlers) updateTTSChannel(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+func (h *Handlers) ttsChannelUpdateHandler(c *gin.Context) {
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -608,7 +608,7 @@ func (h *Handlers) updateTTSChannel(c *gin.Context) {
 		return
 	}
 	speechWriteToTTS(&body, &row)
-	row.SetUpdateInfo(operatorFromUser(models.CurrentUser(c)))
+	row.SetUpdateInfo(models.OperatorFromUser(models.CurrentUser(c)))
 	if err := h.db.Save(&row).Error; err != nil {
 		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
 		return
@@ -616,8 +616,8 @@ func (h *Handlers) updateTTSChannel(c *gin.Context) {
 	response.Success(c, "更新成功", row)
 }
 
-func (h *Handlers) deleteASRChannel(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+func (h *Handlers) asrChannelDeleteHandler(c *gin.Context) {
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -634,8 +634,8 @@ func (h *Handlers) deleteASRChannel(c *gin.Context) {
 	response.Success(c, "删除成功", gin.H{"id": id})
 }
 
-func (h *Handlers) deleteTTSChannel(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+func (h *Handlers) ttsChannelDeleteHandler(c *gin.Context) {
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return

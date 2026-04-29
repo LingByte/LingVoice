@@ -6,6 +6,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -37,7 +38,49 @@ func speechUsageSnapJSON(h gin.H) string {
 	return llm.ClipOpenAPIUsageBody(string(b))
 }
 
-func summarizeASRRequestForUsage(body *openAPIASRTranscribeBody) gin.H {
+func speechUsageClipAnyJSON(v any) string {
+	if v == nil {
+		return ""
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return llm.ClipOpenAPIUsageBody(string(b))
+}
+
+func speechRedactJSONKey(k string) bool {
+	lk := strings.ToLower(strings.TrimSpace(k))
+	for _, s := range []string{"secret", "password", "token", "api_key", "apikey", "private_key", "privatekey", "authorization", "sk-", "ak"} {
+		if strings.Contains(lk, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// speechRedactMapNested returns a JSON-safe snapshot of merged TTS/ASR options with secrets stripped (shallow + one nested map).
+func speechRedactMapNested(m map[string]interface{}, depth int) map[string]interface{} {
+	if m == nil || depth > 3 {
+		return map[string]interface{}{}
+	}
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		if speechRedactJSONKey(k) {
+			out[k] = "<redacted>"
+			continue
+		}
+		switch t := v.(type) {
+		case map[string]interface{}:
+			out[k] = speechRedactMapNested(t, depth+1)
+		default:
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func summarizeASRRequestForUsage(body *OpenapiASRTranscribeReq) gin.H {
 	if body == nil {
 		return gin.H{}
 	}
@@ -46,33 +89,64 @@ func summarizeASRRequestForUsage(body *openAPIASRTranscribeBody) gin.H {
 		"format":   strings.TrimSpace(body.Format),
 		"language": strings.TrimSpace(body.Language),
 	}
-	if strings.TrimSpace(body.AudioURL) != "" {
+	if raw := strings.TrimSpace(body.AudioURL); raw != "" {
 		out["has_audio_url"] = true
+		if u, err := url.Parse(raw); err == nil {
+			out["audio_url_scheme"] = u.Scheme
+			out["audio_url_host"] = u.Host
+			out["audio_url_path_len"] = len(u.Path)
+			out["audio_url_query_len"] = len(u.RawQuery)
+		} else {
+			out["audio_url_parse_error"] = true
+		}
 	}
-	if strings.TrimSpace(body.AudioBase64) != "" {
-		out["audio_base64_chars"] = len(strings.TrimSpace(body.AudioBase64))
+	if b64 := strings.TrimSpace(body.AudioBase64); b64 != "" {
+		out["audio_base64_chars"] = len(b64)
+	}
+	if body.Extra != nil {
+		out["extra"] = speechUsageClipAnyJSON(body.Extra)
 	}
 	return out
 }
 
-func summarizeTTSRequestForUsage(body *openAPITTSSynthesizeBody) gin.H {
+func summarizeTTSRequestForUsage(body *OpenapiTTSSynthesizeReq, merged map[string]interface{}) gin.H {
 	if body == nil {
 		return gin.H{}
 	}
 	text := strings.TrimSpace(body.Text)
-	return gin.H{
-		"group":                     strings.TrimSpace(body.Group),
-		"voice":                     strings.TrimSpace(body.Voice),
-		"response_type":             normalizeTTSResponseType(body.ResponseType, body.Output),
-		"audio_format":              strings.TrimSpace(body.AudioFormat),
-		"sample_rate":               body.SampleRate,
-		"text_rune_count":           utf8.RuneCountInString(text),
-		"has_tts_options":           body.TTSOptions != nil && len(body.TTSOptions) > 0,
-		"upload_bucket_or_default":  strings.TrimSpace(body.UploadBucket) != "",
+	preview := text
+	if utf8.RuneCountInString(preview) > 240 {
+		preview = string([]rune(preview)[:240]) + "…"
 	}
+	out := gin.H{
+		"group":                    strings.TrimSpace(body.Group),
+		"voice":                    strings.TrimSpace(body.Voice),
+		"response_type":            normalizeTTSResponseType(body.ResponseType, body.Output),
+		"response_type_raw":        strings.TrimSpace(body.ResponseType),
+		"output_raw":               strings.TrimSpace(body.Output),
+		"audio_format":             strings.TrimSpace(body.AudioFormat),
+		"sample_rate":              body.SampleRate,
+		"text_rune_count":          utf8.RuneCountInString(text),
+		"text_byte_len":            len(text),
+		"text_preview":             preview,
+		"has_tts_options":          body.TTSOptions != nil && len(body.TTSOptions) > 0,
+		"tts_options":              speechUsageClipAnyJSON(body.TTSOptions),
+		"upload_bucket":            strings.TrimSpace(body.UploadBucket),
+		"upload_key":               strings.TrimSpace(body.UploadKey),
+		"upload_filename":          strings.TrimSpace(body.UploadFilename),
+		"upload_bucket_or_default": strings.TrimSpace(body.UploadBucket) != "",
+	}
+	if body.Extra != nil {
+		out["extra"] = speechUsageClipAnyJSON(body.Extra)
+	}
+	if merged != nil {
+		safe := speechRedactMapNested(merged, 0)
+		out["effective_merge_redacted"] = speechUsageClipAnyJSON(safe)
+	}
+	return out
 }
 
-func (h *Handlers) recordOpenAPIASRUsage(c *gin.Context, started time.Time, cred *models.Credential, ch *models.ASRChannel, httpCode int, success bool, errMsg string, body *openAPIASRTranscribeBody, respPayload gin.H, audioInBytes int64, audioSrc string) {
+func (h *Handlers) recordOpenAPIASRUsage(c *gin.Context, started time.Time, cred *models.Credential, ch *models.ASRChannel, httpCode int, success bool, errMsg string, body *OpenapiASRTranscribeReq, respPayload gin.H, audioInBytes int64, audioSrc string) {
 	if h.db == nil || cred == nil || started.IsZero() {
 		return
 	}
@@ -84,38 +158,47 @@ func (h *Handlers) recordOpenAPIASRUsage(c *gin.Context, started time.Time, cred
 		chid = int(ch.ID)
 	}
 	reqH := summarizeASRRequestForUsage(body)
+	reqH["credential_id"] = cred.Id
+	reqH["credential_kind"] = strings.TrimSpace(cred.Kind)
+	reqH["credential_group"] = strings.TrimSpace(cred.Group)
+	reqH["credential_name"] = strings.TrimSpace(cred.Name)
 	if audioSrc != "" {
 		reqH["audio_source"] = audioSrc
 	}
 	if audioInBytes > 0 {
 		reqH["audio_bytes"] = audioInBytes
 	}
+	if ch != nil {
+		reqH["channel_id"] = ch.ID
+		reqH["channel_group"] = strings.TrimSpace(ch.Group)
+		reqH["channel_provider"] = strings.TrimSpace(ch.Provider)
+	}
 	latMs := time.Since(started).Milliseconds()
 	cfg := speechQuotaCfg()
 	bill := speechBillableSeconds(latMs, audioInBytes, cfg.ASRInputBytesPerSec)
 	delta := speechOpenAPIQuotaDelta(success, cred.Group, bill, cfg.ASRUnitsPerBillableSecond, cfg.MinDeltaOnSuccess)
 	row := models.SpeechUsage{
-		ID:               newSpeechUsageRowID(),
-		RequestID:        newSpeechUsageRowID(),
-		CredentialID:     cred.Id,
-		UserID:           credentialUserIDString(cred.UserId),
-		Kind:             models.SpeechUsageKindASR,
-		Provider:         provider,
-		ChannelID:        chid,
-		Group:            grp,
-		RequestType:      "openapi_asr_transcribe",
-		RequestContent:   speechUsageSnapJSON(reqH),
-		ResponseContent:  speechUsageSnapJSON(respPayload),
-		LatencyMs:        latMs,
-		StatusCode:       httpCode,
-		Success:          success,
-		ErrorMessage:     strings.TrimSpace(errMsg),
-		AudioInputBytes:  audioInBytes,
-		QuotaDelta:       delta,
-		UserAgent:        c.Request.UserAgent(),
-		IPAddress:        c.ClientIP(),
-		RequestedAt:      started,
-		CompletedAt:      time.Now(),
+		ID:              newSpeechUsageRowID(),
+		RequestID:       newSpeechUsageRowID(),
+		CredentialID:    cred.Id,
+		UserID:          credentialUserIDString(cred.UserId),
+		Kind:            models.SpeechUsageKindASR,
+		Provider:        provider,
+		ChannelID:       chid,
+		Group:           grp,
+		RequestType:     "openapi_asr_transcribe",
+		RequestContent:  speechUsageSnapJSON(reqH),
+		ResponseContent: speechUsageSnapJSON(respPayload),
+		LatencyMs:       latMs,
+		StatusCode:      httpCode,
+		Success:         success,
+		ErrorMessage:    strings.TrimSpace(errMsg),
+		AudioInputBytes: audioInBytes,
+		QuotaDelta:      delta,
+		UserAgent:       c.Request.UserAgent(),
+		IPAddress:       c.ClientIP(),
+		RequestedAt:     started,
+		CompletedAt:     time.Now(),
 	}
 	if err := h.db.Create(&row).Error; err != nil {
 		return
@@ -125,7 +208,7 @@ func (h *Handlers) recordOpenAPIASRUsage(c *gin.Context, started time.Time, cred
 	}
 }
 
-func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred *models.Credential, ch *models.TTSChannel, httpCode int, success bool, errMsg string, body *openAPITTSSynthesizeBody, respPayload gin.H, audioOutBytes int64, textChars int) {
+func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred *models.Credential, ch *models.TTSChannel, httpCode int, success bool, errMsg string, body *OpenapiTTSSynthesizeReq, merged map[string]interface{}, respPayload gin.H, audioOutBytes int64, textChars int) {
 	if h.db == nil || cred == nil || started.IsZero() {
 		return
 	}
@@ -140,6 +223,16 @@ func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred
 	cfg := speechQuotaCfg()
 	bill := speechBillableSeconds(latMs, audioOutBytes, cfg.TTSOutputBytesPerSec)
 	delta := speechOpenAPIQuotaDelta(success, cred.Group, bill, cfg.TTSUnitsPerBillableSecond, cfg.MinDeltaOnSuccess)
+	reqH := summarizeTTSRequestForUsage(body, merged)
+	reqH["credential_id"] = cred.Id
+	reqH["credential_kind"] = strings.TrimSpace(cred.Kind)
+	reqH["credential_group"] = strings.TrimSpace(cred.Group)
+	reqH["credential_name"] = strings.TrimSpace(cred.Name)
+	if ch != nil {
+		reqH["channel_id"] = ch.ID
+		reqH["channel_group"] = strings.TrimSpace(ch.Group)
+		reqH["channel_provider"] = strings.TrimSpace(ch.Provider)
+	}
 	row := models.SpeechUsage{
 		ID:               newSpeechUsageRowID(),
 		RequestID:        newSpeechUsageRowID(),
@@ -150,7 +243,7 @@ func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred
 		ChannelID:        chid,
 		Group:            grp,
 		RequestType:      "openapi_tts_synthesize",
-		RequestContent:   speechUsageSnapJSON(summarizeTTSRequestForUsage(body)),
+		RequestContent:   speechUsageSnapJSON(reqH),
 		ResponseContent:  speechUsageSnapJSON(respPayload),
 		LatencyMs:        latMs,
 		StatusCode:       httpCode,
@@ -172,16 +265,16 @@ func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred
 	}
 }
 
-// listSpeechUsage 分页查询语音用量（管理员）。
-func (h *Handlers) listSpeechUsage(c *gin.Context) {
-	if !requireAdmin(c) {
+// speechUsageListHandler 分页查询语音用量（管理员）。
+func (h *Handlers) speechUsageListHandler(c *gin.Context) {
+	if !models.RequireAdmin(c) {
 		return
 	}
-	page := parseQueryInt(c, "page", 1)
+	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
 	}
-	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
 	offset := (page - 1) * pageSize
 
 	q := h.db.Model(&models.SpeechUsage{})
@@ -280,9 +373,9 @@ func (h *Handlers) listSpeechUsage(c *gin.Context) {
 	})
 }
 
-// getSpeechUsage 按主键 id 查询单条语音用量（管理员）。
-func (h *Handlers) getSpeechUsage(c *gin.Context) {
-	if !requireAdmin(c) {
+// speechUsageDetailHandler 按主键 id 查询单条语音用量（管理员）。
+func (h *Handlers) speechUsageDetailHandler(c *gin.Context) {
+	if !models.RequireAdmin(c) {
 		return
 	}
 	id := strings.TrimSpace(c.Param("id"))

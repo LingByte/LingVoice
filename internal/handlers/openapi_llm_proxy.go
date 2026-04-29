@@ -252,8 +252,8 @@ func llmCredAndUserDecrementQuota(db *gorm.DB, cred *models.Credential, delta in
 	llmUserQuotaApply(db, cred.UserId, delta)
 }
 
-// openAPIOpenAIChatCompletions 透明转发；非流式按渠道优先级重试并记录 channel_attempts。
-func (h *Handlers) openAPIOpenAIChatCompletions(c *gin.Context) {
+// openAPIOpenAIChatCompletionsHandler 透明转发；非流式按渠道优先级重试并记录 channel_attempts。
+func (h *Handlers) openAPIOpenAIChatCompletionsHandler(c *gin.Context) {
 	cred, ok := middleware.OpenAPILLMCredentialFromContext(c)
 	if !ok || cred == nil {
 		return
@@ -349,8 +349,8 @@ func (h *Handlers) openAPIOpenAIChatCompletions(c *gin.Context) {
 	}
 }
 
-// openAPIAnthropicMessages 透明转发；非流式按渠道优先级重试。
-func (h *Handlers) openAPIAnthropicMessages(c *gin.Context) {
+// openAPIAnthropicMessagesHandler 透明转发；非流式按渠道优先级重试。
+func (h *Handlers) openAPIAnthropicMessagesHandler(c *gin.Context) {
 	cred, ok := middleware.OpenAPILLMCredentialFromContext(c)
 	if !ok || cred == nil {
 		return

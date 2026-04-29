@@ -32,9 +32,9 @@ type plazaBillingCount struct {
 	Count   int64  `json:"count"`
 }
 
-// listLLMModelPlaza GET /api/llm-model-plaza
+// llmModelPlazaListHandler GET /api/llm-model-plaza
 // 模型广场：筛选（供应商 / 能力分组 / 计费类型 / 关键词）+ 侧栏统计；登录用户可访问。
-func (h *Handlers) listLLMModelPlaza(c *gin.Context) {
+func (h *Handlers) llmModelPlazaListHandler(c *gin.Context) {
 	q := h.db.Model(&models.LLMModelMeta{}).Where("status = ?", 1)
 	if v := strings.TrimSpace(c.Query("vendor")); v != "" {
 		if v == "__empty__" {
@@ -121,13 +121,13 @@ ORDER BY a.model
 	_ = h.db.Model(&models.LLMModelMeta{}).Where("status = ?", 1).Count(&totalMeta).Error
 
 	response.Success(c, "ok", gin.H{
-		"catalog":              catalog,
-		"models_without_meta":  orphan,
-		"total_filtered":       len(catalog),
-		"total_meta_enabled":   totalMeta,
-		"vendor_counts":        vendorCounts,
-		"group_counts":         groupCounts,
-		"billing_counts":       billingCounts,
-		"usd_per_quota_unit":   dashboardUSDPerQuotaUnit,
+		"catalog":             catalog,
+		"models_without_meta": orphan,
+		"total_filtered":      len(catalog),
+		"total_meta_enabled":  totalMeta,
+		"vendor_counts":       vendorCounts,
+		"group_counts":        groupCounts,
+		"billing_counts":      billingCounts,
+		"usd_per_quota_unit":  dashboardUSDPerQuotaUnit,
 	})
 }

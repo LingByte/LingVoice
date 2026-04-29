@@ -1,9 +1,15 @@
 package models
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/LingByte/LingVoice/pkg/constants"
+	"github.com/LingByte/LingVoice/pkg/response"
 	"github.com/LingByte/LingVoice/pkg/utils"
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
@@ -70,4 +76,139 @@ func (m *BaseModel) GetUpdatedAtUnix() int64 {
 		return 0
 	}
 	return m.UpdatedAt.Unix()
+}
+
+const orgHeader = "X-Org-ID"
+
+// CurrentOrgID resolves organization id for this request.
+// Resolution: header X-Org-ID (if member) -> user's DefaultOrgID -> 0 (system).
+func CurrentOrgID(c *gin.Context) uint {
+	u := CurrentUser(c)
+	if u == nil {
+		return 0
+	}
+	if dbAny, ok := c.Get(constants.DbField); ok {
+		if db, ok := dbAny.(*gorm.DB); ok && db != nil {
+			_ = EnsurePersonalOrg(db, u)
+		}
+	}
+	if raw := strings.TrimSpace(c.GetHeader(orgHeader)); raw != "" {
+		if n, err := strconv.ParseUint(raw, 10, 64); err == nil && n > 0 {
+			orgID := uint(n)
+			if dbAny, ok := c.Get(constants.DbField); ok {
+				if db, ok := dbAny.(*gorm.DB); ok && db != nil {
+					if okm, _ := IsOrgMember(db, orgID, u.ID); okm {
+						return orgID
+					}
+				}
+			}
+		}
+	}
+	return u.DefaultOrgID
+}
+
+// OperatorFromUser returns a stable operator string for audit fields.
+func OperatorFromUser(u *User) string {
+	if u == nil {
+		return ""
+	}
+	if strings.TrimSpace(u.Email) != "" {
+		return strings.TrimSpace(u.Email)
+	}
+	return fmt.Sprintf("uid:%d", u.ID)
+}
+
+// RequireAdmin writes 403 and returns false if the caller is not an admin.
+func RequireAdmin(c *gin.Context) bool {
+	u := CurrentUser(c)
+	if u == nil || !u.IsAdmin() {
+		response.FailWithCode(c, 403, "需要管理员权限", nil)
+		return false
+	}
+	return true
+}
+
+// ParseUintParam parses a positive uint path param.
+func ParseUintParam(c *gin.Context, name string) (uint, bool) {
+	s := strings.TrimSpace(c.Param(name))
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil || n == 0 {
+		return 0, false
+	}
+	max := uint64(^uint(0))
+	if n > max {
+		return 0, false
+	}
+	return uint(n), true
+}
+
+// ParseInt64Param parses a positive path param (e.g. snowflake id).
+func ParseInt64Param(c *gin.Context, name string) (int64, bool) {
+	s := strings.TrimSpace(c.Param(name))
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// ParseIntParam parses a positive int path param.
+func ParseIntParam(c *gin.Context, name string) (int, bool) {
+	s := strings.TrimSpace(c.Param(name))
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// ParseQueryInt parses a query int, falling back to def on empty or invalid input.
+func ParseQueryInt(c *gin.Context, name string, def int) int {
+	s := strings.TrimSpace(c.Query(name))
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// ClampPageSize normalizes list page size to (0,100], default 20.
+func ClampPageSize(n int) int {
+	switch {
+	case n <= 0:
+		return 20
+	case n > 100:
+		return 100
+	default:
+		return n
+	}
+}
+
+// ParseQueryUint parses a positive uint query param.
+func ParseQueryUint(c *gin.Context, name string) (uint, bool) {
+	s := strings.TrimSpace(c.Query(name))
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil || n == 0 {
+		return 0, false
+	}
+	max := uint64(^uint(0))
+	if n > max {
+		return 0, false
+	}
+	return uint(n), true
 }

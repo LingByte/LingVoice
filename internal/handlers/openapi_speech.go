@@ -28,7 +28,7 @@ import (
 
 const maxOpenAPIAudioFetchBytes = 32 << 20 // 32 MiB
 
-type openAPIASRTranscribeBody struct {
+type OpenapiASRTranscribeReq struct {
 	Group       string `json:"group"`
 	AudioBase64 string `json:"audio_base64"`
 	AudioURL    string `json:"audio_url"`
@@ -37,7 +37,7 @@ type openAPIASRTranscribeBody struct {
 	Extra       any    `json:"extra"`
 }
 
-type openAPITTSSynthesizeBody struct {
+type OpenapiTTSSynthesizeReq struct {
 	Group          string `json:"group"`
 	Text           string `json:"text" binding:"required"`
 	Voice          string `json:"voice"`
@@ -106,7 +106,7 @@ func applyOpenAPITTSFormatHint(m map[string]interface{}, provider, audioFormat s
 	}
 }
 
-func mergeTTSOpenAPIRequestOptions(merged map[string]interface{}, provider string, body *openAPITTSSynthesizeBody) {
+func mergeTTSOpenAPIRequestOptions(merged map[string]interface{}, provider string, body *OpenapiTTSSynthesizeReq) {
 	if body.TTSOptions != nil {
 		for k, v := range body.TTSOptions {
 			k = strings.TrimSpace(k)
@@ -196,7 +196,7 @@ func fetchAudioBytesFromURL(ctx context.Context, rawURL string) ([]byte, error) 
 	return data, nil
 }
 
-func resolveASRAudioInput(body *openAPIASRTranscribeBody) (source string, err error) {
+func resolveASRAudioInput(body *OpenapiASRTranscribeReq) (source string, err error) {
 	b64 := strings.TrimSpace(body.AudioBase64)
 	u := strings.TrimSpace(body.AudioURL)
 	if b64 != "" && u != "" {
@@ -221,15 +221,15 @@ func resolveASRAudioInput(body *openAPIASRTranscribeBody) (source string, err er
 	return "url", nil
 }
 
-// openAPIASRTranscribe POST /v1/speech/asr/transcribe
-func (h *Handlers) openAPIASRTranscribe(c *gin.Context) {
+// openAPIASRTranscribeHandler POST /v1/speech/asr/transcribe
+func (h *Handlers) openAPIASRTranscribeHandler(c *gin.Context) {
 	cred, ok := middleware.OpenAPISpeechCredentialFromContext(c)
 	if !ok || cred == nil {
 		response.FailWithCode(c, 401, "未授权", nil)
 		return
 	}
 	started := time.Now()
-	var body openAPIASRTranscribeBody
+	var body OpenapiASRTranscribeReq
 	if err := c.ShouldBindJSON(&body); err != nil {
 		h.recordOpenAPIASRUsage(c, started, cred, nil, 400, false, err.Error(), nil, gin.H{"error": err.Error()}, 0, "")
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
@@ -299,23 +299,23 @@ func normalizeTTSResponseType(responseType, output string) string {
 	}
 }
 
-// openAPITTSSynthesize POST /v1/speech/tts/synthesize
-func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
+// openAPITTSSynthesizeHandler POST /v1/speech/tts/synthesize
+func (h *Handlers) openAPITTSSynthesizeHandler(c *gin.Context) {
 	cred, ok := middleware.OpenAPISpeechCredentialFromContext(c)
 	if !ok || cred == nil {
 		response.FailWithCode(c, 401, "未授权", nil)
 		return
 	}
 	started := time.Now()
-	var body openAPITTSSynthesizeBody
+	var body OpenapiTTSSynthesizeReq
 	if err := c.ShouldBindJSON(&body); err != nil {
-		h.recordOpenAPITTSUsage(c, started, cred, nil, 400, false, err.Error(), nil, gin.H{"error": err.Error()}, 0, 0)
+		h.recordOpenAPITTSUsage(c, started, cred, nil, 400, false, err.Error(), nil, nil, gin.H{"error": err.Error()}, 0, 0)
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
 		return
 	}
 	text := strings.TrimSpace(body.Text)
 	if text == "" {
-		h.recordOpenAPITTSUsage(c, started, cred, nil, 400, false, "text 不能为空", &body, gin.H{"error": "text 不能为空"}, 0, 0)
+		h.recordOpenAPITTSUsage(c, started, cred, nil, 400, false, "text 不能为空", &body, nil, gin.H{"error": "text 不能为空"}, 0, 0)
 		response.FailWithCode(c, 400, "text 不能为空", nil)
 		return
 	}
@@ -323,7 +323,7 @@ func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 	outMode := normalizeTTSResponseType(body.ResponseType, body.Output)
 	ch, err := pickTTSChannel(h.db, cred, body.Group)
 	if err != nil {
-		h.recordOpenAPITTSUsage(c, started, cred, nil, 503, false, err.Error(), &body, gin.H{"error": err.Error()}, 0, textChars)
+		h.recordOpenAPITTSUsage(c, started, cred, nil, 503, false, err.Error(), &body, nil, gin.H{"error": err.Error()}, 0, textChars)
 		response.FailWithCode(c, 503, "无可用 TTS 渠道", gin.H{"error": err.Error()})
 		return
 	}
@@ -333,7 +333,7 @@ func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 	if strings.TrimSpace(ch.ConfigJSON) != "" {
 		var extra map[string]interface{}
 		if err := json.Unmarshal([]byte(ch.ConfigJSON), &extra); err != nil {
-			h.recordOpenAPITTSUsage(c, started, cred, ch, 500, false, err.Error(), &body, gin.H{"error": err.Error()}, 0, textChars)
+			h.recordOpenAPITTSUsage(c, started, cred, ch, 500, false, err.Error(), &body, merged, gin.H{"error": err.Error()}, 0, textChars)
 			response.FailWithCode(c, 500, "渠道 configJson 无效", gin.H{"error": err.Error()})
 			return
 		}
@@ -360,7 +360,7 @@ func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 
 	svc, err := synthesizer.NewSynthesisServiceFromCredential(synthesizer.TTSCredentialConfig(merged))
 	if err != nil {
-		h.recordOpenAPITTSUsage(c, started, cred, ch, 400, false, err.Error(), &body, gin.H{"error": err.Error()}, 0, textChars)
+		h.recordOpenAPITTSUsage(c, started, cred, ch, 400, false, err.Error(), &body, merged, gin.H{"error": err.Error()}, 0, textChars)
 		response.FailWithCode(c, 400, "TTS 配置无法构建服务", gin.H{"error": err.Error()})
 		return
 	}
@@ -368,13 +368,13 @@ func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 	ctx := context.Background()
 	if err := svc.Synthesize(ctx, handler, text); err != nil {
 		_ = svc.Close()
-		h.recordOpenAPITTSUsage(c, started, cred, ch, 502, false, err.Error(), &body, gin.H{"error": err.Error()}, 0, textChars)
+		h.recordOpenAPITTSUsage(c, started, cred, ch, 502, false, err.Error(), &body, merged, gin.H{"error": err.Error()}, 0, textChars)
 		response.FailWithCode(c, 502, "合成失败", gin.H{"error": err.Error()})
 		return
 	}
 	_ = svc.Close()
 	if len(handler.buf) == 0 {
-		h.recordOpenAPITTSUsage(c, started, cred, ch, 502, false, "未收到音频数据", &body, nil, 0, textChars)
+		h.recordOpenAPITTSUsage(c, started, cred, ch, 502, false, "未收到音频数据", &body, merged, nil, 0, textChars)
 		response.FailWithCode(c, 502, "未收到音频数据", nil)
 		return
 	}
@@ -395,7 +395,7 @@ func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 
 	if outMode == "url" {
 		if config.GlobalStore == nil {
-			h.recordOpenAPITTSUsage(c, started, cred, ch, 503, false, "对象存储未初始化", &body, gin.H{"response_type": outMode}, audioOut, textChars)
+			h.recordOpenAPITTSUsage(c, started, cred, ch, 503, false, "对象存储未初始化", &body, merged, gin.H{"response_type": outMode}, audioOut, textChars)
 			response.FailWithCode(c, 503, "对象存储未初始化（LINGSTORAGE_*）", nil)
 			return
 		}
@@ -404,7 +404,7 @@ func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 			bucket = config.GlobalConfig.Services.Storage.Bucket
 		}
 		if bucket == "" {
-			h.recordOpenAPITTSUsage(c, started, cred, ch, 503, false, "未配置存储 bucket", &body, gin.H{"response_type": outMode}, audioOut, textChars)
+			h.recordOpenAPITTSUsage(c, started, cred, ch, 503, false, "未配置存储 bucket", &body, merged, gin.H{"response_type": outMode}, audioOut, textChars)
 			response.FailWithCode(c, 503, "未配置存储 bucket（LINGSTORAGE_BUCKET）", nil)
 			return
 		}
@@ -427,7 +427,7 @@ func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 			Key:      key,
 		})
 		if upErr != nil {
-			h.recordOpenAPITTSUsage(c, started, cred, ch, 502, false, upErr.Error(), &body, gin.H{"response_type": outMode, "error": upErr.Error()}, audioOut, textChars)
+			h.recordOpenAPITTSUsage(c, started, cred, ch, 502, false, upErr.Error(), &body, merged, gin.H{"response_type": outMode, "error": upErr.Error()}, audioOut, textChars)
 			response.FailWithCode(c, 502, "上传存储失败", gin.H{"error": upErr.Error()})
 			return
 		}
@@ -447,7 +447,7 @@ func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 			"bucket":        up.Bucket,
 			"filename":      up.Filename,
 		}
-		h.recordOpenAPITTSUsage(c, started, cred, ch, 200, true, "", &body, respSnap, audioOut, textChars)
+		h.recordOpenAPITTSUsage(c, started, cred, ch, 200, true, "", &body, merged, respSnap, audioOut, textChars)
 		response.Success(c, "ok", base)
 		return
 	}
@@ -463,6 +463,6 @@ func (h *Handlers) openAPITTSSynthesize(c *gin.Context) {
 		"audio_bytes":              len(handler.buf),
 		"audio_base64_in_response": true,
 	}
-	h.recordOpenAPITTSUsage(c, started, cred, ch, 200, true, "", &body, respSnap, audioOut, textChars)
+	h.recordOpenAPITTSUsage(c, started, cred, ch, 200, true, "", &body, merged, respSnap, audioOut, textChars)
 	response.Success(c, "ok", base)
 }

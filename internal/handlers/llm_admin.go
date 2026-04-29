@@ -21,8 +21,8 @@ type llmAdminChannelOption struct {
 	Status   int    `json:"status"`
 }
 
-// getLLMAdminFormOptions GET /api/llm-admin/form-options 下拉：模型元数据、渠道、以及渠道 models 字段解析出的候选名。
-func (h *Handlers) getLLMAdminFormOptions(c *gin.Context) {
+// llmAdminFormOptionsHandler GET /api/llm-admin/form-options 下拉：模型元数据、渠道、以及渠道 models 字段解析出的候选名。
+func (h *Handlers) llmAdminFormOptionsHandler(c *gin.Context) {
 	group := strings.TrimSpace(c.Query("group"))
 	q := h.db.Model(&models.LLMChannel{}).Order("id DESC").Limit(500)
 	if group != "" {
@@ -65,8 +65,8 @@ func (h *Handlers) getLLMAdminFormOptions(c *gin.Context) {
 	}
 	sort.Strings(names)
 	response.Success(c, "ok", gin.H{
-		"model_metas":          metas,
-		"channels":             chOpts,
+		"model_metas":            metas,
+		"channels":               chOpts,
 		"model_name_suggestions": names,
 	})
 }

@@ -67,15 +67,15 @@ type TranslateMailTemplateResp struct {
 }
 
 func (h *Handlers) mailTemplatesListHandler(c *gin.Context) {
-	page := parseQueryInt(c, "page", 1)
+	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
 	}
-	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
 	offset := (page - 1) * pageSize
 
 	var total int64
-	orgID := currentOrgID(c)
+	orgID := models.CurrentOrgID(c)
 	if err := h.db.Model(&models.MailTemplate{}).Where("org_id = ?", orgID).Count(&total).Error; err != nil {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
@@ -104,13 +104,13 @@ func (h *Handlers) mailTemplatePresetsHandler(c *gin.Context) {
 }
 
 func (h *Handlers) mailTemplateDetailHandler(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
 	}
 	var tpl models.MailTemplate
-	orgID := currentOrgID(c)
+	orgID := models.CurrentOrgID(c)
 	if err := h.db.Where("org_id = ?", orgID).First(&tpl, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithCode(c, 404, "模版不存在", nil)
@@ -129,7 +129,7 @@ func (h *Handlers) mailTemplateCreateHandler(c *gin.Context) {
 		return
 	}
 	u := models.CurrentUser(c)
-	orgID := currentOrgID(c)
+	orgID := models.CurrentOrgID(c)
 	plain := utils.HTMLToPlainText(req.HTMLBody)
 	vars := strings.TrimSpace(req.Variables)
 	if vars == "" {
@@ -149,7 +149,7 @@ func (h *Handlers) mailTemplateCreateHandler(c *gin.Context) {
 	if req.Enabled != nil {
 		tpl.Enabled = *req.Enabled
 	}
-	tpl.SetCreateInfo(operatorFromUser(u))
+	tpl.SetCreateInfo(models.OperatorFromUser(u))
 	if err := h.db.Create(&tpl).Error; err != nil {
 		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
 		return
@@ -158,7 +158,7 @@ func (h *Handlers) mailTemplateCreateHandler(c *gin.Context) {
 }
 
 func (h *Handlers) mailTemplateUpdateHandler(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -169,7 +169,7 @@ func (h *Handlers) mailTemplateUpdateHandler(c *gin.Context) {
 		return
 	}
 	var tpl models.MailTemplate
-	orgID := currentOrgID(c)
+	orgID := models.CurrentOrgID(c)
 	if err := h.db.Where("org_id = ?", orgID).First(&tpl, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.FailWithCode(c, 404, "模版不存在", nil)
@@ -193,7 +193,7 @@ func (h *Handlers) mailTemplateUpdateHandler(c *gin.Context) {
 	if req.Enabled != nil {
 		tpl.Enabled = *req.Enabled
 	}
-	tpl.SetUpdateInfo(operatorFromUser(u))
+	tpl.SetUpdateInfo(models.OperatorFromUser(u))
 	if err := h.db.Save(&tpl).Error; err != nil {
 		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
 		return
@@ -202,12 +202,12 @@ func (h *Handlers) mailTemplateUpdateHandler(c *gin.Context) {
 }
 
 func (h *Handlers) mailTemplateDeleteHandler(c *gin.Context) {
-	id, ok := parseUintParam(c, "id")
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
 	}
-	orgID := currentOrgID(c)
+	orgID := models.CurrentOrgID(c)
 	res := h.db.Where("org_id = ?", orgID).Delete(&models.MailTemplate{}, id)
 	if res.Error != nil {
 		response.Fail(c, "删除失败", gin.H{"error": res.Error.Error()})

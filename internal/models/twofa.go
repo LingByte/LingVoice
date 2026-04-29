@@ -13,6 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
+var ErrTwoFANotEnabled = errors.New("2fa not enabled")
+
 const (
 	twoFAMaxFailedAttempts = 5
 	twoFALockoutSeconds    = 300

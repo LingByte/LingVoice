@@ -14,13 +14,13 @@ import (
 )
 
 type llmAbilityWrite struct {
-	Group       string `json:"group" binding:"required"`
-	Model       string `json:"model"`
-	ModelMetaID *uint  `json:"model_meta_id"`
-	ChannelId   int    `json:"channel_id" binding:"required"`
-	Enabled     *bool  `json:"enabled"`
-	Priority    *int64 `json:"priority"`
-	Weight      *uint  `json:"weight"`
+	Group       string  `json:"group" binding:"required"`
+	Model       string  `json:"model"`
+	ModelMetaID *uint   `json:"model_meta_id"`
+	ChannelId   int     `json:"channel_id" binding:"required"`
+	Enabled     *bool   `json:"enabled"`
+	Priority    *int64  `json:"priority"`
+	Weight      *uint   `json:"weight"`
 	Tag         *string `json:"tag"`
 }
 
@@ -42,12 +42,12 @@ func channelNameMap(db *gorm.DB, channelIDs []int) map[int]string {
 	return out
 }
 
-func (h *Handlers) listLLMAbilities(c *gin.Context) {
-	page := parseQueryInt(c, "page", 1)
+func (h *Handlers) llmAbilitiesListHandler(c *gin.Context) {
+	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
 	}
-	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
 	offset := (page - 1) * pageSize
 
 	q := h.db.Model(&models.LLMAbility{})
@@ -57,7 +57,7 @@ func (h *Handlers) listLLMAbilities(c *gin.Context) {
 	if m := strings.TrimSpace(c.Query("model")); m != "" {
 		q = q.Where("model = ?", m)
 	}
-	if cid := parseQueryInt(c, "channel_id", 0); cid > 0 {
+	if cid := models.ParseQueryInt(c, "channel_id", 0); cid > 0 {
 		q = q.Where("channel_id = ?", cid)
 	}
 
@@ -73,7 +73,7 @@ func (h *Handlers) listLLMAbilities(c *gin.Context) {
 	if m := strings.TrimSpace(c.Query("model")); m != "" {
 		listQ = listQ.Where("model = ?", m)
 	}
-	if cid := parseQueryInt(c, "channel_id", 0); cid > 0 {
+	if cid := models.ParseQueryInt(c, "channel_id", 0); cid > 0 {
 		listQ = listQ.Where("channel_id = ?", cid)
 	}
 	var list []models.LLMAbility
@@ -106,7 +106,7 @@ func (h *Handlers) listLLMAbilities(c *gin.Context) {
 	})
 }
 
-func (h *Handlers) createLLMAbility(c *gin.Context) {
+func (h *Handlers) llmAbilityCreateHandler(c *gin.Context) {
 	var body llmAbilityWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
@@ -175,10 +175,10 @@ type llmAbilityPatchBody struct {
 	ModelMetaID *uint   `json:"model_meta_id"`
 }
 
-func (h *Handlers) patchLLMAbility(c *gin.Context) {
+func (h *Handlers) llmAbilityPatchHandler(c *gin.Context) {
 	group := strings.TrimSpace(c.Query("group"))
 	model := strings.TrimSpace(c.Query("model"))
-	cid := parseQueryInt(c, "channel_id", 0)
+	cid := models.ParseQueryInt(c, "channel_id", 0)
 	if group == "" || model == "" || cid <= 0 {
 		response.FailWithCode(c, 400, "请提供 query: group, model, channel_id", nil)
 		return
@@ -242,10 +242,10 @@ func (h *Handlers) patchLLMAbility(c *gin.Context) {
 	response.Success(c, "已更新", gin.H{"ability": row})
 }
 
-func (h *Handlers) deleteLLMAbility(c *gin.Context) {
+func (h *Handlers) llmAbilityDeleteHandler(c *gin.Context) {
 	group := strings.TrimSpace(c.Query("group"))
 	model := strings.TrimSpace(c.Query("model"))
-	cid := parseQueryInt(c, "channel_id", 0)
+	cid := models.ParseQueryInt(c, "channel_id", 0)
 	if group == "" || model == "" || cid <= 0 {
 		response.FailWithCode(c, 400, "请提供 query: group, model, channel_id", nil)
 		return
@@ -262,9 +262,9 @@ func (h *Handlers) deleteLLMAbility(c *gin.Context) {
 	response.Success(c, "已删除", nil)
 }
 
-// postLLMAbilitiesSyncChannel POST /api/llm-abilities/sync-channel/:id 根据渠道 models/group 重建能力表。
-func (h *Handlers) postLLMAbilitiesSyncChannel(c *gin.Context) {
-	id, ok := parseIntParam(c, "id")
+// llmAbilitiesSyncChannelHandler POST /api/llm-abilities/sync-channel/:id 根据渠道 models/group 重建能力表。
+func (h *Handlers) llmAbilitiesSyncChannelHandler(c *gin.Context) {
+	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return

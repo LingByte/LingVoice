@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/cmd/bootstrap"
+	"github.com/LingByte/LingVoice/internal/authdto"
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/constants"
@@ -37,8 +38,8 @@ type registerRequest struct {
 	Source      string `json:"source"`
 }
 
-// postSendVerifyEmail 向邮箱发送 6 位数字验证码（登录或注册用，邮件内为验证码，非链接）。
-func (h *Handlers) postSendVerifyEmail(c *gin.Context) {
+// authSendVerifyEmailHandler 向邮箱发送 6 位数字验证码（登录或注册用，邮件内为验证码，非链接）。
+func (h *Handlers) authSendVerifyEmailHandler(c *gin.Context) {
 	var req sendVerifyEmailRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.FailWithCode(c, 400, "无效的请求", nil)
@@ -86,7 +87,7 @@ func (h *Handlers) postSendVerifyEmail(c *gin.Context) {
 	}
 }
 
-func (h *Handlers) postLogin(c *gin.Context) {
+func (h *Handlers) authLoginHandler(c *gin.Context) {
 	var form models.LoginForm
 	if err := c.ShouldBindJSON(&form); err != nil {
 		response.FailWithCode(c, 400, "无效的请求", nil)
@@ -121,7 +122,7 @@ func (h *Handlers) postLogin(c *gin.Context) {
 		models.InTimezone(c, strings.TrimSpace(form.Timezone))
 	}
 	models.Login(c, user)
-	payload, err := buildAuthLoginResponse(user)
+	payload, err := authdto.BuildLoginResponse(user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "登录令牌签发失败", nil)
@@ -130,7 +131,7 @@ func (h *Handlers) postLogin(c *gin.Context) {
 	response.Success(c, "登录成功", payload)
 }
 
-func (h *Handlers) postRegister(c *gin.Context) {
+func (h *Handlers) authRegisterHandler(c *gin.Context) {
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.FailWithCode(c, 400, "无效的请求", nil)
@@ -185,7 +186,7 @@ func (h *Handlers) postRegister(c *gin.Context) {
 	_ = models.EnsurePersonalOrg(h.db, user)
 	utils.Sig().Emit(constants.SigUserCreate, user, c)
 	models.Login(c, user)
-	payload, err := buildAuthLoginResponse(user)
+	payload, err := authdto.BuildLoginResponse(user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "注册成功但令牌签发失败", nil)
@@ -194,19 +195,19 @@ func (h *Handlers) postRegister(c *gin.Context) {
 	response.Success(c, "注册成功", payload)
 }
 
-func (h *Handlers) postLogout(c *gin.Context) {
+func (h *Handlers) authLogoutHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	models.Logout(c, u)
 	response.Success(c, "已退出", nil)
 }
 
-func (h *Handlers) getAuthMe(c *gin.Context) {
+func (h *Handlers) authMeHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
 		response.FailWithCode(c, 401, "未登录", nil)
 		return
 	}
-	response.Success(c, "ok", AuthMeResponse{User: newAuthUserResponse(u)})
+	response.Success(c, "ok", authdto.MeResponse{User: authdto.NewUserResponse(u)})
 }
 
 type verifyEmailLoginRequest struct {
@@ -214,8 +215,8 @@ type verifyEmailLoginRequest struct {
 	Code  string `json:"code" binding:"required"`
 }
 
-// postVerifyEmailLogin 校验邮箱与邮件中的数字验证码并完成会话（同时会把邮箱标为已验证）。
-func (h *Handlers) postVerifyEmailLogin(c *gin.Context) {
+// authVerifyEmailLoginHandler 校验邮箱与邮件中的数字验证码并完成会话（同时会把邮箱标为已验证）。
+func (h *Handlers) authVerifyEmailLoginHandler(c *gin.Context) {
 	var req verifyEmailLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.FailWithCode(c, 400, "无效的请求", nil)
@@ -232,7 +233,7 @@ func (h *Handlers) postVerifyEmailLogin(c *gin.Context) {
 		return
 	}
 	models.Login(c, user)
-	payload, err := buildAuthLoginResponse(user)
+	payload, err := authdto.BuildLoginResponse(user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "登录令牌签发失败", nil)
@@ -245,8 +246,8 @@ type refreshTokenRequest struct {
 	RefreshToken string `json:"refreshToken" binding:"required"`
 }
 
-// postRefresh exchanges a valid refresh JWT for a new access + refresh pair.
-func (h *Handlers) postRefresh(c *gin.Context) {
+// authRefreshHandler exchanges a valid refresh JWT for a new access + refresh pair.
+func (h *Handlers) authRefreshHandler(c *gin.Context) {
 	if config.GlobalConfig == nil {
 		response.FailWithCode(c, 500, "服务未初始化", nil)
 		return
@@ -282,7 +283,7 @@ func (h *Handlers) postRefresh(c *gin.Context) {
 		return
 	}
 	models.Login(c, &fresh)
-	out, err := buildAuthLoginResponse(&fresh)
+	out, err := authdto.BuildLoginResponse(&fresh)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "令牌签发失败", nil)
@@ -312,16 +313,16 @@ type adminPatchUserBody struct {
 	UnlimitedQuota     *bool   `json:"unlimited_quota"`
 }
 
-// listAdminUsers GET /api/admin/users
-func (h *Handlers) listAdminUsers(c *gin.Context) {
-	if !requireAdmin(c) {
+// adminUsersListHandler GET /api/admin/users
+func (h *Handlers) adminUsersListHandler(c *gin.Context) {
+	if !models.RequireAdmin(c) {
 		return
 	}
-	page := parseQueryInt(c, "page", 1)
+	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
 	}
-	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
 	offset := (page - 1) * pageSize
 
 	q := h.db.Model(&models.User{})
@@ -359,7 +360,7 @@ func (h *Handlers) listAdminUsers(c *gin.Context) {
 	}
 	listOut := make([]gin.H, 0, len(list))
 	for _, row := range list {
-		listOut = append(listOut, adminUserJSON(row))
+		listOut = append(listOut, models.AdminUserJSON(row))
 	}
 	totalPage := int(total) / pageSize
 	if int(total)%pageSize != 0 {
@@ -374,12 +375,12 @@ func (h *Handlers) listAdminUsers(c *gin.Context) {
 	})
 }
 
-// getAdminUser GET /api/admin/users/:id
-func (h *Handlers) getAdminUser(c *gin.Context) {
-	if !requireAdmin(c) {
+// adminUserDetailHandler GET /api/admin/users/:id
+func (h *Handlers) adminUserDetailHandler(c *gin.Context) {
+	if !models.RequireAdmin(c) {
 		return
 	}
-	id, ok := parseUintParam(c, "id")
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的用户 id", nil)
 		return
@@ -393,16 +394,16 @@ func (h *Handlers) getAdminUser(c *gin.Context) {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{"user": adminUserJSON(row)})
+	response.Success(c, "ok", gin.H{"user": models.AdminUserJSON(row)})
 }
 
-// patchAdminUser PATCH /api/admin/users/:id
-func (h *Handlers) patchAdminUser(c *gin.Context) {
+// adminUserPatchHandler PATCH /api/admin/users/:id
+func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 	op := models.CurrentUser(c)
-	if !requireAdmin(c) {
+	if !models.RequireAdmin(c) {
 		return
 	}
-	id, ok := parseUintParam(c, "id")
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的用户 id", nil)
 		return
@@ -515,7 +516,7 @@ func (h *Handlers) patchAdminUser(c *gin.Context) {
 		response.FailWithCode(c, 400, "无可更新字段", nil)
 		return
 	}
-	vals["update_by"] = operatorFromUser(op)
+	vals["update_by"] = models.OperatorFromUser(op)
 	if err := models.UpdateUserFields(h.db, &row, vals); err != nil {
 		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
 		return
@@ -524,16 +525,16 @@ func (h *Handlers) patchAdminUser(c *gin.Context) {
 		response.Success(c, "已更新", gin.H{"user": gin.H{"id": strconv.FormatUint(uint64(id), 10)}})
 		return
 	}
-	response.Success(c, "已更新", gin.H{"user": adminUserJSON(row)})
+	response.Success(c, "已更新", gin.H{"user": models.AdminUserJSON(row)})
 }
 
-// deleteAdminUser DELETE /api/admin/users/:id（软删除；不可删除本人；非超管不可删超级管理员）
-func (h *Handlers) deleteAdminUser(c *gin.Context) {
+// adminUserDeleteHandler DELETE /api/admin/users/:id（软删除；不可删除本人；非超管不可删超级管理员）
+func (h *Handlers) adminUserDeleteHandler(c *gin.Context) {
 	op := models.CurrentUser(c)
-	if !requireAdmin(c) {
+	if !models.RequireAdmin(c) {
 		return
 	}
-	id, ok := parseUintParam(c, "id")
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的用户 id", nil)
 		return
@@ -573,8 +574,8 @@ type patchUserProfileBody struct {
 	Timezone    string `json:"timezone"`
 }
 
-// patchUserProfile PATCH /api/user/profile - update current user's profile
-func (h *Handlers) patchUserProfile(c *gin.Context) {
+// userProfilePatchHandler PATCH /api/user/profile - update current user's profile
+func (h *Handlers) userProfilePatchHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
 		response.FailWithCode(c, 401, "未登录", nil)
@@ -614,7 +615,7 @@ func (h *Handlers) patchUserProfile(c *gin.Context) {
 		response.FailWithCode(c, 400, "无可更新字段", nil)
 		return
 	}
-	vals["update_by"] = operatorFromUser(u)
+	vals["update_by"] = models.OperatorFromUser(u)
 	if err := models.UpdateUserFields(h.db, u, vals); err != nil {
 		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
 		return
@@ -623,15 +624,15 @@ func (h *Handlers) patchUserProfile(c *gin.Context) {
 		response.Success(c, "已更新", nil)
 		return
 	}
-	response.Success(c, "已更新", gin.H{"user": newAuthUserResponse(u)})
+	response.Success(c, "已更新", gin.H{"user": authdto.NewUserResponse(u)})
 }
 
 type uploadAvatarResponse struct {
 	URL string `json:"url"`
 }
 
-// postUserAvatar POST /api/user/avatar - upload user avatar
-func (h *Handlers) postUserAvatar(c *gin.Context) {
+// userAvatarUploadHandler POST /api/user/avatar - upload user avatar
+func (h *Handlers) userAvatarUploadHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
 		response.FailWithCode(c, 401, "未登录", nil)

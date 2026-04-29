@@ -284,7 +284,6 @@ func authPathExemptWhileAccountDeletionPending(c *gin.Context) bool {
 	if method == http.MethodGet && strings.Contains(path, "/account-deletion/eligibility") {
 		return true
 	}
-	// 勿用 Contains(\"/cancel\")，否则会误匹配 cancel-by-email
 	if method == http.MethodPost && strings.HasSuffix(path, "/account-deletion/cancel") {
 		return true
 	}
@@ -1085,4 +1084,51 @@ func FinalizeAccountDeletion(db *gorm.DB, userID uint, operator string) error {
 		}
 		return nil
 	})
+}
+
+// AdminUserJSON 管理端用户视图：id 使用十进制字符串，避免前端 JSON number 超过 MAX_SAFE_INTEGER 时精度丢失。
+func AdminUserJSON(u User) gin.H {
+	out := gin.H{
+		"id":                 strconv.FormatUint(uint64(u.ID), 10),
+		"email":              u.Email,
+		"displayName":        u.DisplayName,
+		"phone":              u.Phone,
+		"firstName":          u.FirstName,
+		"lastName":           u.LastName,
+		"avatar":             u.Avatar,
+		"gender":             u.Gender,
+		"city":               u.City,
+		"region":             u.Region,
+		"timezone":           u.Timezone,
+		"status":             u.Status,
+		"role":               u.Role,
+		"locale":             u.Locale,
+		"source":             u.Source,
+		"emailVerified":      u.EmailVerified,
+		"phoneVerified":      u.PhoneVerified,
+		"emailNotifications": u.EmailNotifications,
+		"twoFactorEnabled":   u.TwoFactorEnabled,
+		"loginCount":         u.LoginCount,
+		"profileComplete":    u.ProfileComplete,
+		"githubLogin":        u.GithubLogin,
+		"wechatOpenId":       u.WechatOpenID,
+		"remainQuota":        u.RemainQuota,
+		"usedQuota":          u.UsedQuota,
+		"unlimitedQuota":     u.UnlimitedQuota,
+		"createdAt":          u.CreatedAt.UTC().Format(time.RFC3339),
+		"updatedAt":          u.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+	if u.LastLogin != nil && !u.LastLogin.IsZero() {
+		out["lastLogin"] = u.LastLogin.UTC().Format(time.RFC3339)
+	}
+	if u.LastPasswordChange != nil && !u.LastPasswordChange.IsZero() {
+		out["lastPasswordChange"] = u.LastPasswordChange.UTC().Format(time.RFC3339)
+	}
+	if u.AccountDeletionRequestedAt != nil && !u.AccountDeletionRequestedAt.IsZero() {
+		out["accountDeletionRequestedAt"] = u.AccountDeletionRequestedAt.UTC().Format(time.RFC3339)
+	}
+	if u.AccountDeletionEffectiveAt != nil && !u.AccountDeletionEffectiveAt.IsZero() {
+		out["accountDeletionEffectiveAt"] = u.AccountDeletionEffectiveAt.UTC().Format(time.RFC3339)
+	}
+	return out
 }

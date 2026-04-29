@@ -42,13 +42,13 @@ func parseQueryBool(c *gin.Context, name string) (bool, bool) {
 	}
 }
 
-// listLLMUsageMe GET /api/me/llm-usage — 仅当前登录用户本人的用量分页（不要求管理员；忽略 user_id 查询参数）。
-func (h *Handlers) listLLMUsageMe(c *gin.Context) {
+// userLLMUsageListHandler GET /api/me/llm-usage — 仅当前登录用户本人的用量分页（不要求管理员；忽略 user_id 查询参数）。
+func (h *Handlers) userLLMUsageListHandler(c *gin.Context) {
 	h.listLLMUsageInternal(c, true)
 }
 
-// listLLMUsage GET /api/llm-usage — 管理员可查全量并按 user_id 等筛选；非管理员等同仅本人。
-func (h *Handlers) listLLMUsage(c *gin.Context) {
+// llmUsageListHandler GET /api/llm-usage — 管理员可查全量并按 user_id 等筛选；非管理员等同仅本人。
+func (h *Handlers) llmUsageListHandler(c *gin.Context) {
 	h.listLLMUsageInternal(c, false)
 }
 
@@ -66,11 +66,11 @@ func (h *Handlers) listLLMUsageInternal(c *gin.Context, selfOnly bool) {
 	} else if !u.IsAdmin() {
 		forcedUserID = selfID
 	}
-	page := parseQueryInt(c, "page", 1)
+	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
 	}
-	pageSize := clampPageSize(parseQueryInt(c, "pageSize", 20))
+	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
 	offset := (page - 1) * pageSize
 
 	q := h.db.Model(&models.LLMUsage{})
@@ -163,13 +163,13 @@ func (h *Handlers) listLLMUsageInternal(c *gin.Context, selfOnly bool) {
 	})
 }
 
-// getLLMUsageMe GET /api/me/llm-usage/:id — 仅当记录属于当前用户时返回（不要求管理员）。
-func (h *Handlers) getLLMUsageMe(c *gin.Context) {
+// userLLMUsageDetailHandler GET /api/me/llm-usage/:id — 仅当记录属于当前用户时返回（不要求管理员）。
+func (h *Handlers) userLLMUsageDetailHandler(c *gin.Context) {
 	h.getLLMUsageInternal(c, true)
 }
 
-// getLLMUsage GET /api/llm-usage/:id — 管理员可查任意；非管理员仅可查本人记录。
-func (h *Handlers) getLLMUsage(c *gin.Context) {
+// llmUsageDetailHandler GET /api/llm-usage/:id — 管理员可查任意；非管理员仅可查本人记录。
+func (h *Handlers) llmUsageDetailHandler(c *gin.Context) {
 	h.getLLMUsageInternal(c, false)
 }
 

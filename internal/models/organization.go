@@ -53,7 +53,6 @@ func EnsurePersonalOrg(db *gorm.DB, user *User) error {
 			user.DefaultOrgID = fresh.DefaultOrgID
 			return nil
 		}
-
 		name := strings.TrimSpace(user.DisplayName)
 		if name == "" {
 			name = strings.TrimSpace(user.Email)
@@ -101,4 +100,3 @@ func IsOrgMember(db *gorm.DB, orgID, userID uint) (bool, error) {
 	}
 	return cnt > 0, nil
 }
-

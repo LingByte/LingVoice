@@ -202,8 +202,8 @@ func buildOpenAPIModelListForCredential(db *gorm.DB, cred *models.Credential) ([
 	return out, nil
 }
 
-// openAPIListModels GET /v1/models：返回本密钥可用的模型列表（凭证 catalog 或 group 渠道汇总，并受 model_limits 过滤）。
-func (h *Handlers) openAPIListModels(c *gin.Context) {
+// openAPIModelsListHandler GET /v1/models：返回本密钥可用的模型列表（凭证 catalog 或 group 渠道汇总，并受 model_limits 过滤）。
+func (h *Handlers) openAPIModelsListHandler(c *gin.Context) {
 	cred, ok := middleware.OpenAPILLMCredentialFromContext(c)
 	if !ok || cred == nil {
 		return

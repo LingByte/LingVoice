@@ -21,15 +21,15 @@ func TestQuotaDeltaOpenAI_NewAPIDocStyleExamples(t *testing.T) {
 	}
 	now := int64(1)
 	row1 := models.LLMModelMeta{
-		ModelName:              "gpt-doc-ex1",
-		Status:                 1,
-		QuotaBillingMode:       "token",
-		QuotaModelRatio:        15,
-		QuotaPromptRatio:       1,
-		QuotaCompletionRatio:   2,
-		QuotaCacheReadRatio:    0.25,
-		CreatedTime:            now,
-		UpdatedTime:            now,
+		ModelName:            "gpt-doc-ex1",
+		Status:               1,
+		QuotaBillingMode:     "token",
+		QuotaModelRatio:      15,
+		QuotaPromptRatio:     1,
+		QuotaCompletionRatio: 2,
+		QuotaCacheReadRatio:  0.25,
+		CreatedTime:          now,
+		UpdatedTime:          now,
 	}
 	if err := db.Create(&row1).Error; err != nil {
 		t.Fatal(err)
@@ -41,15 +41,15 @@ func TestQuotaDeltaOpenAI_NewAPIDocStyleExamples(t *testing.T) {
 	}
 
 	row2 := models.LLMModelMeta{
-		ModelName:              "gpt-doc-ex2",
-		Status:                 1,
-		QuotaBillingMode:       "token",
-		QuotaModelRatio:        0.25,
-		QuotaPromptRatio:       1,
-		QuotaCompletionRatio:   1.33,
-		QuotaCacheReadRatio:    0.25,
-		CreatedTime:            now,
-		UpdatedTime:            now,
+		ModelName:            "gpt-doc-ex2",
+		Status:               1,
+		QuotaBillingMode:     "token",
+		QuotaModelRatio:      0.25,
+		QuotaPromptRatio:     1,
+		QuotaCompletionRatio: 1.33,
+		QuotaCacheReadRatio:  0.25,
+		CreatedTime:          now,
+		UpdatedTime:          now,
 	}
 	if err := db.Create(&row2).Error; err != nil {
 		t.Fatal(err)

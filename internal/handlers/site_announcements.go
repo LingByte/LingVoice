@@ -13,8 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// listPublicAnnouncements GET /api/site/announcements 已启用公告列表（无需登录）。
-func (h *Handlers) listPublicAnnouncements(c *gin.Context) {
+// siteAnnouncementsListHandler GET /api/site/announcements 已启用公告列表（无需登录）。
+func (h *Handlers) siteAnnouncementsListHandler(c *gin.Context) {
 	var rows []models.SiteAnnouncement
 	if err := h.db.Where("enabled = ?", true).
 		Order("pinned DESC, sort_order ASC, id DESC").
@@ -33,9 +33,9 @@ type siteAnnouncementWrite struct {
 	SortOrder *int    `json:"sort_order"`
 }
 
-// listAdminAnnouncements GET /api/admin/announcements
-func (h *Handlers) listAdminAnnouncements(c *gin.Context) {
-	if !requireAdmin(c) {
+// adminSiteAnnouncementsListHandler GET /api/admin/announcements
+func (h *Handlers) adminSiteAnnouncementsListHandler(c *gin.Context) {
+	if !models.RequireAdmin(c) {
 		return
 	}
 	var rows []models.SiteAnnouncement
@@ -46,9 +46,9 @@ func (h *Handlers) listAdminAnnouncements(c *gin.Context) {
 	response.Success(c, "ok", gin.H{"list": rows})
 }
 
-// createSiteAnnouncement POST /api/admin/announcements
-func (h *Handlers) createSiteAnnouncement(c *gin.Context) {
-	if !requireAdmin(c) {
+// adminSiteAnnouncementCreateHandler POST /api/admin/announcements
+func (h *Handlers) adminSiteAnnouncementCreateHandler(c *gin.Context) {
+	if !models.RequireAdmin(c) {
 		return
 	}
 	var body siteAnnouncementWrite
@@ -85,12 +85,12 @@ type siteAnnouncementPatch struct {
 	SortOrder *int    `json:"sort_order"`
 }
 
-// updateSiteAnnouncement PUT /api/admin/announcements/:id
-func (h *Handlers) updateSiteAnnouncement(c *gin.Context) {
-	if !requireAdmin(c) {
+// adminSiteAnnouncementUpdateHandler PUT /api/admin/announcements/:id
+func (h *Handlers) adminSiteAnnouncementUpdateHandler(c *gin.Context) {
+	if !models.RequireAdmin(c) {
 		return
 	}
-	id, ok := parseUintParam(c, "id")
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
@@ -139,12 +139,12 @@ func (h *Handlers) updateSiteAnnouncement(c *gin.Context) {
 	response.Success(c, "已更新", gin.H{"announcement": row})
 }
 
-// deleteSiteAnnouncement DELETE /api/admin/announcements/:id
-func (h *Handlers) deleteSiteAnnouncement(c *gin.Context) {
-	if !requireAdmin(c) {
+// adminSiteAnnouncementDeleteHandler DELETE /api/admin/announcements/:id
+func (h *Handlers) adminSiteAnnouncementDeleteHandler(c *gin.Context) {
+	if !models.RequireAdmin(c) {
 		return
 	}
-	id, ok := parseUintParam(c, "id")
+	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return

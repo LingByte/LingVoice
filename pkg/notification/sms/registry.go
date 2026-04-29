@@ -176,8 +176,23 @@ func NewProviderFromKindMap(kind ProviderKind, cfg map[string]any) (Provider, er
 		var c YuntongxunConfig
 		_ = json.Unmarshal(b, &c)
 		return NewYuntongxun(c)
+	case ProviderBaidu:
+		var c BaiduConfig
+		_ = json.Unmarshal(b, &c)
+		return NewBaidu(c)
+	case ProviderUCloud:
+		var c UCloudConfig
+		_ = json.Unmarshal(b, &c)
+		return NewUCloud(c)
+	case ProviderTiniyo:
+		var c TiniyoConfig
+		_ = json.Unmarshal(b, &c)
+		return NewTiniyo(c)
+	case ProviderHuaxin:
+		var c HuaxinConfig
+		_ = json.Unmarshal(b, &c)
+		return NewHuaxin(c)
 	default:
 		return nil, fmt.Errorf("%w: provider %q not wired yet", ErrNotImplemented, kind)
 	}
 }
-

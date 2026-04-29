@@ -1,7 +1,11 @@
 package models
 
 import (
+	"errors"
+	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // ChatSession 聊天会话表
@@ -45,8 +49,8 @@ type LLMUsage struct {
 	InputTokens     int     `json:"input_tokens" gorm:"default:0"`
 	OutputTokens    int     `json:"output_tokens" gorm:"default:0"`
 	TotalTokens     int     `json:"total_tokens" gorm:"default:0"`
-	QuotaDelta      int     `json:"quota_delta" gorm:"default:0"` // 本次从凭证扣除的额度单位（倍率/按次/按 token 汇总）
-	LatencyMs       int64   `json:"latency_ms" gorm:"default:0"`  // 总延迟（毫秒）
+	QuotaDelta      int     `json:"quota_delta" gorm:"default:0"`        // 本次从凭证扣除的额度单位（倍率/按次/按 token 汇总）
+	LatencyMs       int64   `json:"latency_ms" gorm:"default:0"`         // 总延迟（毫秒）
 	TTFTMs          int64   `json:"ttft_ms" gorm:"default:0"`            // Time To First Token（毫秒）
 	TPS             float64 `json:"tps" gorm:"default:0"`                // Tokens Per Second
 	QueueTimeMs     int64   `json:"queue_time_ms" gorm:"default:0"`      // 排队时间（毫秒）
@@ -133,4 +137,162 @@ func (AgentRun) TableName() string {
 
 func (AgentStep) TableName() string {
 	return "agent_steps"
+}
+
+// GetChatSessionOwned returns the session if it belongs to userID and is not soft-deleted.
+func GetChatSessionOwned(db *gorm.DB, userID, sessionID string) (*ChatSession, error) {
+	if db == nil {
+		return nil, errNilDB
+	}
+	var row ChatSession
+	err := db.Where("id = ? AND user_id = ? AND (deleted_at IS NULL)", sessionID, userID).First(&row).Error
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// ListChatSessionsForUser returns recent sessions for the user (non-deleted).
+func ListChatSessionsForUser(db *gorm.DB, userID string, limit int) ([]ChatSession, error) {
+	if db == nil {
+		return nil, errNilDB
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	var rows []ChatSession
+	err := db.Where("user_id = ? AND (deleted_at IS NULL)", userID).
+		Order("updated_at DESC").Limit(limit).Find(&rows).Error
+	return rows, err
+}
+
+// ChatSessionAPIRow matches web/src/api/chat.ts ChatSessionRow.
+type ChatSessionAPIRow struct {
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Model        string `json:"model"`
+	Provider     string `json:"provider"`
+	SystemPrompt string `json:"system_prompt"`
+	Status       string `json:"status"`
+	CreatedAt    int64  `json:"created_at"`
+	UpdatedAt    int64  `json:"updated_at"`
+}
+
+// ChatSessionToAPIRow maps a DB row to the API list/detail shape.
+func ChatSessionToAPIRow(s *ChatSession) ChatSessionAPIRow {
+	if s == nil {
+		return ChatSessionAPIRow{}
+	}
+	return ChatSessionAPIRow{
+		ID:           s.ID,
+		Title:        s.Title,
+		Model:        s.Model,
+		Provider:     s.Provider,
+		SystemPrompt: s.SystemPrompt,
+		Status:       s.Status,
+		CreatedAt:    s.CreatedAt.UnixMilli(),
+		UpdatedAt:    s.UpdatedAt.UnixMilli(),
+	}
+}
+
+// CreateChatSession inserts a new session row.
+func CreateChatSession(db *gorm.DB, row *ChatSession) error {
+	if db == nil {
+		return errNilDB
+	}
+	if row == nil {
+		return errors.New("models: nil chat session")
+	}
+	return db.Create(row).Error
+}
+
+// UpdateChatSessionTitle updates title and bumps updated_at for an owned session.
+func UpdateChatSessionTitle(db *gorm.DB, userID, sessionID, title string) error {
+	if db == nil {
+		return errNilDB
+	}
+	title = strings.TrimSpace(title)
+	return db.Model(&ChatSession{}).Where("id = ? AND user_id = ?", sessionID, userID).
+		Updates(map[string]interface{}{
+			"title":      title,
+			"updated_at": time.Now(),
+		}).Error
+}
+
+// SoftDeleteChatSession marks a session deleted for an owner.
+func SoftDeleteChatSession(db *gorm.DB, userID, sessionID string) error {
+	if db == nil {
+		return errNilDB
+	}
+	now := time.Now()
+	return db.Model(&ChatSession{}).Where("id = ? AND user_id = ?", sessionID, userID).
+		Updates(map[string]interface{}{
+			"deleted_at": now,
+			"status":     "deleted",
+			"updated_at": now,
+		}).Error
+}
+
+// ListChatMessagesForSession returns messages for a session (non-deleted), oldest first.
+func ListChatMessagesForSession(db *gorm.DB, sessionID string, limit int) ([]ChatMessage, error) {
+	if db == nil {
+		return nil, errNilDB
+	}
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	var rows []ChatMessage
+	err := db.Where("session_id = ? AND (deleted_at IS NULL)", sessionID).
+		Order("created_at ASC").Limit(limit).Find(&rows).Error
+	return rows, err
+}
+
+// ChatMessageAPIRow matches the chat messages API payload.
+type ChatMessageAPIRow struct {
+	ID         string `json:"id"`
+	SessionID  string `json:"session_id"`
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	TokenCount int    `json:"token_count"`
+	Model      string `json:"model"`
+	Provider   string `json:"provider"`
+	RequestID  string `json:"request_id"`
+	CreatedAt  int64  `json:"created_at"`
+}
+
+// ChatMessageToAPIRow maps a DB message to API JSON.
+func ChatMessageToAPIRow(m *ChatMessage) ChatMessageAPIRow {
+	if m == nil {
+		return ChatMessageAPIRow{}
+	}
+	return ChatMessageAPIRow{
+		ID:         m.ID,
+		SessionID:  m.SessionID,
+		Role:       m.Role,
+		Content:    m.Content,
+		TokenCount: m.TokenCount,
+		Model:      m.Model,
+		Provider:   m.Provider,
+		RequestID:  m.RequestID,
+		CreatedAt:  m.CreatedAt.UnixMilli(),
+	}
+}
+
+// CreateChatMessage inserts a message and returns the created row (timestamps from DB).
+func CreateChatMessage(db *gorm.DB, msg *ChatMessage) error {
+	if db == nil {
+		return errNilDB
+	}
+	if msg == nil {
+		return errors.New("models: nil chat message")
+	}
+	return db.Create(msg).Error
+}
+
+// TouchChatSessionUpdatedAt bumps updated_at for a session (e.g. after new message).
+func TouchChatSessionUpdatedAt(db *gorm.DB, sessionID string) error {
+	if db == nil {
+		return errNilDB
+	}
+	return db.Model(&ChatSession{}).Where("id = ?", sessionID).Update("updated_at", time.Now()).Error
 }
