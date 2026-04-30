@@ -7,6 +7,7 @@ import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 import {
   deleteKnowledgeDocument,
   getKnowledgeNamespace,
+  isMilvusVectorProvider,
   listKnowledgeDocuments,
   recallTest,
   reuploadKnowledgeDocument,
@@ -94,6 +95,8 @@ export function KnowledgeNamespaceDetailPage() {
       })),
     [list],
   )
+
+  const nsIsMilvus = useMemo(() => isMilvusVectorProvider(ns?.vector_provider), [ns?.vector_provider])
 
   const doUpload = async (file: File) => {
     setUploading(true)
@@ -183,6 +186,12 @@ export function KnowledgeNamespaceDetailPage() {
               </Title>
               <Paragraph type="secondary" className="!mb-0 !mt-1 text-[13px]">
                 namespace: <Text code>{ns?.namespace || '-'}</Text>
+                {ns && (
+                  <>
+                    {' · '}
+                    <Text type="secondary">{nsIsMilvus ? '向量后端：Milvus' : '向量后端：Qdrant'}</Text>
+                  </>
+                )}
               </Paragraph>
             </div>
           </div>
@@ -259,7 +268,10 @@ export function KnowledgeNamespaceDetailPage() {
                       重新上传
                     </Button>
                   </Upload>
-                  <Popconfirm title="确定删除该文档？（会删除 Qdrant points）" onOk={() => void onDeleteDoc(row.id)}>
+                  <Popconfirm
+                    title="确定删除该文档？（会删除向量 points）"
+                    onOk={() => void onDeleteDoc(row.id)}
+                  >
                     <Button type="text" size="mini" status="danger">
                       删除
                     </Button>
@@ -288,7 +300,8 @@ export function KnowledgeNamespaceDetailPage() {
             召回测试
           </Title>
           <Paragraph type="secondary" className="!mb-3 !mt-0 text-[13px]">
-            输入 Query 后检索该知识库。可选“对某个文档计算 recall@k / precision@k”（基于该文档写入的 record_ids）。
+            输入 Query 后检索该知识库。
+            可选“对某个文档计算 recall@k / precision@k”（基于该文档写入的 record_ids）。
           </Paragraph>
           <div className="flex flex-wrap items-center gap-3">
             <Input

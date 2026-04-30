@@ -16,18 +16,38 @@ const (
 	KnowledgeStatusDeleted    = "deleted"
 	KnowledgeStatusProcessing = "processing"
 	KnowledgeStatusFailed     = "failed"
+
+	// KnowledgeVectorProviderQdrant 自建 / 托管 Qdrant，namespace 对应 collection 名。
+	KnowledgeVectorProviderQdrant = "qdrant"
+	// KnowledgeVectorProviderMilvus Milvus 向量库；namespace 对应 collection 名。
+	KnowledgeVectorProviderMilvus = "milvus"
 )
+
+// NormalizeVectorProvider returns KnowledgeVectorProviderQdrant or KnowledgeVectorProviderMilvus.
+func NormalizeVectorProvider(s string) string {
+	v := strings.TrimSpace(strings.ToLower(s))
+	switch v {
+	case "", KnowledgeVectorProviderQdrant:
+		return KnowledgeVectorProviderQdrant
+	case KnowledgeVectorProviderMilvus:
+		return KnowledgeVectorProviderMilvus
+	default:
+		return v
+	}
+}
 
 type KnowledgeNamespace struct {
 	ID uint `json:"id,string" gorm:"primaryKey;autoIncrement:false"`
 
 	OrgID uint `json:"orgId" gorm:"uniqueIndex:idx_knowledge_org_namespace;not null;default:0;comment:tenant organization id"`
 
-	Namespace   string `json:"namespace" gorm:"type:varchar(128);uniqueIndex:idx_knowledge_org_namespace;not null;comment:Qdrant collection/namespace（英文唯一标识）"`
+	Namespace   string `json:"namespace" gorm:"type:varchar(128);uniqueIndex:idx_knowledge_org_namespace;not null;comment:Qdrant/Milvus collection"`
 	Name        string `json:"name" gorm:"type:varchar(255);not null;comment:知识库名称（中文名）"`
 	Description string `json:"description" gorm:"type:text;comment:描述"`
 
-	EmbedModel string `json:"embed_model" gorm:"type:varchar(64);not null;comment:向量模型（bge/m3e/aliyun...）"`
+	VectorProvider string `json:"vector_provider" gorm:"type:varchar(32);not null;default:'qdrant';index;comment:向量后端 qdrant|milvus"`
+
+	EmbedModel string `json:"embed_model" gorm:"type:varchar(64);not null;comment:向量模型（bge/m3e...）"`
 	VectorDim  int    `json:"vector_dim" gorm:"not null;comment:向量维度"`
 
 	Status string `json:"status" gorm:"type:varchar(20);index;not null;default:'active'"`
@@ -42,7 +62,18 @@ func (m *KnowledgeNamespace) BeforeCreate(tx *gorm.DB) error {
 	if m.ID == 0 {
 		m.ID = base.GenUintID()
 	}
+	if strings.TrimSpace(m.VectorProvider) == "" {
+		m.VectorProvider = KnowledgeVectorProviderQdrant
+	}
 	return nil
+}
+
+// IsMilvusVectorBackend reports whether vectors are hosted on Milvus.
+func (m *KnowledgeNamespace) IsMilvusVectorBackend() bool {
+	if m == nil {
+		return false
+	}
+	return NormalizeVectorProvider(m.VectorProvider) == KnowledgeVectorProviderMilvus
 }
 
 type KnowledgeNamespaceListResult struct {
@@ -105,13 +136,30 @@ func GetKnowledgeNamespace(db *gorm.DB, orgID uint, id uint) (*KnowledgeNamespac
 	return &row, nil
 }
 
+// GetKnowledgeNamespaceByOrgAndNamespace loads a knowledge namespace by org and namespace string (collection / IndexId).
+func GetKnowledgeNamespaceByOrgAndNamespace(db *gorm.DB, orgID uint, namespace string) (*KnowledgeNamespace, error) {
+	if db == nil {
+		return nil, errors.New("nil db")
+	}
+	ns := strings.TrimSpace(namespace)
+	if ns == "" {
+		return nil, errors.New("namespace is required")
+	}
+	var row KnowledgeNamespace
+	if err := db.Where("org_id = ? AND namespace = ?", orgID, ns).First(&row).Error; err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
 type KnowledgeNamespaceCreateUpdate struct {
-	Namespace   string
-	Name        string
-	Description string
-	EmbedModel  string
-	VectorDim   int
-	Status      string
+	Namespace      string
+	Name           string
+	Description    string
+	VectorProvider string
+	EmbedModel     string
+	VectorDim      int
+	Status         string
 }
 
 func UpsertKnowledgeNamespace(db *gorm.DB, orgID uint, id uint, req *KnowledgeNamespaceCreateUpdate) (*KnowledgeNamespace, error) {
@@ -129,6 +177,11 @@ func UpsertKnowledgeNamespace(db *gorm.DB, orgID uint, id uint, req *KnowledgeNa
 	if name == "" {
 		return nil, errors.New("name is required")
 	}
+	vp := NormalizeVectorProvider(req.VectorProvider)
+	if vp != KnowledgeVectorProviderQdrant && vp != KnowledgeVectorProviderMilvus {
+		return nil, errors.New("vector_provider must be qdrant or milvus")
+	}
+
 	embedModel := strings.TrimSpace(req.EmbedModel)
 	if embedModel == "" {
 		return nil, errors.New("embed_model is required")
@@ -149,6 +202,7 @@ func UpsertKnowledgeNamespace(db *gorm.DB, orgID uint, id uint, req *KnowledgeNa
 		if err == nil {
 			existing.Name = name
 			existing.Description = strings.TrimSpace(req.Description)
+			existing.VectorProvider = vp
 			existing.EmbedModel = embedModel
 			existing.VectorDim = req.VectorDim
 			existing.Status = status
@@ -162,13 +216,14 @@ func UpsertKnowledgeNamespace(db *gorm.DB, orgID uint, id uint, req *KnowledgeNa
 		}
 
 		row := KnowledgeNamespace{
-			OrgID:       orgID,
-			Namespace:   namespace,
-			Name:        name,
-			Description: strings.TrimSpace(req.Description),
-			EmbedModel:  embedModel,
-			VectorDim:   req.VectorDim,
-			Status:      status,
+			OrgID:          orgID,
+			Namespace:      namespace,
+			Name:           name,
+			Description:    strings.TrimSpace(req.Description),
+			VectorProvider: vp,
+			EmbedModel:     embedModel,
+			VectorDim:      req.VectorDim,
+			Status:         status,
 		}
 		if err := db.Create(&row).Error; err != nil {
 			return nil, err
@@ -184,6 +239,7 @@ func UpsertKnowledgeNamespace(db *gorm.DB, orgID uint, id uint, req *KnowledgeNa
 	row.Namespace = namespace
 	row.Name = name
 	row.Description = strings.TrimSpace(req.Description)
+	row.VectorProvider = vp
 	row.EmbedModel = embedModel
 	row.VectorDim = req.VectorDim
 	row.Status = status

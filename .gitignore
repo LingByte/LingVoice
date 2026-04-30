@@ -62,3 +62,4 @@ dist-ssr
 *.sln
 *.sw?
 keys/
+data/

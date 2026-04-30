@@ -21,6 +21,7 @@ import (
 
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/models"
+	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/knowledge"
 	"github.com/LingByte/LingVoice/pkg/llm"
 	"github.com/LingByte/LingVoice/pkg/utils/search"
@@ -30,6 +31,7 @@ import (
 	lingstorage "github.com/LingByte/lingstorage-sdk-go"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -51,6 +53,17 @@ func normalizeVec64InPlace(v []float64) {
 	for i := range v {
 		v[i] = v[i] / n
 	}
+}
+
+func knowledgeProviderForLog(ns *models.KnowledgeNamespace) string {
+	if ns == nil {
+		return ""
+	}
+	p := strings.TrimSpace(strings.ToLower(ns.VectorProvider))
+	if p == "" {
+		p = models.KnowledgeVectorProviderQdrant
+	}
+	return p
 }
 
 var (
@@ -85,12 +98,13 @@ func knowledgeSearchFromEnv() (search.Engine, error) {
 
 // KnowledgeNamespaceUpsertReq 创建/更新知识库（namespace）定义。
 type KnowledgeNamespaceUpsertReq struct {
-	Namespace   string  `json:"namespace" binding:"required,max=128"`
-	Name        string  `json:"name" binding:"required,max=255"`
-	Description string  `json:"description"`
-	EmbedModel  string  `json:"embed_model" binding:"required,max=64"`
-	VectorDim   int     `json:"vector_dim" binding:"required"`
-	Status      *string `json:"status"` // active/deleted
+	Namespace      string  `json:"namespace" binding:"required,max=128"`
+	Name           string  `json:"name" binding:"required,max=255"`
+	Description    string  `json:"description"`
+	VectorProvider string  `json:"vector_provider"` // qdrant（默认）| milvus
+	EmbedModel     string  `json:"embed_model" binding:"max=64"`
+	VectorDim      int     `json:"vector_dim"`
+	Status         *string `json:"status"` // active/deleted
 }
 
 type KnowledgeDocumentUpsertReq struct {
@@ -102,39 +116,15 @@ type KnowledgeDocumentUpsertReq struct {
 	Status    *string `json:"status"`                              // active/deleted
 }
 
-type dimEmbedder struct {
-	dim int
-}
-
-func (d dimEmbedder) Embed(ctx context.Context, inputs []string) ([][]float64, error) {
-	_ = ctx
-	out := make([][]float64, 0, len(inputs))
-	for range inputs {
-		vec := make([]float64, d.dim)
-		out = append(out, vec)
+func knowledgeHandlerForNS(ns *models.KnowledgeNamespace, embedder knowledge.Embedder) (knowledge.KnowledgeHandler, error) {
+	if ns == nil {
+		return nil, errors.New("nil namespace")
 	}
-	return out, nil
-}
-
-func qdrantFromEnv(embedDim int) *knowledge.QdrantHandler {
-	baseURL := strings.TrimSpace(base.GetEnv("QDRANT_BASEURL"))
-	apiKey := strings.TrimSpace(base.GetEnv("QDRANT_API_KEY"))
-	timeoutSec := int64(15)
-	if raw := strings.TrimSpace(base.GetEnv("QDRANT_TIMEOUT_SECONDS")); raw != "" {
-		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
-			timeoutSec = n
-		}
-	}
-	eh := knowledge.Embedder(nil)
-	if embedDim > 0 {
-		eh = dimEmbedder{dim: embedDim}
-	}
-	return &knowledge.QdrantHandler{
-		BaseURL:    baseURL,
-		APIKey:     apiKey,
-		HTTPClient: &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
-		Embedder:   eh,
-	}
+	return knowledge.NewKnowledgeHandler(knowledge.HandlerFactoryParams{
+		Provider:  ns.VectorProvider,
+		Namespace: strings.TrimSpace(ns.Namespace),
+		Embedder:  embedder,
+	})
 }
 
 func embedderFromEnv() (knowledge.Embedder, error) {
@@ -406,17 +396,45 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 	}
 
 	go func(orgID uint, ns models.KnowledgeNamespace, docID uint, fileName string, fileHash string, content []byte) {
+		start := time.Now()
+		provider := knowledgeProviderForLog(&ns)
+		logger.Info("knowledge.upload.job.start",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(docID)),
+			zap.String("file_name", strings.TrimSpace(fileName)),
+			zap.String("file_hash", strings.TrimSpace(fileHash)),
+			zap.Int("bytes", len(content)),
+		)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 
 		embedder, err := embedderFromEnv()
 		if err != nil {
+			logger.Error("knowledge.upload.job.embedder_failed",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+				zap.Uint64("doc_id", uint64(docID)),
+				zap.Error(err),
+				zap.Duration("elapsed", time.Since(start)),
+			)
 			h.knowledgeDocFinalizeFailed(orgID, docID)
 			return
 		}
 
 		parsed, err := knowledgeParser.ParseBytes(ctx, fileName, content, &knowledgeParser.ParseOptions{MaxTextLength: 200000})
 		if err != nil {
+			logger.Error("knowledge.upload.job.parse_failed",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+				zap.Uint64("doc_id", uint64(docID)),
+				zap.String("file_name", strings.TrimSpace(fileName)),
+				zap.Error(err),
+				zap.Duration("elapsed", time.Since(start)),
+			)
 			h.knowledgeDocFinalizeFailed(orgID, docID)
 			return
 		}
@@ -452,11 +470,26 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 		if len(chunks) == 0 {
 			txt := strings.TrimSpace(parsed.Text)
 			if txt == "" {
+				logger.Warn("knowledge.upload.job.empty_text",
+					zap.String("provider", provider),
+					zap.Uint64("org_id", uint64(orgID)),
+					zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+					zap.Uint64("doc_id", uint64(docID)),
+					zap.Duration("elapsed", time.Since(start)),
+				)
 				h.knowledgeDocFinalizeFailed(orgID, docID)
 				return
 			}
 			chunks = append(chunks, chunk{Idx: 0, Text: txt})
 		}
+		logger.Info("knowledge.upload.job.chunked",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(docID)),
+			zap.Int("chunks", len(chunks)),
+			zap.Duration("elapsed", time.Since(start)),
+		)
 
 		mdText := buildStructuredMarkdown(strings.TrimSpace(fileName), ns.Namespace, fileHash, "upload", func() []struct {
 			Idx  int
@@ -479,16 +512,54 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 		for _, ch := range chunks {
 			inputs = append(inputs, ch.Text)
 		}
+		embedStart := time.Now()
+		logger.Info("knowledge.upload.job.embed.start",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(docID)),
+			zap.Int("inputs", len(inputs)),
+			zap.Duration("elapsed", time.Since(start)),
+		)
 		vecs, err := embedder.Embed(ctx, inputs)
 		if err != nil || len(vecs) != len(chunks) || len(vecs) == 0 || len(vecs[0]) == 0 {
+			logger.Error("knowledge.upload.job.embed_failed",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+				zap.Uint64("doc_id", uint64(docID)),
+				zap.Int("chunks", len(chunks)),
+				zap.Int("vecs", len(vecs)),
+				zap.Error(err),
+				zap.Duration("elapsed", time.Since(start)),
+			)
 			h.knowledgeDocFinalizeFailed(orgID, docID)
 			return
 		}
+		logger.Info("knowledge.upload.job.embed.done",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(docID)),
+			zap.Int("vecs", len(vecs)),
+			zap.Int("vector_dim", len(vecs[0])),
+			zap.Duration("embed_elapsed", time.Since(embedStart)),
+			zap.Duration("elapsed", time.Since(start)),
+		)
 		for i := range vecs {
 			normalizeVec64InPlace(vecs[i])
 		}
 		gotDim := len(vecs[0])
 		if ns.VectorDim > 0 && gotDim != ns.VectorDim {
+			logger.Error("knowledge.upload.job.vector_dim_mismatch",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+				zap.Uint64("doc_id", uint64(docID)),
+				zap.Int("expected_dim", ns.VectorDim),
+				zap.Int("got_dim", gotDim),
+				zap.Duration("elapsed", time.Since(start)),
+			)
 			h.knowledgeDocFinalizeFailed(orgID, docID)
 			return
 		}
@@ -521,12 +592,50 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 			})
 		}
 
-		qh := qdrantFromEnv(0)
-		qh.Embedder = embedder
-		if err := qh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(ns.Namespace), BatchSize: 64}); err != nil {
+		kh, err := knowledgeHandlerForNS(&ns, embedder)
+		if err != nil {
+			logger.Error("knowledge.upload.job.handler_failed",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+				zap.Uint64("doc_id", uint64(docID)),
+				zap.Error(err),
+				zap.Duration("elapsed", time.Since(start)),
+			)
 			h.knowledgeDocFinalizeFailed(orgID, docID)
 			return
 		}
+		upsertStart := time.Now()
+		logger.Info("knowledge.upload.job.upsert.start",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(docID)),
+			zap.Int("records", len(records)),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		if err := kh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(ns.Namespace), BatchSize: 64}); err != nil {
+			logger.Error("knowledge.upload.job.upsert_failed",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+				zap.Uint64("doc_id", uint64(docID)),
+				zap.Int("records", len(records)),
+				zap.Error(err),
+				zap.Duration("elapsed", time.Since(start)),
+			)
+			h.knowledgeDocFinalizeFailed(orgID, docID)
+			return
+		}
+		logger.Info("knowledge.upload.job.upsert.done",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(docID)),
+			zap.Int("records", len(records)),
+			zap.Duration("upsert_elapsed", time.Since(upsertStart)),
+			zap.Duration("elapsed", time.Since(start)),
+		)
 
 		textURL := ""
 		if u, upErr := uploadMarkdownToStore(orgID, ns.Namespace, docID, fileName, mdText); upErr == nil && u != "" {
@@ -557,6 +666,16 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 		}
 
 		h.knowledgeDocFinalizeSuccess(orgID, docID, recordIDs, textURL)
+		logger.Info("knowledge.upload.job.done",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(docID)),
+			zap.Int("records", len(recordIDs)),
+			zap.Int("vector_dim", gotDim),
+			zap.Bool("uploaded_text", strings.TrimSpace(textURL) != ""),
+			zap.Duration("elapsed", time.Since(start)),
+		)
 	}(orgID, *nsRow, docRow.ID, fh.Filename, fileHash, b)
 
 	response.Success(c, "已提交后台处理", gin.H{"document": docRow})
@@ -600,12 +719,6 @@ func (h *Handlers) knowledgeNamespaceRecallTestHandler(c *gin.Context) {
 		return
 	}
 
-	embedder, err := embedderFromEnv()
-	if err != nil {
-		response.Fail(c, "Embedder 未配置", gin.H{"error": err.Error()})
-		return
-	}
-
 	var docRow *models.KnowledgeDocument
 	expected := map[string]struct{}{}
 	if req.DocID != nil && strings.TrimSpace(*req.DocID) != "" {
@@ -627,9 +740,18 @@ func (h *Handlers) knowledgeNamespaceRecallTestHandler(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
-	qh := qdrantFromEnv(0)
-	qh.Embedder = embedder
-	vecResults, err := qh.Query(ctx, strings.TrimSpace(req.Query), &knowledge.QueryOptions{
+
+	embedder, err := embedderFromEnv()
+	if err != nil {
+		response.Fail(c, "Embedder 未配置", gin.H{"error": err.Error()})
+		return
+	}
+	kh, err := knowledgeHandlerForNS(nsRow, embedder)
+	if err != nil {
+		response.Fail(c, "知识库后端未就绪", gin.H{"error": err.Error()})
+		return
+	}
+	vecResults, err := kh.Query(ctx, strings.TrimSpace(req.Query), &knowledge.QueryOptions{
 		Namespace: strings.TrimSpace(nsRow.Namespace),
 		TopK:      topK,
 		MinScore:  minScore,
@@ -856,40 +978,64 @@ func (h *Handlers) knowledgeNamespaceCreateHandler(c *gin.Context) {
 	}
 
 	orgID := models.CurrentOrgID(c)
+	vp := models.NormalizeVectorProvider(req.VectorProvider)
 
-	// Create Qdrant namespace first (real knowledge base).
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
+
+	if strings.TrimSpace(req.Namespace) == "" {
+		response.FailWithCode(c, 400, "namespace（collection 名）不能为空", nil)
+		return
+	}
+
 	embedder, err := embedderFromEnv()
 	if err != nil {
 		response.Fail(c, "Embedder 未配置", gin.H{"error": err.Error()})
 		return
 	}
-	// Infer real dimension from embedder, and create collection with it.
 	probe, err := embedder.Embed(ctx, []string{"dimension_probe"})
 	if err != nil || len(probe) == 0 || len(probe[0]) == 0 {
 		response.Fail(c, "向量模型不可用（无法推导维度）", gin.H{"error": fmt.Sprintf("%v", err)})
 		return
 	}
 	realDim := len(probe[0])
-	qh := qdrantFromEnv(0)
-	qh.Embedder = embedder
-	if err := qh.CreateNamespace(ctx, strings.TrimSpace(req.Namespace)); err != nil {
-		response.Fail(c, "创建知识库失败（Qdrant）", gin.H{"error": err.Error()})
+	tmpNS := &models.KnowledgeNamespace{
+		VectorProvider: vp,
+		Namespace:      strings.TrimSpace(req.Namespace),
+	}
+	kh, err := knowledgeHandlerForNS(tmpNS, embedder)
+	if err != nil {
+		response.Fail(c, "向量后端不可用", gin.H{"error": err.Error()})
 		return
+	}
+	// Always verify backend connectivity on create.
+	if err := kh.Ping(ctx); err != nil {
+		response.Fail(c, "向量后端不可用（Ping 失败）", gin.H{
+			"provider": vp,
+			"error":    err.Error(),
+		})
+		return
+	}
+	if vp == models.KnowledgeVectorProviderQdrant {
+		if err := kh.CreateNamespace(ctx, strings.TrimSpace(req.Namespace)); err != nil {
+			response.Fail(c, "创建知识库失败（Qdrant）", gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	row, err := models.UpsertKnowledgeNamespace(h.db, orgID, 0, &models.KnowledgeNamespaceCreateUpdate{
-		Namespace:   req.Namespace,
-		Name:        req.Name,
-		Description: req.Description,
-		EmbedModel:  req.EmbedModel,
-		VectorDim:   realDim,
-		Status:      status,
+		Namespace:      req.Namespace,
+		Name:           req.Name,
+		Description:    req.Description,
+		VectorProvider: vp,
+		EmbedModel:     req.EmbedModel,
+		VectorDim:      realDim,
+		Status:         status,
 	})
 	if err != nil {
-		// Best-effort rollback in Qdrant to keep DB and Qdrant consistent.
-		_ = qh.DeleteNamespace(context.Background(), strings.TrimSpace(req.Namespace))
+		if vp == models.KnowledgeVectorProviderQdrant {
+			_ = kh.DeleteNamespace(context.Background(), strings.TrimSpace(req.Namespace))
+		}
 		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
 		return
 	}
@@ -925,23 +1071,29 @@ func (h *Handlers) knowledgeNamespaceUpdateHandler(c *gin.Context) {
 		return
 	}
 	if strings.TrimSpace(existing.Namespace) != strings.TrimSpace(req.Namespace) {
-		response.FailWithCode(c, 400, "namespace 不允许修改（对应 Qdrant collection）", nil)
+		response.FailWithCode(c, 400, "namespace 不允许修改（对应向量后端资源标识）", nil)
+		return
+	}
+	if models.NormalizeVectorProvider(req.VectorProvider) != models.NormalizeVectorProvider(existing.VectorProvider) {
+		response.FailWithCode(c, 400, "vector_provider 不允许修改", nil)
 		return
 	}
 	if existing.VectorDim > 0 && req.VectorDim > 0 && existing.VectorDim != req.VectorDim {
-		response.FailWithCode(c, 400, "vector_dim 不允许修改（对应 Qdrant collection 维度）", gin.H{
+		response.FailWithCode(c, 400, "vector_dim 不允许修改（对应 collection 维度）", gin.H{
 			"current": existing.VectorDim,
 			"got":     req.VectorDim,
 		})
 		return
 	}
+	vdim := existing.VectorDim
 	row, err := models.UpsertKnowledgeNamespace(h.db, orgID, id, &models.KnowledgeNamespaceCreateUpdate{
-		Namespace:   req.Namespace,
-		Name:        req.Name,
-		Description: req.Description,
-		EmbedModel:  req.EmbedModel,
-		VectorDim:   existing.VectorDim,
-		Status:      status,
+		Namespace:      req.Namespace,
+		Name:           req.Name,
+		Description:    req.Description,
+		VectorProvider: existing.VectorProvider,
+		EmbedModel:     req.EmbedModel,
+		VectorDim:      vdim,
+		Status:         status,
 	})
 	if err != nil {
 		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
@@ -967,12 +1119,15 @@ func (h *Handlers) knowledgeNamespaceDeleteHandler(c *gin.Context) {
 		return
 	}
 
-	// Delete Qdrant collection first.
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
-	qh := qdrantFromEnv(0)
-	if err := qh.DeleteNamespace(ctx, strings.TrimSpace(row.Namespace)); err != nil {
-		response.Fail(c, "删除失败（Qdrant）", gin.H{"error": err.Error()})
+	kh, err := knowledgeHandlerForNS(row, nil)
+	if err != nil {
+		response.Fail(c, "向量后端不可用", gin.H{"error": err.Error()})
+		return
+	}
+	if err := kh.DeleteNamespace(ctx, strings.TrimSpace(row.Namespace)); err != nil {
+		response.Fail(c, "删除失败（向量后端）", gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1027,7 +1182,11 @@ func (h *Handlers) knowledgeDocumentDetailHandler(c *gin.Context) {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{"document": row})
+	out := gin.H{"document": row}
+	if nsRow, err := models.GetKnowledgeNamespaceByOrgAndNamespace(h.db, orgID, row.Namespace); err == nil && nsRow != nil {
+		out["vector_provider"] = nsRow.VectorProvider
+	}
+	response.Success(c, "ok", out)
 }
 
 func (h *Handlers) knowledgeDocumentCreateOrUpsertHandler(c *gin.Context) {
@@ -1133,7 +1292,6 @@ func (h *Handlers) knowledgeDocumentTextPutHandler(c *gin.Context) {
 		response.Fail(c, "查询知识库失败", gin.H{"error": err.Error()})
 		return
 	}
-
 	// Mark as processing and upload markdown immediately (fast path), then vectorize async.
 	textURL := doc.TextURL
 	if u, upErr := uploadMarkdownToStore(orgID, doc.Namespace, doc.ID, doc.Title, mdText+"\n"); upErr == nil && u != "" {
@@ -1150,11 +1308,29 @@ func (h *Handlers) knowledgeDocumentTextPutHandler(c *gin.Context) {
 	doc.Status = models.KnowledgeStatusProcessing
 
 	go func(orgID uint, ns models.KnowledgeNamespace, doc models.KnowledgeDocument, mdText string) {
+		start := time.Now()
+		provider := knowledgeProviderForLog(&ns)
+		logger.Info("knowledge.text_put.job.start",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.String("title", strings.TrimSpace(doc.Title)),
+			zap.Int("markdown_chars", len(mdText)),
+		)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 
 		embedder, err := embedderFromEnv()
 		if err != nil {
+			logger.Error("knowledge.text_put.job.embedder_failed",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+				zap.Uint64("doc_id", uint64(doc.ID)),
+				zap.Error(err),
+				zap.Duration("elapsed", time.Since(start)),
+			)
 			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
 			return
 		}
@@ -1204,25 +1380,74 @@ func (h *Handlers) knowledgeDocumentTextPutHandler(c *gin.Context) {
 		for _, ch := range chunks {
 			inputs = append(inputs, ch.Text)
 		}
+		embedStart := time.Now()
+		logger.Info("knowledge.text_put.job.embed.start",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Int("inputs", len(inputs)),
+			zap.Duration("elapsed", time.Since(start)),
+		)
 		vecs, err := embedder.Embed(ctx, inputs)
 		if err != nil || len(vecs) == 0 || len(vecs[0]) == 0 {
+			logger.Error("knowledge.text_put.job.embed_failed",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+				zap.Uint64("doc_id", uint64(doc.ID)),
+				zap.Int("chunks", len(chunks)),
+				zap.Int("vecs", len(vecs)),
+				zap.Error(err),
+				zap.Duration("elapsed", time.Since(start)),
+			)
 			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
 			return
 		}
+		logger.Info("knowledge.text_put.job.embed.done",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Int("vecs", len(vecs)),
+			zap.Int("vector_dim", len(vecs[0])),
+			zap.Duration("embed_elapsed", time.Since(embedStart)),
+			zap.Duration("elapsed", time.Since(start)),
+		)
 		for i := range vecs {
 			normalizeVec64InPlace(vecs[i])
 		}
 		gotDim := len(vecs[0])
 		if ns.VectorDim > 0 && gotDim != ns.VectorDim {
+			logger.Error("knowledge.text_put.job.vector_dim_mismatch",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+				zap.Uint64("doc_id", uint64(doc.ID)),
+				zap.Int("expected_dim", ns.VectorDim),
+				zap.Int("got_dim", gotDim),
+				zap.Duration("elapsed", time.Since(start)),
+			)
 			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
 			return
 		}
 
-		qh := qdrantFromEnv(0)
-		qh.Embedder = embedder
+		kh, err := knowledgeHandlerForNS(&ns, embedder)
+		if err != nil {
+			logger.Error("knowledge.text_put.job.handler_failed",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+				zap.Uint64("doc_id", uint64(doc.ID)),
+				zap.Error(err),
+				zap.Duration("elapsed", time.Since(start)),
+			)
+			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+			return
+		}
 		oldIDs := parseRecordIDs(doc.RecordIDs)
 		if len(oldIDs) > 0 {
-			_ = qh.Delete(ctx, oldIDs, &knowledge.DeleteOptions{Namespace: strings.TrimSpace(doc.Namespace)})
+			_ = kh.Delete(ctx, oldIDs, &knowledge.DeleteOptions{Namespace: strings.TrimSpace(doc.Namespace)})
 			// Delete from keyword index (best-effort).
 			if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
 				for _, rid := range oldIDs {
@@ -1257,10 +1482,37 @@ func (h *Handlers) knowledgeDocumentTextPutHandler(c *gin.Context) {
 				UpdatedAt: now,
 			})
 		}
-		if err := qh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(doc.Namespace), Overwrite: true, BatchSize: 64}); err != nil {
+		upsertStart := time.Now()
+		logger.Info("knowledge.text_put.job.upsert.start",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Int("records", len(records)),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		if err := kh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(doc.Namespace), Overwrite: true, BatchSize: 64}); err != nil {
+			logger.Error("knowledge.text_put.job.upsert_failed",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+				zap.Uint64("doc_id", uint64(doc.ID)),
+				zap.Int("records", len(records)),
+				zap.Error(err),
+				zap.Duration("elapsed", time.Since(start)),
+			)
 			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
 			return
 		}
+		logger.Info("knowledge.text_put.job.upsert.done",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Int("records", len(records)),
+			zap.Duration("upsert_elapsed", time.Since(upsertStart)),
+			zap.Duration("elapsed", time.Since(start)),
+		)
 
 		// Update keyword index (best-effort).
 		if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
@@ -1286,6 +1538,15 @@ func (h *Handlers) knowledgeDocumentTextPutHandler(c *gin.Context) {
 		}
 
 		h.knowledgeDocFinalizeSuccess(orgID, doc.ID, recordIDs, "")
+		logger.Info("knowledge.text_put.job.done",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Int("records", len(recordIDs)),
+			zap.Int("vector_dim", gotDim),
+			zap.Duration("elapsed", time.Since(start)),
+		)
 	}(orgID, nsRow, *doc, mdText)
 
 	response.Success(c, "已提交后台处理", gin.H{"document": doc})
@@ -1347,7 +1608,6 @@ func (h *Handlers) knowledgeDocumentReuploadHandler(c *gin.Context) {
 		response.Fail(c, "查询知识库失败", gin.H{"error": err.Error()})
 		return
 	}
-
 	fh, err := c.FormFile("file")
 	if err != nil {
 		response.FailWithCode(c, 400, "缺少文件 file", gin.H{"error": err.Error()})
@@ -1473,11 +1733,14 @@ func (h *Handlers) knowledgeDocumentReuploadHandler(c *gin.Context) {
 			return
 		}
 
-		qh := qdrantFromEnv(0)
-		qh.Embedder = embedder
+		kh, err := knowledgeHandlerForNS(&ns, embedder)
+		if err != nil {
+			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+			return
+		}
 		oldIDs := parseRecordIDs(oldRecordIDs)
 		if len(oldIDs) > 0 {
-			_ = qh.Delete(ctx, oldIDs, &knowledge.DeleteOptions{Namespace: strings.TrimSpace(doc.Namespace)})
+			_ = kh.Delete(ctx, oldIDs, &knowledge.DeleteOptions{Namespace: strings.TrimSpace(doc.Namespace)})
 			// Delete from keyword index (best-effort).
 			if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
 				for _, rid := range oldIDs {
@@ -1513,7 +1776,7 @@ func (h *Handlers) knowledgeDocumentReuploadHandler(c *gin.Context) {
 				UpdatedAt: now,
 			})
 		}
-		if err := qh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(doc.Namespace), Overwrite: true, BatchSize: 64}); err != nil {
+		if err := kh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(doc.Namespace), Overwrite: true, BatchSize: 64}); err != nil {
 			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
 			return
 		}
@@ -1571,11 +1834,20 @@ func (h *Handlers) knowledgeDocumentDeleteHandler(c *gin.Context) {
 
 	ids := parseRecordIDs(doc.RecordIDs)
 	if len(ids) > 0 {
+		var nsRow models.KnowledgeNamespace
+		if err := h.db.Where("org_id = ? AND namespace = ?", orgID, strings.TrimSpace(doc.Namespace)).First(&nsRow).Error; err != nil {
+			response.Fail(c, "查询知识库失败", gin.H{"error": err.Error()})
+			return
+		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 		defer cancel()
-		qh := qdrantFromEnv(0)
-		if err := qh.Delete(ctx, ids, &knowledge.DeleteOptions{Namespace: strings.TrimSpace(doc.Namespace)}); err != nil {
-			response.Fail(c, "删除失败（Qdrant points）", gin.H{"error": err.Error()})
+		kh, err := knowledgeHandlerForNS(&nsRow, nil)
+		if err != nil {
+			response.Fail(c, "向量后端不可用", gin.H{"error": err.Error()})
+			return
+		}
+		if err := kh.Delete(ctx, ids, &knowledge.DeleteOptions{Namespace: strings.TrimSpace(doc.Namespace)}); err != nil {
+			response.Fail(c, "删除失败（向量 points）", gin.H{"error": err.Error()})
 			return
 		}
 

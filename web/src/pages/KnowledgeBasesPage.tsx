@@ -19,6 +19,7 @@ import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 import {
   createKnowledgeNamespace,
   deleteKnowledgeNamespace,
+  isMilvusVectorProvider,
   listKnowledgeNamespaces,
   updateKnowledgeNamespace,
   type KnowledgeNamespaceRow,
@@ -30,15 +31,23 @@ const TextArea = Input.TextArea
 
 type NamespaceFormValues = KnowledgeNamespaceUpsertBody
 
+const FIXED_EMBED_MODEL = 'nvidia/nv-embed-v1'
+
 const STATUS_OPTIONS = [
   { label: 'active', value: 'active' },
   { label: 'deleted', value: 'deleted' },
+]
+
+const VECTOR_PROVIDER_OPTIONS = [
+  { label: 'Qdrant（自建向量）', value: 'qdrant' },
+  { label: 'Milvus', value: 'milvus' },
 ]
 
 export function KnowledgeBasesPage() {
   const navigate = useNavigate()
 
   const [nsForm] = Form.useForm<NamespaceFormValues>()
+  const vectorProviderWatch = Form.useWatch('vector_provider', nsForm) as string | undefined
 
   const [namespacesLoading, setNamespacesLoading] = useState(false)
   const [namespaceList, setNamespaceList] = useState<KnowledgeNamespaceRow[]>([])
@@ -89,7 +98,8 @@ export function KnowledgeBasesPage() {
       namespace: '',
       name: '',
       description: '',
-      embed_model: 'bge',
+      vector_provider: 'qdrant',
+      embed_model: FIXED_EMBED_MODEL,
       vector_dim: 1024,
       status: 'active',
     })
@@ -103,7 +113,8 @@ export function KnowledgeBasesPage() {
       namespace: row.namespace,
       name: row.name,
       description: row.description || '',
-      embed_model: row.embed_model,
+      vector_provider: row.vector_provider || 'qdrant',
+      embed_model: FIXED_EMBED_MODEL,
       vector_dim: row.vector_dim,
       status: row.status,
     })
@@ -114,11 +125,24 @@ export function KnowledgeBasesPage() {
     setNsSaving(true)
     try {
       const values = await nsForm.validate()
+      const vp = String(values.vector_provider || 'qdrant')
+        .trim()
+        .toLowerCase()
+      if (vp !== 'qdrant' && vp !== 'milvus') {
+        Message.error('向量后端仅支持 qdrant 或 milvus')
+        return
+      }
+      const dim = Number(values.vector_dim)
+      if (!dim || dim <= 0) {
+        Message.error('向量维度须大于 0')
+        return
+      }
       const body: KnowledgeNamespaceUpsertBody = {
         namespace: String(values.namespace || '').trim(),
         name: String(values.name || '').trim(),
         description: String(values.description || '').trim() || undefined,
-        embed_model: String(values.embed_model || '').trim(),
+        vector_provider: vp,
+        embed_model: FIXED_EMBED_MODEL,
         vector_dim: Number(values.vector_dim) || 0,
         status: String(values.status || 'active'),
       }
@@ -179,11 +203,17 @@ export function KnowledgeBasesPage() {
           rowKey="id"
           data={namespaceList}
           pagination={false}
-          scroll={{ x: 1100 }}
+          scroll={{ x: 1220 }}
           columns={[
             { title: 'ID', dataIndex: 'id', width: 120, render: (v: string) => <EllipsisCopyText text={v} maxWidth={96} copiedTip="ID 已复制" /> },
             { title: '命名空间', dataIndex: 'namespace', width: 220, render: (v: string) => <EllipsisCopyText text={v} maxWidth={200} copiedTip="namespace 已复制" /> },
             { title: '名称', dataIndex: 'name', width: 180 },
+            {
+              title: '向量后端',
+              dataIndex: 'vector_provider',
+              width: 110,
+              render: (v: string) => (isMilvusVectorProvider(v) ? 'Milvus' : 'Qdrant'),
+            },
             { title: '向量模型', dataIndex: 'embed_model', width: 120 },
             { title: '维度', dataIndex: 'vector_dim', width: 90 },
             { title: '状态', dataIndex: 'status', width: 100 },
@@ -200,7 +230,10 @@ export function KnowledgeBasesPage() {
                   <Button type="text" size="mini" onClick={() => openNamespaceEdit(row)}>
                     编辑
                   </Button>
-                  <Popconfirm title="确定删除这个知识库？（将删除 Qdrant collection）" onOk={() => onDeleteNamespace(row.id)}>
+                  <Popconfirm
+                    title="确定删除？将删除对应向量后端资源（Qdrant/Milvus collection）。"
+                    onOk={() => onDeleteNamespace(row.id)}
+                  >
                     <Button type="text" size="mini" status="danger">
                       删除
                     </Button>
@@ -234,8 +267,35 @@ export function KnowledgeBasesPage() {
           unmountOnExit
         >
           <Form form={nsForm} layout="vertical">
-            <Form.Item field="namespace" label="Namespace" rules={[{ required: true, message: '请输入 namespace' }]}>
-              <Input placeholder="例如 resume_cn" />
+            <Form.Item field="vector_provider" label="向量后端" rules={[{ required: true, message: '请选择向量后端' }]}>
+              <Select options={VECTOR_PROVIDER_OPTIONS} disabled={nsDrawerMode === 'edit'} />
+            </Form.Item>
+            <Paragraph type="secondary" className="!mb-2 !mt-0 text-[12px]">
+              {isMilvusVectorProvider(vectorProviderWatch)
+                ? 'Milvus 模式：Namespace 即 collection 名；基础连接配置从服务端 MILVUS_* 环境变量读取；向量维度从 EMBED_* 探测。'
+                : 'Qdrant 模式：Namespace 即 collection 名；创建时会探测 EMBED_* 配置得到真实向量维度。'}
+            </Paragraph>
+            <Form.Item
+              field="namespace"
+              label="Namespace / IndexId"
+              rules={[
+                {
+                  validator(value, callback) {
+                    const vp = nsForm.getFieldValue('vector_provider') as string | undefined
+                    if (!String(value || '').trim()) {
+                      callback('请输入 namespace')
+                      return
+                    }
+                    callback()
+                  },
+                },
+              ]}
+            >
+              <Input
+                placeholder={
+                  isMilvusVectorProvider(vectorProviderWatch) ? '例如 resume_cn（Milvus collection）' : '例如 resume_cn（Qdrant collection）'
+                }
+              />
             </Form.Item>
             <Form.Item field="name" label="知识库名称" rules={[{ required: true, message: '请输入名称' }]}>
               <Input placeholder="例如 简历知识库" />
@@ -243,10 +303,14 @@ export function KnowledgeBasesPage() {
             <Form.Item field="description" label="描述">
               <TextArea placeholder="知识库用途描述" autoSize={{ minRows: 3, maxRows: 6 }} />
             </Form.Item>
-            <Form.Item field="embed_model" label="向量模型" rules={[{ required: true, message: '请输入向量模型' }]}>
-              <Input placeholder="例如 bge / m3e / aliyun" />
+            <Form.Item field="embed_model" label="向量模型" extra="当前前端固定为 nvidia/nv-embed-v1。">
+              <Input disabled />
             </Form.Item>
-            <Form.Item field="vector_dim" label="向量维度" rules={[{ required: true, message: '请输入向量维度' }]}>
+            <Form.Item
+              field="vector_dim"
+              label="向量维度（记录用）"
+              extra="须大于 0；创建时后端会用嵌入服务探测值覆盖。"
+            >
               <InputNumber min={1} precision={0} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item field="status" label="状态" rules={[{ required: true, message: '请选择状态' }]}>

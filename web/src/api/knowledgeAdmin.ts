@@ -7,6 +7,8 @@ export interface KnowledgeNamespaceRow {
   namespace: string
   name: string
   description?: string
+  /** 向量后端：qdrant | milvus */
+  vector_provider?: string
   embed_model: string
   vector_dim: number
   status: string
@@ -32,9 +34,16 @@ export interface KnowledgeNamespaceUpsertBody {
   namespace: string
   name: string
   description?: string
-  embed_model: string
-  vector_dim: number
+  /** 默认 qdrant */
+  vector_provider?: string
+  embed_model?: string
+  vector_dim?: number
   status?: string
+}
+
+/** 是否与后端 models.KnowledgeVectorProviderMilvus 一致 */
+export function isMilvusVectorProvider(p?: string) {
+  return (p || 'qdrant').toLowerCase() === 'milvus'
 }
 
 export interface KnowledgeDocumentUpsertBody {
@@ -52,6 +61,8 @@ export type KnowledgeNamespaceDetail = {
 
 export type KnowledgeDocumentDetail = {
   document: KnowledgeDocumentRow
+  /** 来自所属知识库；缺失时前端按 qdrant 处理 */
+  vector_provider?: string
 }
 
 const api = {

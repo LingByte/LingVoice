@@ -10,10 +10,7 @@ const (
 	ProviderQdrant = "qdrant"
 
 	// ProviderMilvus Milvus Vector Database
-	ProviderMilvus = " milvus"
-
-	// ProviderAliyun Aliyun Bailian Knowledge Base
-	ProviderAliyun = "aliyun"
+	ProviderMilvus = "milvus"
 )
 
 type FilterOp string

@@ -86,49 +86,78 @@ func (c *NvidiaEmbedClient) Embed(ctx context.Context, inputs []string) ([][]flo
 			end = len(sanitized)
 		}
 		batch := sanitized[start:end]
-		body := map[string]any{
-			"model": c.Model,
-			inputKey: batch,
-		}
-		b, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(b))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-
-		resp, err := cl.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf(
-				"embeddings request failed: endpoint=%s status=%d model=%s body=%s",
-				endpoint, resp.StatusCode, c.Model, string(respBody),
-			)
-		}
-
+		var respBody []byte
+		var statusCode int
+		var lastErr error
 		var parsed struct {
 			Data []struct {
 				Embedding []float64 `json:"embedding"`
 			} `json:"data"`
 		}
-		if err := json.Unmarshal(respBody, &parsed); err != nil {
-			return nil, err
+		for attempt := 1; attempt <= 3; attempt++ {
+			body := map[string]any{
+				"model":    c.Model,
+				inputKey:   batch,
+			}
+			b, err := json.Marshal(body)
+			if err != nil {
+				return nil, err
+			}
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(b))
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+			resp, err := cl.Do(req)
+			if err != nil {
+				lastErr = err
+				// network error; retry
+				time.Sleep(time.Duration(attempt*200) * time.Millisecond)
+				continue
+			}
+			statusCode = resp.StatusCode
+			respBody, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if statusCode < 200 || statusCode >= 300 {
+				return nil, fmt.Errorf(
+					"embeddings request failed: endpoint=%s status=%d model=%s body=%s",
+					endpoint, statusCode, c.Model, truncateForErr(respBody),
+				)
+			}
+			if len(respBody) == 0 {
+				lastErr = errors.New("empty response body")
+				time.Sleep(time.Duration(attempt*200) * time.Millisecond)
+				continue
+			}
+			parsed = struct {
+				Data []struct {
+					Embedding []float64 `json:"embedding"`
+				} `json:"data"`
+			}{}
+			if err := json.Unmarshal(respBody, &parsed); err != nil {
+				// Common transient: upstream closes early and we get a partial JSON with 200.
+				// Retry a few times to mitigate flaky network / proxy truncation.
+				lastErr = fmt.Errorf("parse_failed: body_len=%d body=%s err=%v", len(respBody), truncateForErr(respBody), err)
+				time.Sleep(time.Duration(attempt*300) * time.Millisecond)
+				continue
+			}
+			if len(parsed.Data) == 0 {
+				lastErr = fmt.Errorf("no_embeddings_returned: body_len=%d body=%s", len(respBody), truncateForErr(respBody))
+				time.Sleep(time.Duration(attempt*300) * time.Millisecond)
+				continue
+			}
+			lastErr = nil
+			break
 		}
-		if len(parsed.Data) == 0 {
-			return nil, errors.New("no embeddings returned")
+		if lastErr != nil {
+			return nil, fmt.Errorf("embeddings response invalid: endpoint=%s status=%d model=%s err=%v", endpoint, statusCode, c.Model, lastErr)
 		}
 		for _, d := range parsed.Data {
 			if len(d.Embedding) == 0 {
-				return nil, errors.New("empty embedding returned")
+				return nil, fmt.Errorf("empty embedding returned: endpoint=%s status=%d model=%s", endpoint, statusCode, c.Model)
 			}
 			out = append(out, d.Embedding)
 		}

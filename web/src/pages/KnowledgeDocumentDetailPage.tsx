@@ -7,6 +7,7 @@ import { EllipsisCopyText } from '@/components/common/EllipsisCopyText'
 import {
   getKnowledgeDocument,
   getKnowledgeDocumentText,
+  isMilvusVectorProvider,
   updateKnowledgeDocumentText,
   type KnowledgeDocumentRow,
 } from '@/api/knowledgeAdmin'
@@ -21,8 +22,11 @@ export function KnowledgeDocumentDetailPage() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [doc, setDoc] = useState<KnowledgeDocumentRow | null>(null)
+  const [vectorProvider, setVectorProvider] = useState<string | undefined>()
   const [textURL, setTextURL] = useState('')
   const [markdown, setMarkdown] = useState('')
+
+  const nsIsMilvus = useMemo(() => isMilvusVectorProvider(vectorProvider), [vectorProvider])
 
   const load = useCallback(async () => {
     if (!docID) return
@@ -30,6 +34,7 @@ export function KnowledgeDocumentDetailPage() {
     try {
       const [d, t] = await Promise.all([getKnowledgeDocument(docID), getKnowledgeDocumentText(docID)])
       setDoc(d.document)
+      setVectorProvider(d.vector_provider)
       setTextURL(t.url || '')
       setMarkdown(t.markdown || '')
     } catch (e) {
@@ -87,6 +92,7 @@ export function KnowledgeDocumentDetailPage() {
                   <span>
                     title: <Text code>{doc?.title || '-'}</Text>
                   </span>
+                  {nsIsMilvus && <Text type="secondary">向量后端：Milvus</Text>}
                 </Space>
               </Paragraph>
             </div>
@@ -121,8 +127,9 @@ export function KnowledgeDocumentDetailPage() {
             <div className="min-h-0 min-w-0 overflow-hidden rounded-lg border border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-2">
               <div className="mb-2 px-2 text-[13px] text-[var(--color-text-2)]">编辑（Markdown）</div>
               <textarea
-                className="h-[75vh] w-full min-w-0 resize-none rounded-md border border-[var(--color-border-2)] bg-[var(--color-bg-1)] p-2 text-[13px] outline-none"
+                className="h-[75vh] w-full min-w-0 resize-none rounded-md border border-[var(--color-border-2)] bg-[var(--color-bg-1)] p-2 text-[13px] outline-none read-only:cursor-default read-only:bg-[var(--color-fill-2)]"
                 value={markdown}
+                readOnly={false}
                 onChange={(e) => setMarkdown(e.target.value)}
               />
             </div>
