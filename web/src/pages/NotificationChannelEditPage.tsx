@@ -169,7 +169,7 @@ export function NotificationChannelEditPage() {
         await createNotificationChannel(body)
         Message.success('已创建')
       } else {
-        await updateNotificationChannel(channelId, body)
+        await updateNotificationChannel(channelId!, body)
         Message.success('已保存')
       }
       navigate('/notify/channels')

@@ -13,6 +13,7 @@ import {
   MessageSquare,
   Mic,
   Mic2,
+  Database,
   PanelLeft,
   PanelLeftClose,
   RadioTower,
@@ -132,6 +133,18 @@ const menuGroups: MenuGroup[] = [
     ],
   },
   {
+    key: 'knowledge',
+    title: '知识库',
+    adminOnly: true,
+    items: [
+      {
+        key: '/knowledge',
+        label: '知识库管理',
+        icon: <Database size={16} strokeWidth={1.85} />,
+      },
+    ],
+  },
+  {
     key: 'notify',
     title: '通知',
     adminOnly: true,
@@ -185,6 +198,7 @@ const menuGroups: MenuGroup[] = [
 function menuPathSelected(pathname: string, itemKey: string): boolean {
   if (itemKey === '/dashboard') return pathname === '/dashboard' || pathname === '/quotas'
   if (itemKey === '/notify/channels') return pathname.startsWith('/notify/channels')
+  if (itemKey === '/knowledge') return pathname.startsWith('/knowledge')
   if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
   if (itemKey === '/notify/mail-logs') return pathname.startsWith('/notify/mail-logs')
   if (itemKey === '/notify/sms-logs') return pathname.startsWith('/notify/sms-logs')

@@ -32,6 +32,9 @@ import { AdminAnnouncementsPage } from '@/pages/AdminAnnouncementsPage'
 import { AboutPage } from '@/pages/AboutPage'
 import { AnnouncementsPage } from '@/pages/AnnouncementsPage'
 import { DocsPage } from '@/pages/DocsPage'
+import { KnowledgeBasesPage } from '@/pages/KnowledgeBasesPage'
+import { KnowledgeNamespaceDetailPage } from '@/pages/KnowledgeNamespaceDetailPage'
+import { KnowledgeDocumentDetailPage } from '@/pages/KnowledgeDocumentDetailPage'
 
 export default function App() {
   return (
@@ -80,6 +83,9 @@ export default function App() {
           <Route path="channels/llm-plaza" element={<ModelPlazaPage />} />
           <Route path="channels/asr" element={<AsrChannelsPage />} />
           <Route path="channels/tts" element={<TtsChannelsPage />} />
+          <Route path="knowledge" element={<KnowledgeBasesPage />} />
+          <Route path="knowledge/:id" element={<KnowledgeNamespaceDetailPage />} />
+          <Route path="knowledge/documents/:id" element={<KnowledgeDocumentDetailPage />} />
           <Route path="debug/v1" element={<V1ApiDebugPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

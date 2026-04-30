@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -19,18 +20,34 @@ import (
 type QdrantHandler struct {
 	BaseURL    string
 	APIKey     string
-	Collection string
 	HTTPClient *http.Client
 	Embedder   Embedder
 }
 
 func (qh *QdrantHandler) Provider() string { return ProviderQdrant }
 
+func normalizeVec64InPlace(v []float64) {
+	if len(v) == 0 {
+		return
+	}
+	var sum float64
+	for _, x := range v {
+		sum += x * x
+	}
+	if sum <= 0 {
+		return
+	}
+	n := math.Sqrt(sum)
+	if n == 0 || math.IsNaN(n) || math.IsInf(n, 0) {
+		return
+	}
+	for i := range v {
+		v[i] = v[i] / n
+	}
+}
+
 func (qh *QdrantHandler) collectionNameFromOptions(namespace string) (string, error) {
 	ns := strings.TrimSpace(namespace)
-	if ns == "" {
-		ns = strings.TrimSpace(qh.Collection)
-	}
 	if ns == "" {
 		return "", ErrCollectionNotFound
 	}
@@ -424,6 +441,7 @@ func (qh *QdrantHandler) Query(ctx context.Context, text string, opts *QueryOpti
 	if len(vecs) == 0 {
 		return nil, ErrInvalidVectorDimension
 	}
+	normalizeVec64InPlace(vecs[0])
 	qvec, err := qh.toFloat32s(vecs[0])
 	if err != nil {
 		return nil, err
@@ -598,13 +616,11 @@ func (qh *QdrantHandler) Delete(ctx context.Context, ids []string, opts *DeleteO
 	}
 
 	reqURL := qh.baseURL(collection) + "/collections/" + url.PathEscape(collection) + "/points/delete"
-	reqBody := map[string]any{
-		"points": make([]any, 0, len(ids)),
-	}
-	pts := reqBody["points"].([]any)
+	pts := make([]any, 0, len(ids))
 	for _, id := range ids {
-		pts = append(pts, map[string]any{"id": qdrantPointIDFromString(id)})
+		pts = append(pts, qdrantPointIDFromString(id))
 	}
+	reqBody := map[string]any{"points": pts}
 	// Some Qdrant versions accept `{"points":[id1,id2]}`. Our tests focus on compile/runtime shape, not Qdrant strictness.
 	if err := qh.doJSON(ctx, http.MethodPost, reqURL, reqBody, nil); err != nil {
 		return err

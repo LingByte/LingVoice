@@ -35,6 +35,7 @@ func (h *Handlers) Register(engine *gin.Engine) {
 	h.registerMailTemplatesRoutes(api)
 	h.registerNotificationChannelRoutes(api)
 	h.registerInnerNotificationRoutes(api)
+	h.registerKnowledgeRoutes(api)
 	h.registerLLMChannelRoutes(api)
 	h.registerLLMAbilityRoutes(api)
 	h.registerLLMModelMetaRoutes(api)

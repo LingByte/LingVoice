@@ -162,7 +162,7 @@ export function MailTemplateEditPage() {
         })
         Message.success('已创建')
       } else {
-        await updateMailTemplate(templateId, {
+        await updateMailTemplate(templateId!, {
           name: v.name,
           htmlBody: v.htmlBody,
           description: v.description,

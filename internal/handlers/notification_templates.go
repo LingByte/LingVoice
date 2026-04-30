@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/utils/base"
@@ -223,11 +222,7 @@ func (h *Handlers) mailTemplateTranslateHandler(c *gin.Context) {
 		return
 	}
 
-	email := ""
-	if config.GlobalConfig != nil {
-		email = strings.TrimSpace(config.GlobalConfig.Services.Translation.MyMemoryEmail)
-	}
-	tr := base.NewMyMemoryTranslator(email)
+	tr := base.NewMyMemoryTranslator()
 
 	const maxShort = 450
 	const maxHTMLChunk = 380

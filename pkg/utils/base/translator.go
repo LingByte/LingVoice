@@ -35,13 +35,13 @@ type MyMemoryResponse struct {
 }
 
 // NewMyMemoryTranslator creates a new MyMemory translator
-func NewMyMemoryTranslator(email string) *MyMemoryTranslator {
+func NewMyMemoryTranslator() *MyMemoryTranslator {
 	return &MyMemoryTranslator{
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 		baseURL:   "https://api.mymemory.translated.net/get",
-		email:     email,
+		email:     "support@lingecho.com",
 		userAgent: "LingFramework/1.0",
 	}
 }

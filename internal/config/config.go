@@ -86,13 +86,10 @@ type AuthConfig struct {
 
 // ServicesConfig services configuration
 type ServicesConfig struct {
-	LLM         LLMConfig         `mapstructure:"llm"`
-	Storage     StorageConfig     `mapstructure:"storage"`
-	Translation TranslationConfig `mapstructure:"translation"`
-	// OpenAPIQuotaGroupRatios maps credential `group` (see models.Credential.Group) to a billing multiplier, same role as new-api 分组倍率. Loaded from OPENAPI_QUOTA_GROUP_RATIOS JSON; unknown group falls back to key "default" or 1.0.
+	LLM                     LLMConfig          `mapstructure:"llm"`
+	Storage                 StorageConfig      `mapstructure:"storage"`
 	OpenAPIQuotaGroupRatios map[string]float64 `mapstructure:"-"`
-	// SpeechQuota OpenAPI ASR/TTS 成功调用后的额度扣减（与 LLM 相同整数额度单位；按「墙钟 + 字节估算时长」取 max 再乘 rate，再乘分组倍率）。
-	SpeechQuota SpeechQuotaConfig `mapstructure:"-"`
+	SpeechQuota             SpeechQuotaConfig  `mapstructure:"-"`
 }
 
 // SpeechQuotaConfig 语音 OpenAPI 扣费；时长单位为秒；rate 为每「计费秒」扣多少额度单位。
@@ -104,11 +101,6 @@ type SpeechQuotaConfig struct {
 	// TTSOutputBytesPerSec 由输出音频字节估算播放时长；0 表示不用输出字节只用墙钟。
 	TTSOutputBytesPerSec int64 `mapstructure:"-"` // OPENAPI_SPEECH_TTS_BYTES_PER_SEC 默认 16000
 	MinDeltaOnSuccess    int   `mapstructure:"-"` // OPENAPI_SPEECH_QUOTA_MIN_ON_SUCCESS 默认 1
-}
-
-// TranslationConfig optional third-party translation (MyMemory).
-type TranslationConfig struct {
-	MyMemoryEmail string `mapstructure:"mymemory_email"` // optional; higher free quota when set
 }
 
 // LLMConfig LLM service configuration
@@ -234,9 +226,6 @@ func Load() error {
 				APIKey:    getStringOrDefault("LINGSTORAGE_API_KEY", ""),
 				APISecret: getStringOrDefault("LINGSTORAGE_API_SECRET", ""),
 				Bucket:    getStringOrDefault("LINGSTORAGE_BUCKET", "default"),
-			},
-			Translation: TranslationConfig{
-				MyMemoryEmail: getStringOrDefault("MYMEMORY_EMAIL", ""),
 			},
 			OpenAPIQuotaGroupRatios: parseOpenAPIQuotaGroupRatiosJSON(getStringOrDefault("OPENAPI_QUOTA_GROUP_RATIOS", "")),
 			SpeechQuota: SpeechQuotaConfig{

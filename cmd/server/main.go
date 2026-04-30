@@ -104,6 +104,8 @@ func main() {
 				&models.SpeechUsage{},
 				&models.AgentRun{},
 				&models.AgentStep{},
+				&models.KnowledgeNamespace{},
+				&models.KnowledgeDocument{},
 			}
 		},
 	})

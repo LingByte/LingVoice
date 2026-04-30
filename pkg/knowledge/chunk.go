@@ -13,6 +13,14 @@ import (
 
 var ErrEmptyText = errors.New("empty text")
 
+// Default chunk sizing when ChunkOptions fields are zero or unset.
+// Smaller chunks tend to improve vector retrieval precision (more segments per document).
+const (
+	DefaultChunkMaxChars     = 600
+	DefaultChunkOverlapChars = 80
+	DefaultChunkMinChars     = 40
+)
+
 // Chunk is one retrieval-oriented segment produced by LLMChunker.
 type Chunk struct {
 	Index    int
@@ -64,9 +72,9 @@ func (c *LLMChunker) Chunk(ctx context.Context, text string, opts *ChunkOptions)
 
 	model := strings.TrimSpace(c.Model)
 
-	maxChars := 1200
-	overlap := 120
-	minChars := 50
+	maxChars := DefaultChunkMaxChars
+	overlap := DefaultChunkOverlapChars
+	minChars := DefaultChunkMinChars
 	docTitle := ""
 	if opts != nil {
 		if opts.MaxChars > 0 {
@@ -137,6 +145,7 @@ CHUNKING RULES:
 - Each chunk "text" length should be <= %d characters.
 - Overlap between consecutive chunks should be about %d characters when helpful.
 - Avoid chunks shorter than %d characters unless necessary.
+- Prefer more, smaller coherent units (paragraph / list / code block scope) over fewer large chunks, as long as each stays within the max length.
 
 INPUT:
 %s

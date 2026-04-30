@@ -2,7 +2,6 @@ package knowledge
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -58,7 +57,6 @@ func TestQdrant_RealRequests_Localhost6333_UpsertAndQuery(t *testing.T) {
 
 	qh := &QdrantHandler{
 		BaseURL:    baseURL,
-		Collection: collection,
 		HTTPClient: client,
 		Embedder:   fakeEmbedder{dim: dim},
 	}
@@ -106,7 +104,6 @@ func TestQdrant_RealRequests_Localhost6333_CreateNamespace(t *testing.T) {
 	ns := "lingvoice_test_ns_" + time.Now().UTC().Format("20060102_150405")
 	qh := &QdrantHandler{
 		BaseURL:    baseURL,
-		Collection: ns,
 		HTTPClient: client,
 		Embedder:   fakeEmbedder{dim: dim},
 	}
@@ -121,7 +118,5 @@ func TestQdrant_RealRequests_Localhost6333_CreateNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListNamespace failed: %v", err)
 	}
-	for i := range namespaces {
-		fmt.Println(namespaces[i])
-	}
+	_ = namespaces
 }

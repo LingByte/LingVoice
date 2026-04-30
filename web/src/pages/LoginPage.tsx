@@ -16,7 +16,7 @@ import {
 } from '@/api/auth'
 import { persistAuthSession } from '@/stores/authStore'
 
-const { Title, Text } = Typography
+const { Title } = Typography
 const TabPane = Tabs.TabPane
 
 const LANG_OPTIONS = [
