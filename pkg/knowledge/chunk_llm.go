@@ -22,30 +22,6 @@ const (
 	DefaultChunkMinChars     = 40
 )
 
-// Chunk is one retrieval-oriented segment produced by LLMChunker.
-type Chunk struct {
-	Index    int
-	Title    string
-	Text     string
-	Metadata map[string]any
-}
-
-type ChunkOptions struct {
-	MaxChars      int
-	OverlapChars  int
-	MinChars      int
-	DocumentTitle string
-	// PreChunkClean is passed to utils.CleanText before the LLM call (UTF-8 repair, optional markdown strip, etc.).
-	// If nil, StripMarkdown and DedupLines are enabled so code fences / mermaid are less likely to break JSON output.
-	PreChunkClean *base.Options
-}
-
-// Chunker splits long text into chunks (implementations may use an LLM).
-type Chunker interface {
-	Provider() string
-	Chunk(ctx context.Context, text string, opts *ChunkOptions) ([]Chunk, error)
-}
-
 // LLMChunker asks an LLM to return a JSON array of chunks.
 type LLMChunker struct {
 	LLM   llm.LLMHandler

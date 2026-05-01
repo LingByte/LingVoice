@@ -2,7 +2,14 @@ package knowledge
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/LingByte/LingVoice/pkg/utils/base"
 )
 
 const (
@@ -12,6 +19,66 @@ const (
 	// ProviderMilvus Milvus Vector Database
 	ProviderMilvus = "milvus"
 )
+
+var (
+	ErrHandlerNotFound        = errors.New("handler not be null")
+	ErrBaseURL                = errors.New("BaseURL is required")
+	ErrCollectionNotFound     = errors.New("Collection is required")
+	ErrEmbedderNotFound       = errors.New("Embedder is required")
+	ErrRecordNotFound         = errors.New("record not found")
+	ErrNamespaceNotFound      = errors.New("namespace not found")
+	ErrInvalidVectorDimension = errors.New("invalid vector dimension")
+	ErrEmptyQuery             = errors.New("empty query text")
+	ErrEmptyText              = errors.New("empty text")
+	ErrInvalidChunkOpt        = errors.New("invalid chunk options")
+	ErrNoChunks               = errors.New("no chunks generated")
+	ErrChunkerNotFound        = errors.New("no suitable chunker for document type")
+)
+
+type DocumentType int
+
+const (
+	DocumentTypeUnknown      DocumentType = iota
+	DocumentTypeStructured                // 有标题、章节、段落（手册、论文、markdown）
+	DocumentTypeTableKV                   // 表格、键值对、表单、简历
+	DocumentTypeUnstructured              // 杂乱、OCR、无标点、无段落（必须 LLM）
+)
+
+// Chunk is one retrieval-oriented segment produced by a Chunker.
+type Chunk struct {
+	Index    int
+	Title    string
+	Text     string
+	Metadata map[string]any
+}
+
+// ChunkOptions controls chunk size, overlap and optional title metadata.
+type ChunkOptions struct {
+	// MaxChars is the target maximum characters per chunk. When 0, chunkers use their own defaults.
+	MaxChars int
+	// OverlapChars is the overlap size between consecutive chunks.
+	// If set to -1, chunkers may disable overlap.
+	OverlapChars int
+	// MinChars is a lower bound; very small chunks may be dropped/merged.
+	MinChars int
+
+	DocumentTitle string
+
+	// PreChunkClean is passed to base.CleanText before an LLM call.
+	// If nil, some implementations will enable StripMarkdown and DedupLines by default.
+	PreChunkClean *base.Options
+}
+
+// Chunker splits long text into chunks (implementations may use deterministic rules or an LLM).
+type Chunker interface {
+	Provider() string
+	Chunk(ctx context.Context, text string, opts *ChunkOptions) ([]Chunk, error)
+}
+
+// DocumentTypeDetector decides which chunking strategy should be used for a document.
+type DocumentTypeDetector interface {
+	DetectDocumentType(ctx context.Context, text string) (DocumentType, error)
+}
 
 type FilterOp string
 
@@ -34,13 +101,13 @@ type Filter struct {
 	Value    []any    `json:"value"`
 }
 
-// Record 知识库记录（RAG 核心结构）
+// Record 知识库记录
 type Record struct {
 	ID        string         `json:"id"`
-	Source    string         `json:"source"` // 来源：file/url/api etc.
+	Source    string         `json:"source"` // 来源file/url/api etc.
 	Title     string         `json:"title"`
 	Content   string         `json:"content"` // 原文片段
-	Vector    []float32      `json:"vector"`  // 向量（必加）
+	Vector    []float32      `json:"vector"`  // 向量
 	Tags      []string       `json:"tags"`
 	Metadata  map[string]any `json:"metadata"`
 	CreatedAt time.Time      `json:"created_at"`
@@ -50,7 +117,7 @@ type Record struct {
 type UpsertOptions struct {
 	Namespace string
 	Overwrite bool
-	BatchSize int // 大批量自动切分
+	BatchSize int
 }
 
 type QueryOptions struct {
@@ -86,6 +153,59 @@ type ListOptions struct {
 type ListResult struct {
 	Records    []Record `json:"records"`
 	NextOffset string   `json:"next_offset,omitempty"`
+}
+
+// HandlerFactoryParams selects and configures a KnowledgeHandler (reads Qdrant / Milvus settings from environment).
+type HandlerFactoryParams struct {
+	// Provider is ProviderQdrant or ProviderMilvus (see constants in this package).
+	Provider string
+	// Namespace is the Qdrant / Milvus collection name.
+	Namespace string
+	// Embedder is attached to the handler when Provider is Qdrant/Milvus (may be nil for delete-only calls).
+	Embedder Embedder
+}
+
+// NewKnowledgeHandler returns a backend implementation for the given namespace configuration.
+func NewKnowledgeHandler(p HandlerFactoryParams) (KnowledgeHandler, error) {
+	switch p.Provider {
+	case ProviderQdrant:
+		qh := qdrantHandlerFromEnv()
+		qh.Embedder = p.Embedder
+		return qh, nil
+	case ProviderMilvus:
+		mh := milvusHandlerFromEnv()
+		mh.Embedder = p.Embedder
+		return mh, nil
+	default:
+		return nil, fmt.Errorf("unsupported knowledge provider %q (use %s or %s)", p.Provider, ProviderQdrant, ProviderMilvus)
+	}
+}
+
+func qdrantHandlerFromEnv() *QdrantHandler {
+	timeoutSec := int64(15)
+	if raw := strings.TrimSpace(base.GetEnv("QDRANT_TIMEOUT_SECONDS")); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			timeoutSec = n
+		}
+	}
+	return &QdrantHandler{
+		BaseURL:    base.GetEnv("QDRANT_BASEURL"),
+		APIKey:     base.GetEnv("QDRANT_API_KEY"),
+		HTTPClient: &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+		Embedder:   nil,
+	}
+}
+
+func milvusHandlerFromEnv() *MilvusHandler {
+	return &MilvusHandler{
+		Address:  base.GetEnv("MILVUS_ADDRESS"),
+		Username: base.GetEnv("MILVUS_USERNAME"),
+		Password: base.GetEnv("MILVUS_PASSWORD"),
+		Token:    base.GetEnv("MILVUS_TOKEN"),
+		DBName:   base.GetEnv("MILVUS_DB"),
+		Embedder: nil,
+		cli:      nil,
+	}
 }
 
 // KnowledgeHandler abstract knowledge interface

@@ -13,9 +13,26 @@ import (
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
 )
 
+// milvusDB is the subset of the Milvus SDK client used by MilvusHandler (implemented by client.Client; mockable in tests).
+type milvusDB interface {
+	HasCollection(ctx context.Context, collName string) (bool, error)
+	LoadCollection(ctx context.Context, collName string, async bool, opts ...client.LoadCollectionOption) error
+	CreateCollection(ctx context.Context, schema *entity.Schema, shardsNum int32, opts ...client.CreateCollectionOption) error
+	CreateIndex(ctx context.Context, collName string, fieldName string, idx entity.Index, async bool, opts ...client.IndexOption) error
+	ListCollections(ctx context.Context, opts ...client.ListCollectionOption) ([]*entity.Collection, error)
+	Upsert(ctx context.Context, collName string, partitionName string, columns ...entity.Column) (entity.Column, error)
+	Flush(ctx context.Context, collName string, async bool, opts ...client.FlushOption) error
+	Search(ctx context.Context, collName string, partitions []string,
+		expr string, outputFields []string, vectors []entity.Vector, vectorField string, metricType entity.MetricType, topK int, sp entity.SearchParam, opts ...client.SearchQueryOptionFunc) ([]client.SearchResult, error)
+	Query(ctx context.Context, collectionName string, partitionNames []string, expr string, outputFields []string, opts ...client.SearchQueryOptionFunc) (client.ResultSet, error)
+	Delete(ctx context.Context, collName string, partitionName string, expr string) error
+	DropCollection(ctx context.Context, collName string, opts ...client.DropCollectionOption) error
+}
+
+var _ milvusDB = (client.Client)(nil)
+
 // MilvusHandler implements KnowledgeHandler using Milvus.
 //
-// Schema (per collection):
 // - id (VarChar primary key)
 // - vector (FloatVector)
 // - content/title/source/tags/metadata_json (VarChar)
@@ -30,12 +47,12 @@ type MilvusHandler struct {
 
 	Embedder Embedder
 
-	cli client.Client
+	cli milvusDB
 }
 
 func (h *MilvusHandler) Provider() string { return ProviderMilvus }
 
-func (h *MilvusHandler) ensureClient(ctx context.Context) (client.Client, error) {
+func (h *MilvusHandler) ensureClient(ctx context.Context) (milvusDB, error) {
 	if h == nil {
 		return nil, ErrHandlerNotFound
 	}
@@ -54,12 +71,12 @@ func (h *MilvusHandler) ensureClient(ctx context.Context) (client.Client, error)
 		DBName:   strings.TrimSpace(h.DBName),
 		APIKey:   strings.TrimSpace(h.Token),
 	}
-	cli, err := client.NewClient(ctx, cfg)
+	c, err := client.NewClient(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	h.cli = cli
-	return cli, nil
+	h.cli = c
+	return h.cli, nil
 }
 
 func (h *MilvusHandler) collectionNameFromOptions(namespace string) (string, error) {
@@ -134,8 +151,6 @@ func (h *MilvusHandler) CreateNamespace(ctx context.Context, name string) error 
 	if name == "" {
 		return ErrNamespaceNotFound
 	}
-	// Create with unknown dimension is impossible; caller must upsert once or pass vectors.
-	// Here we just check connectivity and no-op if exists.
 	cli, err := h.ensureClient(ctx)
 	if err != nil {
 		return err
@@ -718,4 +733,3 @@ func recordsFromMilvusColumns(cols []entity.Column) []Record {
 	}
 	return out
 }
-

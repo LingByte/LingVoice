@@ -21,14 +21,12 @@ const (
 )
 
 type NvidiaEmbedClient struct {
-	BaseURL    string
-	APIKey     string
-	Model      string
-	InputKey   string // request JSON key for inputs; default: "input"
-	// EmbeddingsPath can override how to build embeddings endpoint from BaseURL.
-	// If empty, we fallback to appending "/embeddings" when BaseURL doesn't already end with it.
+	BaseURL        string
+	APIKey         string
+	Model          string
+	InputKey       string // request JSON key for inputs; default: "input"
 	EmbeddingsPath string
-	HTTPClient *http.Client
+	HTTPClient     *http.Client
 }
 
 func (c *NvidiaEmbedClient) Embed(ctx context.Context, inputs []string) ([][]float64, error) {
@@ -96,8 +94,8 @@ func (c *NvidiaEmbedClient) Embed(ctx context.Context, inputs []string) ([][]flo
 		}
 		for attempt := 1; attempt <= 3; attempt++ {
 			body := map[string]any{
-				"model":    c.Model,
-				inputKey:   batch,
+				"model":  c.Model,
+				inputKey: batch,
 			}
 			b, err := json.Marshal(body)
 			if err != nil {
@@ -138,8 +136,6 @@ func (c *NvidiaEmbedClient) Embed(ctx context.Context, inputs []string) ([][]flo
 				} `json:"data"`
 			}{}
 			if err := json.Unmarshal(respBody, &parsed); err != nil {
-				// Common transient: upstream closes early and we get a partial JSON with 200.
-				// Retry a few times to mitigate flaky network / proxy truncation.
 				lastErr = fmt.Errorf("parse_failed: body_len=%d body=%s err=%v", len(respBody), truncateForErr(respBody), err)
 				time.Sleep(time.Duration(attempt*300) * time.Millisecond)
 				continue
