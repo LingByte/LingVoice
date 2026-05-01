@@ -21,7 +21,7 @@ import (
 
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/joblet"
+	"github.com/LingByte/LingVoice/pkg/contask"
 	"github.com/LingByte/LingVoice/pkg/knowledge"
 	"github.com/LingByte/LingVoice/pkg/llm"
 	"github.com/LingByte/LingVoice/pkg/logger"
@@ -382,7 +382,7 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 	sum := md5.Sum(b)
 	fileHash := fmt.Sprintf("%x", sum[:])
 
-	// Create/Upsert document row first, then process asynchronously (joblet).
+	// Create/Upsert document row first, then process asynchronously (contask global pool).
 	docRow, err := models.UpsertKnowledgeDocument(h.db, orgID, 0, &models.KnowledgeDocumentUpsertReq{
 		Namespace: nsRow.Namespace,
 		Title:     fh.Filename,
@@ -405,7 +405,7 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 		Content  []byte
 	}
 
-	task := joblet.NewTask[any, any](0, uploadJob{
+	task := contask.NewTask[any, any](0, uploadJob{
 		OrgID:    orgID,
 		NS:       *nsRow,
 		DocID:    docRow.ID,
@@ -427,25 +427,7 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 		"file_name": strings.TrimSpace(fh.Filename),
 		"file_hash": strings.TrimSpace(fileHash),
 	}
-	// Ensure persistence even if DefaultPool isn't configured with DB logger.
-	if dbLogger := joblet.GlobalDBTaskLogger(); dbLogger != nil {
-		task.Log = dbLogger
-	}
-
-	pool := joblet.DefaultPool()
-	if pool == nil {
-		poolErr := errors.New("joblet: default pool is nil")
-		logger.Error("knowledge.upload.job.pool_unavailable",
-			zap.String("task_id", task.ID),
-			zap.Uint64("org_id", uint64(orgID)),
-			zap.Uint64("doc_id", uint64(docRow.ID)),
-			zap.Error(poolErr),
-		)
-		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "pool_nil", "default joblet pool not configured", poolErr, task.Meta)
-		h.knowledgeDocFinalizeFailed(orgID, docRow.ID)
-		response.Fail(c, "后台任务池未初始化", gin.H{"error": poolErr.Error(), "document": docRow, "task_id": task.ID})
-		return
-	}
+	pool := contask.GlobalPool()
 	if submitErr := pool.Submit(context.Background(), task); submitErr != nil {
 		logger.Error("knowledge.upload.job.submit_failed",
 			zap.String("task_id", task.ID),
@@ -453,7 +435,6 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 			zap.Uint64("doc_id", uint64(docRow.ID)),
 			zap.Error(submitErr),
 		)
-		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "submit_reject", "task not accepted by pool", submitErr, task.Meta)
 		h.knowledgeDocFinalizeFailed(orgID, docRow.ID)
 		response.Fail(c, "后台任务提交失败（队列已满或已关闭）", gin.H{"error": submitErr.Error(), "document": docRow, "task_id": task.ID})
 		return
@@ -1940,7 +1921,7 @@ func (h *Handlers) knowledgeDocumentTextPutHandler(c *gin.Context) {
 		Doc   models.KnowledgeDocument
 		Md    string
 	}
-	task := joblet.NewTask[any, any](0, textPutJob{
+	task := contask.NewTask[any, any](0, textPutJob{
 		OrgID: orgID,
 		NS:    nsRow,
 		Doc:   *doc,
@@ -1960,24 +1941,7 @@ func (h *Handlers) knowledgeDocumentTextPutHandler(c *gin.Context) {
 		"file_name": strings.TrimSpace(doc.Title),
 		"file_hash": strings.TrimSpace(doc.FileHash),
 	}
-	if dbLogger := joblet.GlobalDBTaskLogger(); dbLogger != nil {
-		task.Log = dbLogger
-	}
-
-	pool := joblet.DefaultPool()
-	if pool == nil {
-		poolErr := errors.New("joblet: default pool is nil")
-		logger.Error("knowledge.text_put.job.pool_unavailable",
-			zap.String("task_id", task.ID),
-			zap.Uint64("org_id", uint64(orgID)),
-			zap.Uint64("doc_id", uint64(doc.ID)),
-			zap.Error(poolErr),
-		)
-		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "pool_nil", "default joblet pool not configured", poolErr, task.Meta)
-		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-		response.Fail(c, "后台任务池未初始化", gin.H{"error": poolErr.Error(), "document": doc, "task_id": task.ID})
-		return
-	}
+	pool := contask.GlobalPool()
 	if submitErr := pool.Submit(context.Background(), task); submitErr != nil {
 		logger.Error("knowledge.text_put.job.submit_failed",
 			zap.String("task_id", task.ID),
@@ -1985,7 +1949,6 @@ func (h *Handlers) knowledgeDocumentTextPutHandler(c *gin.Context) {
 			zap.Uint64("doc_id", uint64(doc.ID)),
 			zap.Error(submitErr),
 		)
-		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "submit_reject", "task not accepted by pool", submitErr, task.Meta)
 		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
 		response.Fail(c, "后台任务提交失败（队列已满或已关闭）", gin.H{"error": submitErr.Error(), "document": doc, "task_id": task.ID})
 		return
@@ -2097,7 +2060,7 @@ func (h *Handlers) knowledgeDocumentReuploadHandler(c *gin.Context) {
 		Content      []byte
 	}
 
-	task := joblet.NewTask[any, any](0, reuploadJob{
+	task := contask.NewTask[any, any](0, reuploadJob{
 		OrgID:        orgID,
 		NS:           nsRow,
 		Doc:          *doc,
@@ -2120,24 +2083,7 @@ func (h *Handlers) knowledgeDocumentReuploadHandler(c *gin.Context) {
 		"file_name": strings.TrimSpace(fh.Filename),
 		"file_hash": strings.TrimSpace(fileHash),
 	}
-	if dbLogger := joblet.GlobalDBTaskLogger(); dbLogger != nil {
-		task.Log = dbLogger
-	}
-
-	pool := joblet.DefaultPool()
-	if pool == nil {
-		poolErr := errors.New("joblet: default pool is nil")
-		logger.Error("knowledge.reupload.job.pool_unavailable",
-			zap.String("task_id", task.ID),
-			zap.Uint64("org_id", uint64(orgID)),
-			zap.Uint64("doc_id", uint64(doc.ID)),
-			zap.Error(poolErr),
-		)
-		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "pool_nil", "default joblet pool not configured", poolErr, task.Meta)
-		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-		response.Fail(c, "后台任务池未初始化", gin.H{"error": poolErr.Error(), "document": doc, "task_id": task.ID})
-		return
-	}
+	pool := contask.GlobalPool()
 	if submitErr := pool.Submit(context.Background(), task); submitErr != nil {
 		logger.Error("knowledge.reupload.job.submit_failed",
 			zap.String("task_id", task.ID),
@@ -2145,7 +2091,6 @@ func (h *Handlers) knowledgeDocumentReuploadHandler(c *gin.Context) {
 			zap.Uint64("doc_id", uint64(doc.ID)),
 			zap.Error(submitErr),
 		)
-		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "submit_reject", "task not accepted by pool", submitErr, task.Meta)
 		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
 		response.Fail(c, "后台任务提交失败（队列已满或已关闭）", gin.H{"error": submitErr.Error(), "document": doc, "task_id": task.ID})
 		return

@@ -35,7 +35,6 @@ import { DocsPage } from '@/pages/DocsPage'
 import { KnowledgeBasesPage } from '@/pages/KnowledgeBasesPage'
 import { KnowledgeNamespaceDetailPage } from '@/pages/KnowledgeNamespaceDetailPage'
 import { KnowledgeDocumentDetailPage } from '@/pages/KnowledgeDocumentDetailPage'
-import { KnowledgeTasksPage } from '@/pages/KnowledgeTasksPage'
 
 export default function App() {
   return (
@@ -87,7 +86,6 @@ export default function App() {
           <Route path="knowledge" element={<KnowledgeBasesPage />} />
           <Route path="knowledge/:id" element={<KnowledgeNamespaceDetailPage />} />
           <Route path="knowledge/documents/:id" element={<KnowledgeDocumentDetailPage />} />
-          <Route path="tasks" element={<KnowledgeTasksPage />} />
           <Route path="debug/v1" element={<V1ApiDebugPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

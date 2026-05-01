@@ -102,7 +102,6 @@ const MENU_GROUP_DEFS: MenuGroupDef[] = [
     adminOnly: true,
     items: [
       { key: '/knowledge', labelKey: 'nav.knowledgeBases', icon: <Database size={16} strokeWidth={1.85} /> },
-      { key: '/tasks', labelKey: 'nav.knowledgeTasks', icon: <ClipboardList size={16} strokeWidth={1.85} /> },
     ],
   },
   {
@@ -131,7 +130,6 @@ const MENU_GROUP_DEFS: MenuGroupDef[] = [
 function menuPathSelected(pathname: string, itemKey: string): boolean {
   if (itemKey === '/dashboard') return pathname === '/dashboard' || pathname === '/quotas'
   if (itemKey === '/notify/channels') return pathname.startsWith('/notify/channels')
-  if (itemKey === '/tasks') return pathname.startsWith('/tasks')
   if (itemKey === '/knowledge') return pathname.startsWith('/knowledge')
   if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
   if (itemKey === '/notify/mail-logs') return pathname.startsWith('/notify/mail-logs')
