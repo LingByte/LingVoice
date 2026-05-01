@@ -88,23 +88,23 @@ type ListResult struct {
 	NextOffset string   `json:"next_offset,omitempty"`
 }
 
-// KnowledgeHandler 抽象知识库接口
+// KnowledgeHandler abstract knowledge interface
 type KnowledgeHandler interface {
 	Provider() string
 
-	// Upsert 写入/更新
+	// Upsert write and update files
 	Upsert(ctx context.Context, records []Record, opts *UpsertOptions) error
 
-	// Query 向量检索
+	// Query Query for txt
 	Query(ctx context.Context, text string, opts *QueryOptions) ([]QueryResult, error)
 
-	// Get 按 ID 获取
+	// Get get by id
 	Get(ctx context.Context, ids []string, opts *GetOptions) ([]Record, error)
 
-	// List 列表查询（带过滤、分页、排序）
+	// List list query for page
 	List(ctx context.Context, opts *ListOptions) (*ListResult, error)
 
-	// Delete 删除
+	// Delete delete file document
 	Delete(ctx context.Context, ids []string, opts *DeleteOptions) error
 
 	// Ping health check
@@ -121,5 +121,7 @@ type KnowledgeHandler interface {
 }
 
 type Embedder interface {
+
+	// Embed embed inputs
 	Embed(ctx context.Context, inputs []string) ([][]float64, error)
 }

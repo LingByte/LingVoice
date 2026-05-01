@@ -134,21 +134,21 @@ export async function getKnowledgeDocumentText(id: string | number) {
 }
 
 export async function updateKnowledgeDocumentText(id: string | number, markdown: string) {
-  const r = await put<{ document: KnowledgeDocumentRow }>(`${api.documents}/${id}/text`, { markdown })
+  const r = await put<{ document: KnowledgeDocumentRow; task_id?: string }>(`${api.documents}/${id}/text`, { markdown })
   return assertOk(r)
 }
 
 export async function uploadKnowledgeDocument(namespaceID: string | number, file: File) {
   const form = new FormData()
   form.append('file', file)
-  const r = await post<{ document: KnowledgeDocumentRow }>(`${api.namespaces}/${namespaceID}/upload`, form)
+  const r = await post<{ document: KnowledgeDocumentRow; task_id?: string }>(`${api.namespaces}/${namespaceID}/upload`, form)
   return assertOk(r)
 }
 
 export async function reuploadKnowledgeDocument(docID: string | number, file: File) {
   const form = new FormData()
   form.append('file', file)
-  const r = await post<{ document: KnowledgeDocumentRow }>(`${api.documents}/${docID}/upload`, form)
+  const r = await post<{ document: KnowledgeDocumentRow; task_id?: string }>(`${api.documents}/${docID}/upload`, form)
   return assertOk(r)
 }
 

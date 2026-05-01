@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/cmd/bootstrap"
-	"github.com/LingByte/LingVoice/internal/authdto"
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/constants"
@@ -123,7 +122,7 @@ func (h *Handlers) authLoginHandler(c *gin.Context) {
 		models.InTimezone(c, strings.TrimSpace(form.Timezone))
 	}
 	models.Login(c, user)
-	payload, err := authdto.BuildLoginResponse(h.db, user)
+	payload, err := models.BuildLoginResponse(h.db, user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "登录令牌签发失败", nil)
@@ -188,7 +187,7 @@ func (h *Handlers) authRegisterHandler(c *gin.Context) {
 	base.Sig().Emit(constants.SigUserCreate, user, c)
 	_, _ = models.EnsureUserProfile(h.db, user.ID)
 	models.Login(c, user)
-	payload, err := authdto.BuildLoginResponse(h.db, user)
+	payload, err := models.BuildLoginResponse(h.db, user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "注册成功但令牌签发失败", nil)
@@ -214,7 +213,7 @@ func (h *Handlers) authMeHandler(c *gin.Context) {
 		response.FailWithCode(c, 500, "加载用户资料失败", gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", authdto.MeResponse{User: authdto.NewUserResponse(u, prof)})
+	response.Success(c, "ok", models.MeResponse{User: models.NewUserResponse(u, prof)})
 }
 
 type verifyEmailLoginRequest struct {
@@ -240,7 +239,7 @@ func (h *Handlers) authVerifyEmailLoginHandler(c *gin.Context) {
 		return
 	}
 	models.Login(c, user)
-	payload, err := authdto.BuildLoginResponse(h.db, user)
+	payload, err := models.BuildLoginResponse(h.db, user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "登录令牌签发失败", nil)
@@ -290,7 +289,7 @@ func (h *Handlers) authRefreshHandler(c *gin.Context) {
 		return
 	}
 	models.Login(c, &fresh)
-	out, err := authdto.BuildLoginResponse(h.db, &fresh)
+	out, err := models.BuildLoginResponse(h.db, &fresh)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
 		response.FailWithCode(c, 500, "令牌签发失败", nil)
@@ -689,7 +688,7 @@ func (h *Handlers) userProfilePatchHandler(c *gin.Context) {
 		response.FailWithCode(c, 500, "加载用户资料失败", gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "已更新", gin.H{"user": authdto.NewUserResponse(u, prof)})
+	response.Success(c, "已更新", gin.H{"user": models.NewUserResponse(u, prof)})
 }
 
 // userChangePasswordHandler POST /api/user/password/change - 登录态下通过旧密码改新密码

@@ -19,6 +19,8 @@ func GetDBTimestamp(db *gorm.DB, driver string) int64 {
 		err = db.Raw("SELECT EXTRACT(EPOCH FROM NOW())::bigint").Scan(&ts).Error
 	case constants.DatabaseTypeSQLite:
 		err = db.Raw("SELECT strftime('%s','now')").Scan(&ts).Error
+	case constants.DatabaseTypeMySQL:
+		err = db.Raw("SELECT UNIX_TIMESTAMP()").Scan(&ts).Error
 	default:
 		err = db.Raw("SELECT UNIX_TIMESTAMP()").Scan(&ts).Error
 	}

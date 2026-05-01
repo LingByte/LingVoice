@@ -59,7 +59,8 @@ export function KnowledgeDocumentDetailPage() {
     setSaving(true)
     try {
       const res = await updateKnowledgeDocumentText(docID, markdown)
-      Message.success('已提交后台处理（请稍后刷新查看结果）')
+      const taskId = res.task_id
+      Message.success(taskId ? `已提交后台处理，task_id=${taskId}` : '已提交后台处理（请稍后刷新查看结果）')
       setDoc(res.document)
       setTextURL(res.document.text_url || '')
     } catch (e) {

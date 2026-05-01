@@ -21,13 +21,14 @@ import (
 
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/logger"
+	"github.com/LingByte/LingVoice/pkg/joblet"
 	"github.com/LingByte/LingVoice/pkg/knowledge"
 	"github.com/LingByte/LingVoice/pkg/llm"
-	"github.com/LingByte/LingVoice/pkg/utils/search"
+	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/utils/base"
 	knowledgeParser "github.com/LingByte/LingVoice/pkg/utils/parser"
 	"github.com/LingByte/LingVoice/pkg/utils/response"
+	"github.com/LingByte/LingVoice/pkg/utils/search"
 	lingstorage "github.com/LingByte/lingstorage-sdk-go"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -381,7 +382,7 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 	sum := md5.Sum(b)
 	fileHash := fmt.Sprintf("%x", sum[:])
 
-	// Create/Upsert document row first, then process asynchronously.
+	// Create/Upsert document row first, then process asynchronously (joblet).
 	docRow, err := models.UpsertKnowledgeDocument(h.db, orgID, 0, &models.KnowledgeDocumentUpsertReq{
 		Namespace: nsRow.Namespace,
 		Title:     fh.Filename,
@@ -395,290 +396,916 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 		return
 	}
 
-	go func(orgID uint, ns models.KnowledgeNamespace, docID uint, fileName string, fileHash string, content []byte) {
-		start := time.Now()
-		provider := knowledgeProviderForLog(&ns)
-		logger.Info("knowledge.upload.job.start",
+	type uploadJob struct {
+		OrgID    uint
+		NS       models.KnowledgeNamespace
+		DocID    uint
+		FileName string
+		FileHash string
+		Content  []byte
+	}
+
+	task := joblet.NewTask[any, any](0, uploadJob{
+		OrgID:    orgID,
+		NS:       *nsRow,
+		DocID:    docRow.ID,
+		FileName: fh.Filename,
+		FileHash: fileHash,
+		Content:  b,
+	}, func(ctx context.Context, params any) (any, error) {
+		j, ok := params.(uploadJob)
+		if !ok {
+			return nil, errors.New("invalid params type")
+		}
+		return nil, h.runKnowledgeUploadJob(ctx, j.OrgID, j.NS, j.DocID, j.FileName, j.FileHash, j.Content)
+	})
+	task.Name = "knowledge.upload"
+	task.Meta = map[string]string{
+		"org_id":    fmt.Sprintf("%d", orgID),
+		"doc_id":    fmt.Sprintf("%d", docRow.ID),
+		"namespace": strings.TrimSpace(nsRow.Namespace),
+		"file_name": strings.TrimSpace(fh.Filename),
+		"file_hash": strings.TrimSpace(fileHash),
+	}
+	// Ensure persistence even if DefaultPool isn't configured with DB logger.
+	if dbLogger := joblet.GlobalDBTaskLogger(); dbLogger != nil {
+		task.Log = dbLogger
+	}
+
+	pool := joblet.DefaultPool()
+	if pool == nil {
+		poolErr := errors.New("joblet: default pool is nil")
+		logger.Error("knowledge.upload.job.pool_unavailable",
+			zap.String("task_id", task.ID),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.Uint64("doc_id", uint64(docRow.ID)),
+			zap.Error(poolErr),
+		)
+		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "pool_nil", "default joblet pool not configured", poolErr, task.Meta)
+		h.knowledgeDocFinalizeFailed(orgID, docRow.ID)
+		response.Fail(c, "后台任务池未初始化", gin.H{"error": poolErr.Error(), "document": docRow, "task_id": task.ID})
+		return
+	}
+	if submitErr := pool.Submit(context.Background(), task); submitErr != nil {
+		logger.Error("knowledge.upload.job.submit_failed",
+			zap.String("task_id", task.ID),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.Uint64("doc_id", uint64(docRow.ID)),
+			zap.Error(submitErr),
+		)
+		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "submit_reject", "task not accepted by pool", submitErr, task.Meta)
+		h.knowledgeDocFinalizeFailed(orgID, docRow.ID)
+		response.Fail(c, "后台任务提交失败（队列已满或已关闭）", gin.H{"error": submitErr.Error(), "document": docRow, "task_id": task.ID})
+		return
+	}
+
+	response.Success(c, "已提交后台处理", gin.H{"document": docRow, "task_id": task.ID})
+}
+
+func (h *Handlers) runKnowledgeUploadJob(ctx context.Context, orgID uint, ns models.KnowledgeNamespace, docID uint, fileName string, fileHash string, content []byte) error {
+	start := time.Now()
+	provider := knowledgeProviderForLog(&ns)
+	logger.Info("knowledge.upload.job.start",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(docID)),
+		zap.String("file_name", strings.TrimSpace(fileName)),
+		zap.String("file_hash", strings.TrimSpace(fileHash)),
+		zap.Int("bytes", len(content)),
+	)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	embedder, err := embedderFromEnv()
+	if err != nil {
+		logger.Error("knowledge.upload.job.embedder_failed",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(docID)),
+			zap.Error(err),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, docID)
+		return err
+	}
+
+	parsed, err := knowledgeParser.ParseBytes(ctx, fileName, content, &knowledgeParser.ParseOptions{MaxTextLength: 200000})
+	if err != nil {
+		logger.Error("knowledge.upload.job.parse_failed",
 			zap.String("provider", provider),
 			zap.Uint64("org_id", uint64(orgID)),
 			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
 			zap.Uint64("doc_id", uint64(docID)),
 			zap.String("file_name", strings.TrimSpace(fileName)),
-			zap.String("file_hash", strings.TrimSpace(fileHash)),
-			zap.Int("bytes", len(content)),
+			zap.Error(err),
+			zap.Duration("elapsed", time.Since(start)),
 		)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
+		h.knowledgeDocFinalizeFailed(orgID, docID)
+		return err
+	}
 
-		embedder, err := embedderFromEnv()
-		if err != nil {
-			logger.Error("knowledge.upload.job.embedder_failed",
+	type chunk struct {
+		Idx  int
+		Text string
+	}
+	chunks := make([]chunk, 0, 16)
+	if ch, _, err := chunkerFromEnv(); err == nil && ch != nil {
+		raw := strings.TrimSpace(parsed.Text)
+		if raw != "" {
+			llmChunks, err := ch.Chunk(ctx, raw, &knowledge.ChunkOptions{DocumentTitle: strings.TrimSpace(fileName)})
+			if err == nil && len(llmChunks) > 0 {
+				for _, it := range llmChunks {
+					if strings.TrimSpace(it.Text) == "" {
+						continue
+					}
+					chunks = append(chunks, chunk{Idx: it.Index, Text: it.Text})
+				}
+			}
+		}
+	}
+	if len(chunks) == 0 {
+		for _, s := range parsed.Sections {
+			txt := strings.TrimSpace(s.Text)
+			if txt == "" {
+				continue
+			}
+			chunks = append(chunks, chunk{Idx: s.Index, Text: txt})
+		}
+	}
+	if len(chunks) == 0 {
+		txt := strings.TrimSpace(parsed.Text)
+		if txt == "" {
+			logger.Warn("knowledge.upload.job.empty_text",
 				zap.String("provider", provider),
 				zap.Uint64("org_id", uint64(orgID)),
 				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
 				zap.Uint64("doc_id", uint64(docID)),
-				zap.Error(err),
 				zap.Duration("elapsed", time.Since(start)),
 			)
 			h.knowledgeDocFinalizeFailed(orgID, docID)
-			return
+			return errors.New("knowledge: empty text")
 		}
+		chunks = append(chunks, chunk{Idx: 0, Text: txt})
+	}
+	logger.Info("knowledge.upload.job.chunked",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(docID)),
+		zap.Int("chunks", len(chunks)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
 
-		parsed, err := knowledgeParser.ParseBytes(ctx, fileName, content, &knowledgeParser.ParseOptions{MaxTextLength: 200000})
-		if err != nil {
-			logger.Error("knowledge.upload.job.parse_failed",
-				zap.String("provider", provider),
-				zap.Uint64("org_id", uint64(orgID)),
-				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-				zap.Uint64("doc_id", uint64(docID)),
-				zap.String("file_name", strings.TrimSpace(fileName)),
-				zap.Error(err),
-				zap.Duration("elapsed", time.Since(start)),
-			)
-			h.knowledgeDocFinalizeFailed(orgID, docID)
-			return
-		}
-
-		type chunk struct {
+	mdText := buildStructuredMarkdown(strings.TrimSpace(fileName), ns.Namespace, fileHash, "upload", func() []struct {
+		Idx  int
+		Text string
+	} {
+		out := make([]struct {
 			Idx  int
 			Text string
+		}, 0, len(chunks))
+		for _, it := range chunks {
+			out = append(out, struct {
+				Idx  int
+				Text string
+			}{Idx: it.Idx, Text: it.Text})
 		}
-		chunks := make([]chunk, 0, 16)
-		if ch, _, err := chunkerFromEnv(); err == nil && ch != nil {
-			raw := strings.TrimSpace(parsed.Text)
-			if raw != "" {
-				llmChunks, err := ch.Chunk(ctx, raw, &knowledge.ChunkOptions{DocumentTitle: strings.TrimSpace(fileName)})
-				if err == nil && len(llmChunks) > 0 {
-					for _, it := range llmChunks {
-						if strings.TrimSpace(it.Text) == "" {
-							continue
-						}
-						chunks = append(chunks, chunk{Idx: it.Index, Text: it.Text})
-					}
-				}
-			}
-		}
-		if len(chunks) == 0 {
-			for _, s := range parsed.Sections {
-				txt := strings.TrimSpace(s.Text)
-				if txt == "" {
-					continue
-				}
-				chunks = append(chunks, chunk{Idx: s.Index, Text: txt})
-			}
-		}
-		if len(chunks) == 0 {
-			txt := strings.TrimSpace(parsed.Text)
-			if txt == "" {
-				logger.Warn("knowledge.upload.job.empty_text",
-					zap.String("provider", provider),
-					zap.Uint64("org_id", uint64(orgID)),
-					zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-					zap.Uint64("doc_id", uint64(docID)),
-					zap.Duration("elapsed", time.Since(start)),
-				)
-				h.knowledgeDocFinalizeFailed(orgID, docID)
-				return
-			}
-			chunks = append(chunks, chunk{Idx: 0, Text: txt})
-		}
-		logger.Info("knowledge.upload.job.chunked",
+		return out
+	}())
+
+	inputs := make([]string, 0, len(chunks))
+	for _, ch := range chunks {
+		inputs = append(inputs, ch.Text)
+	}
+	embedStart := time.Now()
+	logger.Info("knowledge.upload.job.embed.start",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(docID)),
+		zap.Int("inputs", len(inputs)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	vecs, err := embedder.Embed(ctx, inputs)
+	if err != nil || len(vecs) != len(chunks) || len(vecs) == 0 || len(vecs[0]) == 0 {
+		logger.Error("knowledge.upload.job.embed_failed",
 			zap.String("provider", provider),
 			zap.Uint64("org_id", uint64(orgID)),
 			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
 			zap.Uint64("doc_id", uint64(docID)),
 			zap.Int("chunks", len(chunks)),
+			zap.Int("vecs", len(vecs)),
+			zap.Error(err),
 			zap.Duration("elapsed", time.Since(start)),
 		)
+		h.knowledgeDocFinalizeFailed(orgID, docID)
+		if err == nil {
+			return errors.New("knowledge: embeddings response invalid")
+		}
+		return err
+	}
+	logger.Info("knowledge.upload.job.embed.done",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(docID)),
+		zap.Int("vecs", len(vecs)),
+		zap.Int("vector_dim", len(vecs[0])),
+		zap.Duration("embed_elapsed", time.Since(embedStart)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	for i := range vecs {
+		normalizeVec64InPlace(vecs[i])
+	}
+	gotDim := len(vecs[0])
+	if ns.VectorDim > 0 && gotDim != ns.VectorDim {
+		logger.Error("knowledge.upload.job.vector_dim_mismatch",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(docID)),
+			zap.Int("expected_dim", ns.VectorDim),
+			zap.Int("got_dim", gotDim),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, docID)
+		return errors.New("knowledge: vector dim mismatch")
+	}
 
-		mdText := buildStructuredMarkdown(strings.TrimSpace(fileName), ns.Namespace, fileHash, "upload", func() []struct {
+	now := time.Now().UTC()
+	records := make([]knowledge.Record, 0, len(chunks))
+	recordIDs := make([]string, 0, len(chunks))
+	for i, ch := range chunks {
+		rid := uuid.NewString()
+		recordIDs = append(recordIDs, rid)
+		v64 := vecs[i]
+		v32 := make([]float32, 0, len(v64))
+		for _, x := range v64 {
+			v32 = append(v32, float32(x))
+		}
+		records = append(records, knowledge.Record{
+			ID:      rid,
+			Source:  "upload",
+			Title:   fileName,
+			Content: ch.Text,
+			Vector:  v32,
+			Metadata: map[string]any{
+				"doc_id":        fmt.Sprintf("%d", docID),
+				"file_name":     fileName,
+				"file_hash":     fileHash,
+				"section_index": ch.Idx,
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+
+	kh, err := knowledgeHandlerForNS(&ns, embedder)
+	if err != nil {
+		logger.Error("knowledge.upload.job.handler_failed",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(docID)),
+			zap.Error(err),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, docID)
+		return err
+	}
+	upsertStart := time.Now()
+	logger.Info("knowledge.upload.job.upsert.start",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(docID)),
+		zap.Int("records", len(records)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	if err := kh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(ns.Namespace), BatchSize: 64}); err != nil {
+		logger.Error("knowledge.upload.job.upsert_failed",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(docID)),
+			zap.Int("records", len(records)),
+			zap.Error(err),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, docID)
+		return err
+	}
+	logger.Info("knowledge.upload.job.upsert.done",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(docID)),
+		zap.Int("records", len(records)),
+		zap.Duration("upsert_elapsed", time.Since(upsertStart)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+
+	textURL := ""
+	if u, upErr := uploadMarkdownToStore(orgID, ns.Namespace, docID, fileName, mdText); upErr == nil && u != "" {
+		textURL = u
+	}
+
+	// Update keyword index (best-effort).
+	if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
+		_ = eng.IndexBatch(ctx, func() []search.Doc {
+			docs := make([]search.Doc, 0, len(records))
+			for _, r := range records {
+				docs = append(docs, search.Doc{
+					ID:   r.ID,
+					Type: "knowledge_record",
+					Fields: map[string]any{
+						"org_id":    fmt.Sprintf("%d", orgID),
+						"namespace": strings.TrimSpace(ns.Namespace),
+						"doc_id":    fmt.Sprintf("%d", docID),
+						"title":     r.Title,
+						"content":   r.Content,
+						"file_hash": fileHash,
+						"source":    "upload",
+					},
+				})
+			}
+			return docs
+		}())
+	}
+
+	h.knowledgeDocFinalizeSuccess(orgID, docID, recordIDs, textURL)
+	logger.Info("knowledge.upload.job.done",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(docID)),
+		zap.Int("records", len(recordIDs)),
+		zap.Int("vector_dim", gotDim),
+		zap.Bool("uploaded_text", strings.TrimSpace(textURL) != ""),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	return nil
+}
+
+func (h *Handlers) runKnowledgeReuploadJob(ctx context.Context, orgID uint, ns models.KnowledgeNamespace, doc models.KnowledgeDocument, oldRecordIDs, fileName, fileHash string, content []byte) error {
+	start := time.Now()
+	provider := knowledgeProviderForLog(&ns)
+	logger.Info("knowledge.reupload.job.start",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.String("file_name", strings.TrimSpace(fileName)),
+		zap.String("file_hash", strings.TrimSpace(fileHash)),
+		zap.Int("bytes", len(content)),
+	)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	embedder, err := embedderFromEnv()
+	if err != nil {
+		logger.Error("knowledge.reupload.job.embedder_failed",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Error(err),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		return err
+	}
+
+	parsed, err := knowledgeParser.ParseBytes(ctx, fileName, content, &knowledgeParser.ParseOptions{MaxTextLength: 200000})
+	if err != nil {
+		logger.Error("knowledge.reupload.job.parse_failed",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.String("file_name", strings.TrimSpace(fileName)),
+			zap.Error(err),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		return err
+	}
+
+	type chunk struct {
+		Idx  int
+		Text string
+	}
+	chunks := make([]chunk, 0, 16)
+	if ch, _, err := chunkerFromEnv(); err == nil && ch != nil {
+		raw := strings.TrimSpace(parsed.Text)
+		if raw != "" {
+			llmChunks, err := ch.Chunk(ctx, raw, &knowledge.ChunkOptions{DocumentTitle: strings.TrimSpace(fileName)})
+			if err == nil && len(llmChunks) > 0 {
+				for _, it := range llmChunks {
+					if strings.TrimSpace(it.Text) == "" {
+						continue
+					}
+					chunks = append(chunks, chunk{Idx: it.Index, Text: it.Text})
+				}
+			}
+		}
+	}
+	if len(chunks) == 0 {
+		for _, s := range parsed.Sections {
+			txt := strings.TrimSpace(s.Text)
+			if txt == "" {
+				continue
+			}
+			chunks = append(chunks, chunk{Idx: s.Index, Text: txt})
+		}
+	}
+	if len(chunks) == 0 {
+		txt := strings.TrimSpace(parsed.Text)
+		if txt == "" {
+			logger.Warn("knowledge.reupload.job.empty_text",
+				zap.String("provider", provider),
+				zap.Uint64("org_id", uint64(orgID)),
+				zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+				zap.Uint64("doc_id", uint64(doc.ID)),
+				zap.Duration("elapsed", time.Since(start)),
+			)
+			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+			return errors.New("knowledge: empty text")
+		}
+		chunks = append(chunks, chunk{Idx: 0, Text: txt})
+	}
+	logger.Info("knowledge.reupload.job.chunked",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.Int("chunks", len(chunks)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+
+	mdText := buildStructuredMarkdown(strings.TrimSpace(fileName), doc.Namespace, fileHash, "reupload", func() []struct {
+		Idx  int
+		Text string
+	} {
+		out := make([]struct {
 			Idx  int
 			Text string
-		} {
-			out := make([]struct {
+		}, 0, len(chunks))
+		for _, it := range chunks {
+			out = append(out, struct {
 				Idx  int
 				Text string
-			}, 0, len(chunks))
-			for _, it := range chunks {
-				out = append(out, struct {
-					Idx  int
-					Text string
-				}{Idx: it.Idx, Text: it.Text})
-			}
-			return out
-		}())
+			}{Idx: it.Idx, Text: it.Text})
+		}
+		return out
+	}())
 
-		inputs := make([]string, 0, len(chunks))
-		for _, ch := range chunks {
-			inputs = append(inputs, ch.Text)
-		}
-		embedStart := time.Now()
-		logger.Info("knowledge.upload.job.embed.start",
+	inputs := make([]string, 0, len(chunks))
+	for _, ch := range chunks {
+		inputs = append(inputs, ch.Text)
+	}
+	embedStart := time.Now()
+	logger.Info("knowledge.reupload.job.embed.start",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.Int("inputs", len(inputs)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	vecs, err := embedder.Embed(ctx, inputs)
+	if err != nil || len(vecs) != len(chunks) || len(vecs) == 0 || len(vecs[0]) == 0 {
+		logger.Error("knowledge.reupload.job.embed_failed",
 			zap.String("provider", provider),
 			zap.Uint64("org_id", uint64(orgID)),
-			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-			zap.Uint64("doc_id", uint64(docID)),
-			zap.Int("inputs", len(inputs)),
-			zap.Duration("elapsed", time.Since(start)),
-		)
-		vecs, err := embedder.Embed(ctx, inputs)
-		if err != nil || len(vecs) != len(chunks) || len(vecs) == 0 || len(vecs[0]) == 0 {
-			logger.Error("knowledge.upload.job.embed_failed",
-				zap.String("provider", provider),
-				zap.Uint64("org_id", uint64(orgID)),
-				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-				zap.Uint64("doc_id", uint64(docID)),
-				zap.Int("chunks", len(chunks)),
-				zap.Int("vecs", len(vecs)),
-				zap.Error(err),
-				zap.Duration("elapsed", time.Since(start)),
-			)
-			h.knowledgeDocFinalizeFailed(orgID, docID)
-			return
-		}
-		logger.Info("knowledge.upload.job.embed.done",
-			zap.String("provider", provider),
-			zap.Uint64("org_id", uint64(orgID)),
-			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-			zap.Uint64("doc_id", uint64(docID)),
+			zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Int("chunks", len(chunks)),
 			zap.Int("vecs", len(vecs)),
-			zap.Int("vector_dim", len(vecs[0])),
-			zap.Duration("embed_elapsed", time.Since(embedStart)),
+			zap.Error(err),
 			zap.Duration("elapsed", time.Since(start)),
 		)
-		for i := range vecs {
-			normalizeVec64InPlace(vecs[i])
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		if err == nil {
+			return errors.New("knowledge: embeddings response invalid")
 		}
-		gotDim := len(vecs[0])
-		if ns.VectorDim > 0 && gotDim != ns.VectorDim {
-			logger.Error("knowledge.upload.job.vector_dim_mismatch",
-				zap.String("provider", provider),
-				zap.Uint64("org_id", uint64(orgID)),
-				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-				zap.Uint64("doc_id", uint64(docID)),
-				zap.Int("expected_dim", ns.VectorDim),
-				zap.Int("got_dim", gotDim),
-				zap.Duration("elapsed", time.Since(start)),
-			)
-			h.knowledgeDocFinalizeFailed(orgID, docID)
-			return
-		}
-
-		now := time.Now().UTC()
-		records := make([]knowledge.Record, 0, len(chunks))
-		recordIDs := make([]string, 0, len(chunks))
-		for i, ch := range chunks {
-			rid := uuid.NewString()
-			recordIDs = append(recordIDs, rid)
-			v64 := vecs[i]
-			v32 := make([]float32, 0, len(v64))
-			for _, x := range v64 {
-				v32 = append(v32, float32(x))
-			}
-			records = append(records, knowledge.Record{
-				ID:      rid,
-				Source:  "upload",
-				Title:   fileName,
-				Content: ch.Text,
-				Vector:  v32,
-				Metadata: map[string]any{
-					"doc_id":        fmt.Sprintf("%d", docID),
-					"file_name":     fileName,
-					"file_hash":     fileHash,
-					"section_index": ch.Idx,
-				},
-				CreatedAt: now,
-				UpdatedAt: now,
-			})
-		}
-
-		kh, err := knowledgeHandlerForNS(&ns, embedder)
-		if err != nil {
-			logger.Error("knowledge.upload.job.handler_failed",
-				zap.String("provider", provider),
-				zap.Uint64("org_id", uint64(orgID)),
-				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-				zap.Uint64("doc_id", uint64(docID)),
-				zap.Error(err),
-				zap.Duration("elapsed", time.Since(start)),
-			)
-			h.knowledgeDocFinalizeFailed(orgID, docID)
-			return
-		}
-		upsertStart := time.Now()
-		logger.Info("knowledge.upload.job.upsert.start",
+		return err
+	}
+	logger.Info("knowledge.reupload.job.embed.done",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.Int("vecs", len(vecs)),
+		zap.Int("vector_dim", len(vecs[0])),
+		zap.Duration("embed_elapsed", time.Since(embedStart)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	for i := range vecs {
+		normalizeVec64InPlace(vecs[i])
+	}
+	gotDim := len(vecs[0])
+	if ns.VectorDim > 0 && gotDim != ns.VectorDim {
+		logger.Error("knowledge.reupload.job.vector_dim_mismatch",
 			zap.String("provider", provider),
 			zap.Uint64("org_id", uint64(orgID)),
-			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-			zap.Uint64("doc_id", uint64(docID)),
-			zap.Int("records", len(records)),
+			zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Int("expected_dim", ns.VectorDim),
+			zap.Int("got_dim", gotDim),
 			zap.Duration("elapsed", time.Since(start)),
 		)
-		if err := kh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(ns.Namespace), BatchSize: 64}); err != nil {
-			logger.Error("knowledge.upload.job.upsert_failed",
-				zap.String("provider", provider),
-				zap.Uint64("org_id", uint64(orgID)),
-				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-				zap.Uint64("doc_id", uint64(docID)),
-				zap.Int("records", len(records)),
-				zap.Error(err),
-				zap.Duration("elapsed", time.Since(start)),
-			)
-			h.knowledgeDocFinalizeFailed(orgID, docID)
-			return
-		}
-		logger.Info("knowledge.upload.job.upsert.done",
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		return errors.New("knowledge: vector dim mismatch")
+	}
+
+	kh, err := knowledgeHandlerForNS(&ns, embedder)
+	if err != nil {
+		logger.Error("knowledge.reupload.job.handler_failed",
 			zap.String("provider", provider),
 			zap.Uint64("org_id", uint64(orgID)),
-			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-			zap.Uint64("doc_id", uint64(docID)),
-			zap.Int("records", len(records)),
-			zap.Duration("upsert_elapsed", time.Since(upsertStart)),
+			zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Error(err),
 			zap.Duration("elapsed", time.Since(start)),
 		)
-
-		textURL := ""
-		if u, upErr := uploadMarkdownToStore(orgID, ns.Namespace, docID, fileName, mdText); upErr == nil && u != "" {
-			textURL = u
-		}
-
-		// Update keyword index (best-effort).
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		return err
+	}
+	oldIDs := parseRecordIDs(oldRecordIDs)
+	if len(oldIDs) > 0 {
+		_ = kh.Delete(ctx, oldIDs, &knowledge.DeleteOptions{Namespace: strings.TrimSpace(doc.Namespace)})
 		if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
-			_ = eng.IndexBatch(ctx, func() []search.Doc {
-				docs := make([]search.Doc, 0, len(records))
-				for _, r := range records {
-					docs = append(docs, search.Doc{
-						ID:   r.ID,
-						Type: "knowledge_record",
-						Fields: map[string]any{
-							"org_id":    fmt.Sprintf("%d", orgID),
-							"namespace": strings.TrimSpace(ns.Namespace),
-							"doc_id":    fmt.Sprintf("%d", docID),
-							"title":     r.Title,
-							"content":   r.Content,
-							"file_hash": fileHash,
-							"source":    "upload",
-						},
-					})
-				}
-				return docs
-			}())
+			for _, rid := range oldIDs {
+				_ = eng.Delete(ctx, rid)
+			}
 		}
+	}
 
-		h.knowledgeDocFinalizeSuccess(orgID, docID, recordIDs, textURL)
-		logger.Info("knowledge.upload.job.done",
+	now := time.Now().UTC()
+	records := make([]knowledge.Record, 0, len(chunks))
+	recordIDs := make([]string, 0, len(chunks))
+	for i, ch := range chunks {
+		rid := uuid.NewString()
+		recordIDs = append(recordIDs, rid)
+		v64 := vecs[i]
+		v32 := make([]float32, 0, len(v64))
+		for _, x := range v64 {
+			v32 = append(v32, float32(x))
+		}
+		records = append(records, knowledge.Record{
+			ID:      rid,
+			Source:  "upload",
+			Title:   fileName,
+			Content: ch.Text,
+			Vector:  v32,
+			Metadata: map[string]any{
+				"doc_id":        fmt.Sprintf("%d", doc.ID),
+				"file_name":     fileName,
+				"file_hash":     fileHash,
+				"section_index": ch.Idx,
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+	upsertStart := time.Now()
+	logger.Info("knowledge.reupload.job.upsert.start",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.Int("records", len(records)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	if err := kh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(doc.Namespace), Overwrite: true, BatchSize: 64}); err != nil {
+		logger.Error("knowledge.reupload.job.upsert_failed",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Int("records", len(records)),
+			zap.Error(err),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		return err
+	}
+	logger.Info("knowledge.reupload.job.upsert.done",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.Int("records", len(records)),
+		zap.Duration("upsert_elapsed", time.Since(upsertStart)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+
+	textURL := ""
+	if u, upErr := uploadMarkdownToStore(orgID, doc.Namespace, doc.ID, fileName, mdText); upErr == nil && u != "" {
+		textURL = u
+	}
+
+	if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
+		_ = eng.IndexBatch(ctx, func() []search.Doc {
+			docs := make([]search.Doc, 0, len(records))
+			for _, r := range records {
+				docs = append(docs, search.Doc{
+					ID:   r.ID,
+					Type: "knowledge_record",
+					Fields: map[string]any{
+						"org_id":    fmt.Sprintf("%d", orgID),
+						"namespace": strings.TrimSpace(doc.Namespace),
+						"doc_id":    fmt.Sprintf("%d", doc.ID),
+						"title":     r.Title,
+						"content":   r.Content,
+						"file_hash": fileHash,
+						"source":    "upload",
+					},
+				})
+			}
+			return docs
+		}())
+	}
+
+	h.knowledgeDocFinalizeSuccess(orgID, doc.ID, recordIDs, textURL)
+	logger.Info("knowledge.reupload.job.done",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(doc.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.Int("records", len(recordIDs)),
+		zap.Int("vector_dim", gotDim),
+		zap.Bool("uploaded_text", strings.TrimSpace(textURL) != ""),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	return nil
+}
+
+func (h *Handlers) runKnowledgeTextPutJob(ctx context.Context, orgID uint, ns models.KnowledgeNamespace, doc models.KnowledgeDocument, mdText string) error {
+	start := time.Now()
+	provider := knowledgeProviderForLog(&ns)
+	logger.Info("knowledge.text_put.job.start",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.String("title", strings.TrimSpace(doc.Title)),
+		zap.Int("markdown_chars", len(mdText)),
+	)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	embedder, err := embedderFromEnv()
+	if err != nil {
+		logger.Error("knowledge.text_put.job.embedder_failed",
 			zap.String("provider", provider),
 			zap.Uint64("org_id", uint64(orgID)),
 			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-			zap.Uint64("doc_id", uint64(docID)),
-			zap.Int("records", len(recordIDs)),
-			zap.Int("vector_dim", gotDim),
-			zap.Bool("uploaded_text", strings.TrimSpace(textURL) != ""),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Error(err),
 			zap.Duration("elapsed", time.Since(start)),
 		)
-	}(orgID, *nsRow, docRow.ID, fh.Filename, fileHash, b)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		return err
+	}
 
-	response.Success(c, "已提交后台处理", gin.H{"document": docRow})
+	type chunk struct {
+		Idx  int
+		Text string
+	}
+	chunks := make([]chunk, 0, 16)
+	if ch, _, err := chunkerFromEnv(); err == nil && ch != nil {
+		llmChunks, err := ch.Chunk(ctx, mdText, &knowledge.ChunkOptions{DocumentTitle: strings.TrimSpace(doc.Title)})
+		if err == nil && len(llmChunks) > 0 {
+			for _, it := range llmChunks {
+				if strings.TrimSpace(it.Text) == "" {
+					continue
+				}
+				chunks = append(chunks, chunk{Idx: it.Index, Text: it.Text})
+			}
+		}
+	}
+	if len(chunks) == 0 {
+		const maxChars = knowledge.DefaultChunkMaxChars
+		const overlap = knowledge.DefaultChunkOverlapChars
+		s := mdText
+		idx := 0
+		for chunkStart := 0; chunkStart < len(s); {
+			end := chunkStart + maxChars
+			if end > len(s) {
+				end = len(s)
+			}
+			part := strings.TrimSpace(s[chunkStart:end])
+			if part != "" {
+				chunks = append(chunks, chunk{Idx: idx, Text: part})
+				idx++
+			}
+			if end == len(s) {
+				break
+			}
+			chunkStart = end - overlap
+			if chunkStart < 0 {
+				chunkStart = 0
+			}
+		}
+	}
+	if len(chunks) == 0 {
+		logger.Warn("knowledge.text_put.job.empty_chunks",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		return errors.New("knowledge: empty chunks from markdown")
+	}
+
+	inputs := make([]string, 0, len(chunks))
+	for _, ch := range chunks {
+		inputs = append(inputs, ch.Text)
+	}
+	embedStart := time.Now()
+	logger.Info("knowledge.text_put.job.embed.start",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.Int("inputs", len(inputs)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	vecs, err := embedder.Embed(ctx, inputs)
+	if err != nil || len(vecs) != len(chunks) || len(vecs) == 0 || len(vecs[0]) == 0 {
+		logger.Error("knowledge.text_put.job.embed_failed",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Int("chunks", len(chunks)),
+			zap.Int("vecs", len(vecs)),
+			zap.Error(err),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		if err == nil {
+			return errors.New("knowledge: embeddings response invalid")
+		}
+		return err
+	}
+	logger.Info("knowledge.text_put.job.embed.done",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.Int("vecs", len(vecs)),
+		zap.Int("vector_dim", len(vecs[0])),
+		zap.Duration("embed_elapsed", time.Since(embedStart)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	for i := range vecs {
+		normalizeVec64InPlace(vecs[i])
+	}
+	gotDim := len(vecs[0])
+	if ns.VectorDim > 0 && gotDim != ns.VectorDim {
+		logger.Error("knowledge.text_put.job.vector_dim_mismatch",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Int("expected_dim", ns.VectorDim),
+			zap.Int("got_dim", gotDim),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		return errors.New("knowledge: vector dim mismatch")
+	}
+
+	kh, err := knowledgeHandlerForNS(&ns, embedder)
+	if err != nil {
+		logger.Error("knowledge.text_put.job.handler_failed",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Error(err),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		return err
+	}
+	oldIDs := parseRecordIDs(doc.RecordIDs)
+	if len(oldIDs) > 0 {
+		_ = kh.Delete(ctx, oldIDs, &knowledge.DeleteOptions{Namespace: strings.TrimSpace(doc.Namespace)})
+		if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
+			for _, rid := range oldIDs {
+				_ = eng.Delete(ctx, rid)
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	records := make([]knowledge.Record, 0, len(chunks))
+	recordIDs := make([]string, 0, len(chunks))
+	for i, ch := range chunks {
+		rid := uuid.NewString()
+		recordIDs = append(recordIDs, rid)
+		v64 := vecs[i]
+		v32 := make([]float32, 0, len(v64))
+		for _, x := range v64 {
+			v32 = append(v32, float32(x))
+		}
+		records = append(records, knowledge.Record{
+			ID:      rid,
+			Source:  "edit",
+			Title:   doc.Title,
+			Content: ch.Text,
+			Vector:  v32,
+			Metadata: map[string]any{
+				"doc_id":        fmt.Sprintf("%d", doc.ID),
+				"file_name":     doc.Title,
+				"section_index": ch.Idx,
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+	upsertStart := time.Now()
+	logger.Info("knowledge.text_put.job.upsert.start",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.Int("records", len(records)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	if err := kh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(doc.Namespace), Overwrite: true, BatchSize: 64}); err != nil {
+		logger.Error("knowledge.text_put.job.upsert_failed",
+			zap.String("provider", provider),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Int("records", len(records)),
+			zap.Error(err),
+			zap.Duration("elapsed", time.Since(start)),
+		)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		return err
+	}
+	logger.Info("knowledge.text_put.job.upsert.done",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.Int("records", len(records)),
+		zap.Duration("upsert_elapsed", time.Since(upsertStart)),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+
+	if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
+		_ = eng.IndexBatch(ctx, func() []search.Doc {
+			docs := make([]search.Doc, 0, len(records))
+			for _, r := range records {
+				docs = append(docs, search.Doc{
+					ID:   r.ID,
+					Type: "knowledge_record",
+					Fields: map[string]any{
+						"org_id":    fmt.Sprintf("%d", orgID),
+						"namespace": strings.TrimSpace(doc.Namespace),
+						"doc_id":    fmt.Sprintf("%d", doc.ID),
+						"title":     r.Title,
+						"content":   r.Content,
+						"file_hash": strings.TrimSpace(doc.FileHash),
+						"source":    "edit",
+					},
+				})
+			}
+			return docs
+		}())
+	}
+
+	h.knowledgeDocFinalizeSuccess(orgID, doc.ID, recordIDs, "")
+	logger.Info("knowledge.text_put.job.done",
+		zap.String("provider", provider),
+		zap.Uint64("org_id", uint64(orgID)),
+		zap.String("namespace", strings.TrimSpace(ns.Namespace)),
+		zap.Uint64("doc_id", uint64(doc.ID)),
+		zap.Int("records", len(recordIDs)),
+		zap.Int("vector_dim", gotDim),
+		zap.Duration("elapsed", time.Since(start)),
+	)
+	return nil
 }
 
 func (h *Handlers) knowledgeNamespaceRecallTestHandler(c *gin.Context) {
@@ -1307,249 +1934,64 @@ func (h *Handlers) knowledgeDocumentTextPutHandler(c *gin.Context) {
 	doc.TextURL = textURL
 	doc.Status = models.KnowledgeStatusProcessing
 
-	go func(orgID uint, ns models.KnowledgeNamespace, doc models.KnowledgeDocument, mdText string) {
-		start := time.Now()
-		provider := knowledgeProviderForLog(&ns)
-		logger.Info("knowledge.text_put.job.start",
-			zap.String("provider", provider),
+	type textPutJob struct {
+		OrgID uint
+		NS    models.KnowledgeNamespace
+		Doc   models.KnowledgeDocument
+		Md    string
+	}
+	task := joblet.NewTask[any, any](0, textPutJob{
+		OrgID: orgID,
+		NS:    nsRow,
+		Doc:   *doc,
+		Md:    mdText,
+	}, func(ctx context.Context, params any) (any, error) {
+		j, ok := params.(textPutJob)
+		if !ok {
+			return nil, errors.New("invalid params type")
+		}
+		return nil, h.runKnowledgeTextPutJob(ctx, j.OrgID, j.NS, j.Doc, j.Md)
+	})
+	task.Name = "knowledge.text_put"
+	task.Meta = map[string]string{
+		"org_id":    fmt.Sprintf("%d", orgID),
+		"doc_id":    fmt.Sprintf("%d", doc.ID),
+		"namespace": strings.TrimSpace(doc.Namespace),
+		"file_name": strings.TrimSpace(doc.Title),
+		"file_hash": strings.TrimSpace(doc.FileHash),
+	}
+	if dbLogger := joblet.GlobalDBTaskLogger(); dbLogger != nil {
+		task.Log = dbLogger
+	}
+
+	pool := joblet.DefaultPool()
+	if pool == nil {
+		poolErr := errors.New("joblet: default pool is nil")
+		logger.Error("knowledge.text_put.job.pool_unavailable",
+			zap.String("task_id", task.ID),
 			zap.Uint64("org_id", uint64(orgID)),
-			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
 			zap.Uint64("doc_id", uint64(doc.ID)),
-			zap.String("title", strings.TrimSpace(doc.Title)),
-			zap.Int("markdown_chars", len(mdText)),
+			zap.Error(poolErr),
 		)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-
-		embedder, err := embedderFromEnv()
-		if err != nil {
-			logger.Error("knowledge.text_put.job.embedder_failed",
-				zap.String("provider", provider),
-				zap.Uint64("org_id", uint64(orgID)),
-				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-				zap.Uint64("doc_id", uint64(doc.ID)),
-				zap.Error(err),
-				zap.Duration("elapsed", time.Since(start)),
-			)
-			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-			return
-		}
-
-		type chunk struct {
-			Idx  int
-			Text string
-		}
-		chunks := make([]chunk, 0, 16)
-		if ch, _, err := chunkerFromEnv(); err == nil && ch != nil {
-			llmChunks, err := ch.Chunk(ctx, mdText, &knowledge.ChunkOptions{DocumentTitle: strings.TrimSpace(doc.Title)})
-			if err == nil && len(llmChunks) > 0 {
-				for _, it := range llmChunks {
-					if strings.TrimSpace(it.Text) == "" {
-						continue
-					}
-					chunks = append(chunks, chunk{Idx: it.Index, Text: it.Text})
-				}
-			}
-		}
-		if len(chunks) == 0 {
-			const maxChars = knowledge.DefaultChunkMaxChars
-			const overlap = knowledge.DefaultChunkOverlapChars
-			s := mdText
-			idx := 0
-			for start := 0; start < len(s); {
-				end := start + maxChars
-				if end > len(s) {
-					end = len(s)
-				}
-				part := strings.TrimSpace(s[start:end])
-				if part != "" {
-					chunks = append(chunks, chunk{Idx: idx, Text: part})
-					idx++
-				}
-				if end == len(s) {
-					break
-				}
-				start = end - overlap
-				if start < 0 {
-					start = 0
-				}
-			}
-		}
-
-		inputs := make([]string, 0, len(chunks))
-		for _, ch := range chunks {
-			inputs = append(inputs, ch.Text)
-		}
-		embedStart := time.Now()
-		logger.Info("knowledge.text_put.job.embed.start",
-			zap.String("provider", provider),
+		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "pool_nil", "default joblet pool not configured", poolErr, task.Meta)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		response.Fail(c, "后台任务池未初始化", gin.H{"error": poolErr.Error(), "document": doc, "task_id": task.ID})
+		return
+	}
+	if submitErr := pool.Submit(context.Background(), task); submitErr != nil {
+		logger.Error("knowledge.text_put.job.submit_failed",
+			zap.String("task_id", task.ID),
 			zap.Uint64("org_id", uint64(orgID)),
-			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
 			zap.Uint64("doc_id", uint64(doc.ID)),
-			zap.Int("inputs", len(inputs)),
-			zap.Duration("elapsed", time.Since(start)),
+			zap.Error(submitErr),
 		)
-		vecs, err := embedder.Embed(ctx, inputs)
-		if err != nil || len(vecs) == 0 || len(vecs[0]) == 0 {
-			logger.Error("knowledge.text_put.job.embed_failed",
-				zap.String("provider", provider),
-				zap.Uint64("org_id", uint64(orgID)),
-				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-				zap.Uint64("doc_id", uint64(doc.ID)),
-				zap.Int("chunks", len(chunks)),
-				zap.Int("vecs", len(vecs)),
-				zap.Error(err),
-				zap.Duration("elapsed", time.Since(start)),
-			)
-			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-			return
-		}
-		logger.Info("knowledge.text_put.job.embed.done",
-			zap.String("provider", provider),
-			zap.Uint64("org_id", uint64(orgID)),
-			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-			zap.Uint64("doc_id", uint64(doc.ID)),
-			zap.Int("vecs", len(vecs)),
-			zap.Int("vector_dim", len(vecs[0])),
-			zap.Duration("embed_elapsed", time.Since(embedStart)),
-			zap.Duration("elapsed", time.Since(start)),
-		)
-		for i := range vecs {
-			normalizeVec64InPlace(vecs[i])
-		}
-		gotDim := len(vecs[0])
-		if ns.VectorDim > 0 && gotDim != ns.VectorDim {
-			logger.Error("knowledge.text_put.job.vector_dim_mismatch",
-				zap.String("provider", provider),
-				zap.Uint64("org_id", uint64(orgID)),
-				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-				zap.Uint64("doc_id", uint64(doc.ID)),
-				zap.Int("expected_dim", ns.VectorDim),
-				zap.Int("got_dim", gotDim),
-				zap.Duration("elapsed", time.Since(start)),
-			)
-			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-			return
-		}
+		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "submit_reject", "task not accepted by pool", submitErr, task.Meta)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		response.Fail(c, "后台任务提交失败（队列已满或已关闭）", gin.H{"error": submitErr.Error(), "document": doc, "task_id": task.ID})
+		return
+	}
 
-		kh, err := knowledgeHandlerForNS(&ns, embedder)
-		if err != nil {
-			logger.Error("knowledge.text_put.job.handler_failed",
-				zap.String("provider", provider),
-				zap.Uint64("org_id", uint64(orgID)),
-				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-				zap.Uint64("doc_id", uint64(doc.ID)),
-				zap.Error(err),
-				zap.Duration("elapsed", time.Since(start)),
-			)
-			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-			return
-		}
-		oldIDs := parseRecordIDs(doc.RecordIDs)
-		if len(oldIDs) > 0 {
-			_ = kh.Delete(ctx, oldIDs, &knowledge.DeleteOptions{Namespace: strings.TrimSpace(doc.Namespace)})
-			// Delete from keyword index (best-effort).
-			if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
-				for _, rid := range oldIDs {
-					_ = eng.Delete(ctx, rid)
-				}
-			}
-		}
-
-		now := time.Now().UTC()
-		records := make([]knowledge.Record, 0, len(chunks))
-		recordIDs := make([]string, 0, len(chunks))
-		for i, ch := range chunks {
-			rid := uuid.NewString()
-			recordIDs = append(recordIDs, rid)
-			v64 := vecs[i]
-			v32 := make([]float32, 0, len(v64))
-			for _, x := range v64 {
-				v32 = append(v32, float32(x))
-			}
-			records = append(records, knowledge.Record{
-				ID:      rid,
-				Source:  "edit",
-				Title:   doc.Title,
-				Content: ch.Text,
-				Vector:  v32,
-				Metadata: map[string]any{
-					"doc_id":        fmt.Sprintf("%d", doc.ID),
-					"file_name":     doc.Title,
-					"section_index": ch.Idx,
-				},
-				CreatedAt: now,
-				UpdatedAt: now,
-			})
-		}
-		upsertStart := time.Now()
-		logger.Info("knowledge.text_put.job.upsert.start",
-			zap.String("provider", provider),
-			zap.Uint64("org_id", uint64(orgID)),
-			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-			zap.Uint64("doc_id", uint64(doc.ID)),
-			zap.Int("records", len(records)),
-			zap.Duration("elapsed", time.Since(start)),
-		)
-		if err := kh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(doc.Namespace), Overwrite: true, BatchSize: 64}); err != nil {
-			logger.Error("knowledge.text_put.job.upsert_failed",
-				zap.String("provider", provider),
-				zap.Uint64("org_id", uint64(orgID)),
-				zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-				zap.Uint64("doc_id", uint64(doc.ID)),
-				zap.Int("records", len(records)),
-				zap.Error(err),
-				zap.Duration("elapsed", time.Since(start)),
-			)
-			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-			return
-		}
-		logger.Info("knowledge.text_put.job.upsert.done",
-			zap.String("provider", provider),
-			zap.Uint64("org_id", uint64(orgID)),
-			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-			zap.Uint64("doc_id", uint64(doc.ID)),
-			zap.Int("records", len(records)),
-			zap.Duration("upsert_elapsed", time.Since(upsertStart)),
-			zap.Duration("elapsed", time.Since(start)),
-		)
-
-		// Update keyword index (best-effort).
-		if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
-			_ = eng.IndexBatch(ctx, func() []search.Doc {
-				docs := make([]search.Doc, 0, len(records))
-				for _, r := range records {
-					docs = append(docs, search.Doc{
-						ID:   r.ID,
-						Type: "knowledge_record",
-						Fields: map[string]any{
-							"org_id":    fmt.Sprintf("%d", orgID),
-							"namespace": strings.TrimSpace(doc.Namespace),
-							"doc_id":    fmt.Sprintf("%d", doc.ID),
-							"title":     r.Title,
-							"content":   r.Content,
-							"file_hash": strings.TrimSpace(doc.FileHash),
-							"source":    "edit",
-						},
-					})
-				}
-				return docs
-			}())
-		}
-
-		h.knowledgeDocFinalizeSuccess(orgID, doc.ID, recordIDs, "")
-		logger.Info("knowledge.text_put.job.done",
-			zap.String("provider", provider),
-			zap.Uint64("org_id", uint64(orgID)),
-			zap.String("namespace", strings.TrimSpace(ns.Namespace)),
-			zap.Uint64("doc_id", uint64(doc.ID)),
-			zap.Int("records", len(recordIDs)),
-			zap.Int("vector_dim", gotDim),
-			zap.Duration("elapsed", time.Since(start)),
-		)
-	}(orgID, nsRow, *doc, mdText)
-
-	response.Success(c, "已提交后台处理", gin.H{"document": doc})
+	response.Success(c, "已提交后台处理", gin.H{"document": doc, "task_id": task.ID})
 }
 
 func (h *Handlers) knowledgeDocumentUpdateHandler(c *gin.Context) {
@@ -1645,173 +2087,71 @@ func (h *Handlers) knowledgeDocumentReuploadHandler(c *gin.Context) {
 	doc.RecordIDs = ""
 	doc.Status = models.KnowledgeStatusProcessing
 
-	go func(orgID uint, ns models.KnowledgeNamespace, doc models.KnowledgeDocument, oldRecordIDs string, fileName string, fileHash string, content []byte) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
+	type reuploadJob struct {
+		OrgID        uint
+		NS           models.KnowledgeNamespace
+		Doc          models.KnowledgeDocument
+		OldRecordIDs string
+		FileName     string
+		FileHash     string
+		Content      []byte
+	}
 
-		embedder, err := embedderFromEnv()
-		if err != nil {
-			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-			return
+	task := joblet.NewTask[any, any](0, reuploadJob{
+		OrgID:        orgID,
+		NS:           nsRow,
+		Doc:          *doc,
+		OldRecordIDs: oldRecordIDs,
+		FileName:     fh.Filename,
+		FileHash:     fileHash,
+		Content:      b,
+	}, func(ctx context.Context, params any) (any, error) {
+		j, ok := params.(reuploadJob)
+		if !ok {
+			return nil, errors.New("invalid params type")
 		}
+		return nil, h.runKnowledgeReuploadJob(ctx, j.OrgID, j.NS, j.Doc, j.OldRecordIDs, j.FileName, j.FileHash, j.Content)
+	})
+	task.Name = "knowledge.reupload"
+	task.Meta = map[string]string{
+		"org_id":    fmt.Sprintf("%d", orgID),
+		"doc_id":    fmt.Sprintf("%d", doc.ID),
+		"namespace": strings.TrimSpace(doc.Namespace),
+		"file_name": strings.TrimSpace(fh.Filename),
+		"file_hash": strings.TrimSpace(fileHash),
+	}
+	if dbLogger := joblet.GlobalDBTaskLogger(); dbLogger != nil {
+		task.Log = dbLogger
+	}
 
-		parsed, err := knowledgeParser.ParseBytes(ctx, fileName, content, &knowledgeParser.ParseOptions{MaxTextLength: 200000})
-		if err != nil {
-			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-			return
-		}
+	pool := joblet.DefaultPool()
+	if pool == nil {
+		poolErr := errors.New("joblet: default pool is nil")
+		logger.Error("knowledge.reupload.job.pool_unavailable",
+			zap.String("task_id", task.ID),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Error(poolErr),
+		)
+		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "pool_nil", "default joblet pool not configured", poolErr, task.Meta)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		response.Fail(c, "后台任务池未初始化", gin.H{"error": poolErr.Error(), "document": doc, "task_id": task.ID})
+		return
+	}
+	if submitErr := pool.Submit(context.Background(), task); submitErr != nil {
+		logger.Error("knowledge.reupload.job.submit_failed",
+			zap.String("task_id", task.ID),
+			zap.Uint64("org_id", uint64(orgID)),
+			zap.Uint64("doc_id", uint64(doc.ID)),
+			zap.Error(submitErr),
+		)
+		_ = joblet.UpsertTerminalFailure(context.Background(), h.db, task.ID, task.Name, "submit_reject", "task not accepted by pool", submitErr, task.Meta)
+		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
+		response.Fail(c, "后台任务提交失败（队列已满或已关闭）", gin.H{"error": submitErr.Error(), "document": doc, "task_id": task.ID})
+		return
+	}
 
-		type chunk struct {
-			Idx  int
-			Text string
-		}
-		chunks := make([]chunk, 0, 16)
-		if ch, _, err := chunkerFromEnv(); err == nil && ch != nil {
-			raw := strings.TrimSpace(parsed.Text)
-			if raw != "" {
-				llmChunks, err := ch.Chunk(ctx, raw, &knowledge.ChunkOptions{DocumentTitle: strings.TrimSpace(fileName)})
-				if err == nil && len(llmChunks) > 0 {
-					for _, it := range llmChunks {
-						if strings.TrimSpace(it.Text) == "" {
-							continue
-						}
-						chunks = append(chunks, chunk{Idx: it.Index, Text: it.Text})
-					}
-				}
-			}
-		}
-		if len(chunks) == 0 {
-			for _, s := range parsed.Sections {
-				txt := strings.TrimSpace(s.Text)
-				if txt == "" {
-					continue
-				}
-				chunks = append(chunks, chunk{Idx: s.Index, Text: txt})
-			}
-		}
-		if len(chunks) == 0 {
-			txt := strings.TrimSpace(parsed.Text)
-			if txt == "" {
-				h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-				return
-			}
-			chunks = append(chunks, chunk{Idx: 0, Text: txt})
-		}
-
-		mdText := buildStructuredMarkdown(strings.TrimSpace(fileName), doc.Namespace, fileHash, "reupload", func() []struct {
-			Idx  int
-			Text string
-		} {
-			out := make([]struct {
-				Idx  int
-				Text string
-			}, 0, len(chunks))
-			for _, it := range chunks {
-				out = append(out, struct {
-					Idx  int
-					Text string
-				}{Idx: it.Idx, Text: it.Text})
-			}
-			return out
-		}())
-
-		inputs := make([]string, 0, len(chunks))
-		for _, ch := range chunks {
-			inputs = append(inputs, ch.Text)
-		}
-		vecs, err := embedder.Embed(ctx, inputs)
-		if err != nil || len(vecs) == 0 || len(vecs[0]) == 0 {
-			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-			return
-		}
-		for i := range vecs {
-			normalizeVec64InPlace(vecs[i])
-		}
-		gotDim := len(vecs[0])
-		if ns.VectorDim > 0 && gotDim != ns.VectorDim {
-			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-			return
-		}
-
-		kh, err := knowledgeHandlerForNS(&ns, embedder)
-		if err != nil {
-			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-			return
-		}
-		oldIDs := parseRecordIDs(oldRecordIDs)
-		if len(oldIDs) > 0 {
-			_ = kh.Delete(ctx, oldIDs, &knowledge.DeleteOptions{Namespace: strings.TrimSpace(doc.Namespace)})
-			// Delete from keyword index (best-effort).
-			if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
-				for _, rid := range oldIDs {
-					_ = eng.Delete(ctx, rid)
-				}
-			}
-		}
-
-		now := time.Now().UTC()
-		records := make([]knowledge.Record, 0, len(chunks))
-		recordIDs := make([]string, 0, len(chunks))
-		for i, ch := range chunks {
-			rid := uuid.NewString()
-			recordIDs = append(recordIDs, rid)
-			v64 := vecs[i]
-			v32 := make([]float32, 0, len(v64))
-			for _, x := range v64 {
-				v32 = append(v32, float32(x))
-			}
-			records = append(records, knowledge.Record{
-				ID:      rid,
-				Source:  "upload",
-				Title:   fileName,
-				Content: ch.Text,
-				Vector:  v32,
-				Metadata: map[string]any{
-					"doc_id":        fmt.Sprintf("%d", doc.ID),
-					"file_name":     fileName,
-					"file_hash":     fileHash,
-					"section_index": ch.Idx,
-				},
-				CreatedAt: now,
-				UpdatedAt: now,
-			})
-		}
-		if err := kh.Upsert(ctx, records, &knowledge.UpsertOptions{Namespace: strings.TrimSpace(doc.Namespace), Overwrite: true, BatchSize: 64}); err != nil {
-			h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-			return
-		}
-
-		textURL := ""
-		if u, upErr := uploadMarkdownToStore(orgID, doc.Namespace, doc.ID, fileName, mdText); upErr == nil && u != "" {
-			textURL = u
-		}
-
-		// Update keyword index (best-effort).
-		if eng, err := knowledgeSearchFromEnv(); err == nil && eng != nil {
-			_ = eng.IndexBatch(ctx, func() []search.Doc {
-				docs := make([]search.Doc, 0, len(records))
-				for _, r := range records {
-					docs = append(docs, search.Doc{
-						ID:   r.ID,
-						Type: "knowledge_record",
-						Fields: map[string]any{
-							"org_id":    fmt.Sprintf("%d", orgID),
-							"namespace": strings.TrimSpace(doc.Namespace),
-							"doc_id":    fmt.Sprintf("%d", doc.ID),
-							"title":     r.Title,
-							"content":   r.Content,
-							"file_hash": fileHash,
-							"source":    "upload",
-						},
-					})
-				}
-				return docs
-			}())
-		}
-		h.knowledgeDocFinalizeSuccess(orgID, doc.ID, recordIDs, textURL)
-	}(orgID, nsRow, *doc, oldRecordIDs, fh.Filename, fileHash, b)
-
-	response.Success(c, "已提交后台处理", gin.H{"document": doc})
+	response.Success(c, "已提交后台处理", gin.H{"document": doc, "task_id": task.ID})
 }
 
 func (h *Handlers) knowledgeDocumentDeleteHandler(c *gin.Context) {

@@ -4,23 +4,11 @@ package constants
 // SPDX-License-Identifier: AGPL-3.0
 
 const (
-	USER_TABLE_NAME                      = "users"
-	USER_CREDENTIAL_TABLE_NAME           = "user_credentials"
-	USER_DEVICE_TABLE_NAME               = "user_devices"
-	LOGIN_HISTORY_TABLE_NAME             = "login_histories"
-	ACCOUNT_LOCK_TABLE_NAME              = "account_locks"
-	ACCOUNT_DELETION_SCHEDULE_TABLE_NAME = "account_deletion_schedules"
-	CALL_RECORDING_TABLE_NAME            = "call_recordings"
-	DEVICE_ERROR_LOG_TABLE_NAME          = "device_error_logs"
-	SIP_USER_TABLE_NAME                  = "sip_users"
-	SIP_CALL_TABLE_NAME                  = "sip_calls"
-	SIP_CAMPAIGN_TABLE_NAME              = "sip_campaigns"
-	SIP_CAMPAIGN_CONTACT_TABLE_NAME      = "sip_campaign_contacts"
-	SIP_CALL_ATTEMPT_TABLE_NAME          = "sip_call_attempts"
-	SIP_SCRIPT_RUN_TABLE_NAME            = "sip_script_runs"
-	SIP_CAMPAIGN_EVENT_TABLE_NAME        = "sip_campaign_events"
-	SIP_SCRIPT_TEMPLATE_TABLE_NAME       = "sip_script_templates"
-	ACD_POOL_TARGET_TABLE_NAME           = "acd_pool_targets" // ACD: unified SIP + Web routing pool (targets + weights)
+	USER_TABLE_NAME            = "users"
+	USER_CREDENTIAL_TABLE_NAME = "user_credentials"
+	USER_DEVICE_TABLE_NAME     = "user_devices"
+	LOGIN_HISTORY_TABLE_NAME   = "login_histories"
+	ACCOUNT_LOCK_TABLE_NAME    = "account_locks"
 )
 
 // Default Value: 1024
@@ -69,19 +57,9 @@ const KEY_SITE_RESET_PASSWORD_DONE_API = "SITE_RESET_PASSWORD_DONE_API"
 const KEY_SITE_LOGIN_NEXT = "SITE_LOGIN_NEXT"
 const KEY_SITE_USER_ID_TYPE = "SITE_USER_ID_TYPE"
 const KEY_USER_ACTIVATED = "USER_ACTIVATED"
-const KEY_STORAGE_KIND = "STORAGE_KIND"
-
-// Search configuration keys
-const KEY_SEARCH_ENABLED = "SEARCH_ENABLED"
-const KEY_SEARCH_PATH = "SEARCH_PATH"
-const KEY_SEARCH_BATCH_SIZE = "SEARCH_BATCH_SIZE"
-const KEY_SEARCH_INDEX_SCHEDULE = "SEARCH_INDEX_SCHEDULE"
 const ENV_STATIC_PREFIX = "STATIC_PREFIX"
 const ENV_STATIC_ROOT = "STATIC_ROOT"
-
 const AUTHORIZATION_PREFIX = "Bearer "
-const CREDENTIAL_API_KEY = "X-API-KEY"
-const CREDENTIAL_API_SECRET = "X-API-SECRET"
 const SigInitSystemConfig = "system.init"
 const (
 	DatabaseTypeMySQL      = "mysql"

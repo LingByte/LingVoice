@@ -142,6 +142,11 @@ const menuGroups: MenuGroup[] = [
         label: '知识库管理',
         icon: <Database size={16} strokeWidth={1.85} />,
       },
+      {
+        key: '/tasks',
+        label: '任务管理',
+        icon: <ClipboardList size={16} strokeWidth={1.85} />,
+      },
     ],
   },
   {
@@ -198,6 +203,7 @@ const menuGroups: MenuGroup[] = [
 function menuPathSelected(pathname: string, itemKey: string): boolean {
   if (itemKey === '/dashboard') return pathname === '/dashboard' || pathname === '/quotas'
   if (itemKey === '/notify/channels') return pathname.startsWith('/notify/channels')
+  if (itemKey === '/tasks') return pathname.startsWith('/tasks')
   if (itemKey === '/knowledge') return pathname.startsWith('/knowledge')
   if (itemKey === '/notify/mail-templates') return pathname.startsWith('/notify/mail-templates')
   if (itemKey === '/notify/mail-logs') return pathname.startsWith('/notify/mail-logs')

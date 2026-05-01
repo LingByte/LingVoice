@@ -16,6 +16,7 @@ import (
 	"github.com/LingByte/LingVoice/internal/listeners"
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/constants"
+	"github.com/LingByte/LingVoice/pkg/joblet"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/middleware"
 	"github.com/LingByte/LingVoice/pkg/notification/mail"
@@ -106,6 +107,7 @@ func main() {
 				&models.AgentStep{},
 				&models.KnowledgeNamespace{},
 				&models.KnowledgeDocument{},
+				&joblet.TaskRecord{},
 			}
 		},
 	})
@@ -114,6 +116,25 @@ func main() {
 		return
 	}
 	listeners.InitApplicationListeners(db, zap.L())
+
+	// Init joblet default pool with DB persistence.
+	if dbLogger, err := joblet.NewDBTaskLogger(db); err == nil && dbLogger != nil {
+		logger.Info("joblet.init.db_logger_ok")
+		joblet.SetGlobalDBTaskLogger(dbLogger)
+		if p, err := joblet.NewPool[any, any](joblet.PoolOptions{
+			MaxWorkers: 8,
+			QueueCap:   1024,
+			Policy:     joblet.RejectPolicyBlock,
+			Log:        dbLogger,
+			DeadCap:    1024,
+		}); err == nil && p != nil {
+			joblet.SetDefaultPool(p)
+			logger.Info("joblet.init.default_pool_ok")
+		}
+	} else if err != nil {
+		logger.Error("joblet.init.db_logger_failed", zap.Error(err))
+	}
+
 	if err := bootstrap.InitializeKeyManager(); err != nil {
 		logger.Error("key manager initialization failed", zap.Error(err))
 		return

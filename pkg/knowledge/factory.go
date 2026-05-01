@@ -11,37 +11,6 @@ import (
 	"github.com/LingByte/LingVoice/pkg/utils/base"
 )
 
-// envFirst returns the first non-empty trimmed value from the given env keys.
-func envFirst(keys ...string) string {
-	for _, k := range keys {
-		if v := strings.TrimSpace(base.GetEnv(k)); v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func envCSVList(keys ...string) []string {
-	var out []string
-	seen := make(map[string]struct{})
-	for _, k := range keys {
-		raw := strings.TrimSpace(base.GetEnv(k))
-		if raw == "" {
-			continue
-		}
-		for _, p := range strings.Split(raw, ",") {
-			if s := strings.TrimSpace(p); s != "" {
-				if _, ok := seen[s]; ok {
-					continue
-				}
-				seen[s] = struct{}{}
-				out = append(out, s)
-			}
-		}
-	}
-	return out
-}
-
 // HandlerFactoryParams selects and configures a KnowledgeHandler (reads Qdrant / Milvus settings from environment).
 type HandlerFactoryParams struct {
 	// Provider is ProviderQdrant or ProviderMilvus (see constants in this package).

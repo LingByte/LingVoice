@@ -102,7 +102,8 @@ export function KnowledgeNamespaceDetailPage() {
     setUploading(true)
     try {
       const res = await uploadKnowledgeDocument(namespaceID, file)
-      Message.success('已提交后台处理（请稍后刷新查看结果）')
+      const taskId = (res as any)?.task_id as string | undefined
+      Message.success(taskId ? `已提交后台处理，task_id=${taskId}` : '已提交后台处理（请稍后刷新查看结果）')
       setSelectedDocId(res.document.id)
       await loadDocs()
     } catch (e) {
@@ -116,7 +117,8 @@ export function KnowledgeNamespaceDetailPage() {
     setRowUploadingID(docId)
     try {
       const res = await reuploadKnowledgeDocument(docId, file)
-      Message.success('已提交后台处理（请稍后刷新查看结果）')
+      const taskId = res.task_id
+      Message.success(taskId ? `已提交后台处理，task_id=${taskId}` : '已提交后台处理（请稍后刷新查看结果）')
       setSelectedDocId(res.document.id)
       await loadDocs()
     } catch (e) {
