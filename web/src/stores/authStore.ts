@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { parseLoginResponseData, type AuthSession, type AuthUser } from '@/api/auth'
+import { syncLocaleFromAuthUser } from '@/locale/sync'
 
 /** localStorage key for access JWT; axios reads this if Zustand has not hydrated yet. */
 export const AUTH_ACCESS_TOKEN_KEY = 'auth_token'
@@ -102,6 +103,8 @@ export function persistAuthSession(sessionOrRaw: AuthSession | unknown): AuthSes
     user: session.user,
     sessionMeta: meta,
   })
+
+  syncLocaleFromAuthUser(session.user)
 
   return session
 }

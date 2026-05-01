@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Avatar, Button, Card, Form, Input, Message, Progress, Select, Tag, Typography, Upload } from '@arco-design/web-react'
 import { Key, Lock, LogOut, Pencil, Save, Settings, Shield, User, X } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -12,6 +13,8 @@ import {
   uploadUserAvatar,
 } from '@/api/auth'
 import { ProfileSettingsSection } from '@/components/profile/ProfileSettingsSection'
+import { syncLocaleFromAuthUser } from '@/locale/sync'
+import { coerceAppLocale } from '@/locale/storage'
 import { useAuthStore } from '@/stores/authStore'
 import { cn } from '@/lib/cn'
 
@@ -92,13 +95,11 @@ const TIMEZONES = [
   'UTC',
 ]
 
-const LOCALES = [
-  { value: 'zh-CN', label: '简体中文' },
-  { value: 'zh-TW', label: '繁體中文' },
-  { value: 'en-US', label: 'English' },
-  { value: 'ja-JP', label: '日本語' },
-  { value: 'ko-KR', label: '한국어' },
-]
+const PROFILE_LOCALE_VALUES = ['zh-CN', 'en', 'ja'] as const
+
+function profileLocaleFormValue(raw?: string | null): string {
+  return coerceAppLocale(raw) ?? 'zh-CN'
+}
 
 const GENDER_OPTIONS = [
   { value: 'male', label: '男' },
@@ -133,6 +134,7 @@ const NAV_PASSWORD: { key: 'password'; label: string; icon: typeof Lock } = {
 }
 
 export function ProfilePage() {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const authUser = useAuthStore((s) => s.user)
@@ -154,9 +156,9 @@ export function ProfilePage() {
   const [codeSending, setCodeSending] = useState(false)
 
   useEffect(() => {
-    const t = searchParams.get('tab')
-    if (t === 'settings') setActiveKey('settings')
-    else if (t === 'password') setActiveKey('password')
+    const tab = searchParams.get('tab')
+    if (tab === 'settings') setActiveKey('settings')
+    else if (tab === 'password') setActiveKey('password')
     else setActiveKey('profile')
   }, [searchParams])
 
@@ -170,7 +172,7 @@ export function ProfilePage() {
         city: authUser.city || '',
         region: authUser.region || '',
         timezone: authUser.timezone || 'Asia/Shanghai',
-        locale: authUser.locale || 'zh-CN',
+        locale: profileLocaleFormValue(authUser.locale),
       })
     }
   }, [authUser, form])
@@ -229,7 +231,7 @@ export function ProfilePage() {
         city: authUser.city || '',
         region: authUser.region || '',
         timezone: authUser.timezone || 'Asia/Shanghai',
-        locale: authUser.locale || 'zh-CN',
+        locale: profileLocaleFormValue(authUser.locale),
       })
     }
   }
@@ -249,6 +251,7 @@ export function ProfilePage() {
         timezone: values.timezone,
       })
       setUser(updatedUser)
+      syncLocaleFromAuthUser(updatedUser)
       Message.success('保存成功')
       setIsEditing(false)
     } catch (error) {
@@ -628,9 +631,13 @@ export function ProfilePage() {
                 <div className="grid grid-cols-2 gap-4">
                   <Form.Item label="语言" field="locale" rules={[{ required: true }]}>
                     <Select placeholder="选择语言">
-                      {LOCALES.map((opt) => (
-                        <Option key={opt.value} value={opt.value}>
-                          {opt.label}
+                      {PROFILE_LOCALE_VALUES.map((value) => (
+                        <Option key={value} value={value}>
+                          {value === 'zh-CN'
+                            ? t('locale.zhCN')
+                            : value === 'en'
+                              ? t('locale.en')
+                              : t('locale.ja')}
                         </Option>
                       ))}
                     </Select>

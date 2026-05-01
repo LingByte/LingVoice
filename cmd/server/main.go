@@ -11,6 +11,7 @@ import (
 
 	"github.com/LingByte/LingVoice"
 	"github.com/LingByte/LingVoice/cmd/bootstrap"
+	"github.com/LingByte/LingVoice/i18n"
 	"github.com/LingByte/LingVoice/internal/config"
 	"github.com/LingByte/LingVoice/internal/handlers"
 	"github.com/LingByte/LingVoice/internal/listeners"
@@ -117,6 +118,25 @@ func main() {
 	}
 	listeners.InitApplicationListeners(db, zap.L())
 
+	if err := i18n.Init(); err != nil {
+		logger.Error("i18n init failed", zap.Error(err))
+		return
+	}
+	i18n.SetUserLangLoader(func(c *gin.Context) string {
+		if c == nil {
+			return ""
+		}
+		u := models.CurrentUser(c)
+		if u == nil {
+			return ""
+		}
+		var p models.UserProfile
+		if err := db.Select("locale").Where("user_id = ?", u.ID).First(&p).Error; err != nil {
+			return ""
+		}
+		return strings.TrimSpace(p.Locale)
+	})
+
 	// Init joblet default pool with DB persistence.
 	if dbLogger, err := joblet.NewDBTaskLogger(db); err == nil && dbLogger != nil {
 		logger.Info("joblet.init.db_logger_ok")
@@ -179,6 +199,8 @@ func main() {
 
 	// Logger Handle Middleware
 	r.Use(middleware.LoggerMiddleware(zap.L()))
+
+	r.Use(middleware.AcceptLanguage())
 
 	// 18. Register Routes
 	app.RegisterRoutes(r)

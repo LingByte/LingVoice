@@ -1,10 +1,10 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ConfigProvider } from '@arco-design/web-react'
 import { setCreateRoot } from '@arco-design/web-react/es/_util/react-dom'
-import zhCN from '@arco-design/web-react/es/locale/zh-CN'
 import '@arco-design/web-react/dist/css/arco.css'
 import './index.css'
+import '@/locale/i18n'
+import { AppLocaleRoot } from '@/locale/AppLocaleRoot'
 import '@/stores/colorMode'
 import App from '@/App.tsx'
 
@@ -13,8 +13,8 @@ setCreateRoot(createRoot)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ConfigProvider locale={zhCN}>
+    <AppLocaleRoot>
       <App />
-    </ConfigProvider>
+    </AppLocaleRoot>
   </StrictMode>,
 )

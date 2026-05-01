@@ -1,3 +1,5 @@
+import { useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Button, Layout, Menu, Tooltip } from '@arco-design/web-react'
 import {
   BarChart3,
@@ -46,159 +48,85 @@ type MenuGroup = {
   items: MenuItem[]
 }
 
-const menuGroups: MenuGroup[] = [
+type MenuItemDef = {
+  key: string
+  labelKey: string
+  icon: React.ReactNode
+}
+
+type MenuGroupDef = {
+  key: string
+  titleKey: string
+  adminOnly?: boolean
+  sectionBreakBefore?: boolean
+  items: MenuItemDef[]
+}
+
+const MENU_GROUP_DEFS: MenuGroupDef[] = [
   {
     key: 'play',
-    title: '演练场',
+    titleKey: 'nav.groupPlay',
     items: [
-      {
-        key: '/',
-        label: '聊天',
-        icon: <MessageSquare size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/channels/llm-plaza',
-        label: '模型广场',
-        icon: <Store size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/dashboard',
-        label: '数据面板',
-        icon: <LayoutDashboard size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/usage/llm-logs',
-        label: '使用日志',
-        icon: <ScrollText size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/docs',
-        label: '文档',
-        icon: <FileText size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/about',
-        label: '关于',
-        icon: <Info size={16} strokeWidth={1.85} />,
-      },
+      { key: '/', labelKey: 'nav.chat', icon: <MessageSquare size={16} strokeWidth={1.85} /> },
+      { key: '/channels/llm-plaza', labelKey: 'nav.modelPlaza', icon: <Store size={16} strokeWidth={1.85} /> },
+      { key: '/dashboard', labelKey: 'nav.dashboard', icon: <LayoutDashboard size={16} strokeWidth={1.85} /> },
+      { key: '/usage/llm-logs', labelKey: 'nav.usageLogs', icon: <ScrollText size={16} strokeWidth={1.85} /> },
+      { key: '/docs', labelKey: 'nav.docs', icon: <FileText size={16} strokeWidth={1.85} /> },
+      { key: '/about', labelKey: 'nav.about', icon: <Info size={16} strokeWidth={1.85} /> },
     ],
   },
   {
     key: 'llm',
-    title: 'LLM',
+    titleKey: 'nav.groupLlm',
     adminOnly: true,
     items: [
-      {
-        key: '/channels/llm',
-        label: 'LLM 渠道',
-        icon: <Cpu size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/channels/llm-abilities',
-        label: 'LLM 能力',
-        icon: <Layers size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/channels/llm-model-metas',
-        label: '模型元数据',
-        icon: <BookOpen size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/notify/llm-usage',
-        label: 'LLM 用量',
-        icon: <BarChart3 size={16} strokeWidth={1.85} />,
-      },
+      { key: '/channels/llm', labelKey: 'nav.llmChannels', icon: <Cpu size={16} strokeWidth={1.85} /> },
+      { key: '/channels/llm-abilities', labelKey: 'nav.llmAbilities', icon: <Layers size={16} strokeWidth={1.85} /> },
+      { key: '/channels/llm-model-metas', labelKey: 'nav.llmModelMetas', icon: <BookOpen size={16} strokeWidth={1.85} /> },
+      { key: '/notify/llm-usage', labelKey: 'nav.llmUsage', icon: <BarChart3 size={16} strokeWidth={1.85} /> },
     ],
   },
   {
     key: 'speech',
-    title: '语音',
+    titleKey: 'nav.groupSpeech',
     adminOnly: true,
     items: [
-      {
-        key: '/channels/asr',
-        label: 'ASR 渠道',
-        icon: <Mic size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/channels/tts',
-        label: 'TTS 渠道',
-        icon: <Volume2 size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/notify/speech-usage',
-        label: '语音用量',
-        icon: <Mic2 size={16} strokeWidth={1.85} />,
-      },
+      { key: '/channels/asr', labelKey: 'nav.asrChannels', icon: <Mic size={16} strokeWidth={1.85} /> },
+      { key: '/channels/tts', labelKey: 'nav.ttsChannels', icon: <Volume2 size={16} strokeWidth={1.85} /> },
+      { key: '/notify/speech-usage', labelKey: 'nav.speechUsage', icon: <Mic2 size={16} strokeWidth={1.85} /> },
     ],
   },
   {
     key: 'knowledge',
-    title: '知识库',
+    titleKey: 'nav.groupKnowledge',
     adminOnly: true,
     items: [
-      {
-        key: '/knowledge',
-        label: '知识库管理',
-        icon: <Database size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/tasks',
-        label: '任务管理',
-        icon: <ClipboardList size={16} strokeWidth={1.85} />,
-      },
+      { key: '/knowledge', labelKey: 'nav.knowledgeBases', icon: <Database size={16} strokeWidth={1.85} /> },
+      { key: '/tasks', labelKey: 'nav.knowledgeTasks', icon: <ClipboardList size={16} strokeWidth={1.85} /> },
     ],
   },
   {
     key: 'notify',
-    title: '通知',
+    titleKey: 'nav.groupNotify',
     adminOnly: true,
     items: [
-      {
-        key: '/notify/channels',
-        label: '通知渠道',
-        icon: <RadioTower size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/notify/mail-templates',
-        label: '邮件模版',
-        icon: <LayoutTemplate size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/notify/mail-logs',
-        label: '邮件日志',
-        icon: <ScrollText size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/notify/sms-logs',
-        label: '短信日志',
-        icon: <ScrollText size={16} strokeWidth={1.85} />,
-      },
+      { key: '/notify/channels', labelKey: 'nav.notifyChannels', icon: <RadioTower size={16} strokeWidth={1.85} /> },
+      { key: '/notify/mail-templates', labelKey: 'nav.mailTemplates', icon: <LayoutTemplate size={16} strokeWidth={1.85} /> },
+      { key: '/notify/mail-logs', labelKey: 'nav.mailLogs', icon: <ScrollText size={16} strokeWidth={1.85} /> },
+      { key: '/notify/sms-logs', labelKey: 'nav.smsLogs', icon: <ScrollText size={16} strokeWidth={1.85} /> },
     ],
   },
   {
     key: 'system',
-    title: '系统',
+    titleKey: 'nav.groupSystem',
     adminOnly: true,
     items: [
-      {
-        key: '/admin/agent-runs',
-        label: 'Agent 运行',
-        icon: <Bot size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/admin/users',
-        label: '用户管理',
-        icon: <Users size={16} strokeWidth={1.85} />,
-      },
-      {
-        key: '/admin/announcements',
-        label: '公告管理',
-        icon: <ClipboardList size={16} strokeWidth={1.85} />,
-      },
+      { key: '/admin/agent-runs', labelKey: 'nav.agentRuns', icon: <Bot size={16} strokeWidth={1.85} /> },
+      { key: '/admin/users', labelKey: 'nav.users', icon: <Users size={16} strokeWidth={1.85} /> },
+      { key: '/admin/announcements', labelKey: 'nav.announcements', icon: <ClipboardList size={16} strokeWidth={1.85} /> },
     ],
   },
-] as const
+]
 
 function menuPathSelected(pathname: string, itemKey: string): boolean {
   if (itemKey === '/dashboard') return pathname === '/dashboard' || pathname === '/quotas'
@@ -238,6 +166,7 @@ function menuPathSelected(pathname: string, itemKey: string): boolean {
  * margin-right:100vw 藏字等），与自定义侧栏宽度/对齐冲突。收起改用 Tooltip + Button。
  */
 export function AppSidebar() {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
@@ -245,6 +174,20 @@ export function AppSidebar() {
   const colorMode = useColorModeStore((s) => s.mode)
   const user = useAuthStore((s) => s.user)
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin'
+
+  const menuGroups = useMemo((): MenuGroup[] => {
+    return MENU_GROUP_DEFS.map((g) => ({
+      key: g.key,
+      title: t(g.titleKey),
+      adminOnly: g.adminOnly,
+      sectionBreakBefore: g.sectionBreakBefore,
+      items: g.items.map((it) => ({
+        key: it.key,
+        label: t(it.labelKey),
+        icon: it.icon,
+      })),
+    }))
+  }, [t])
 
   const visibleGroups = menuGroups.filter(
     (group) => !group.adminOnly || isAdmin
@@ -278,7 +221,7 @@ export function AppSidebar() {
               type="text"
               size="mini"
               className="shrink-0 !h-8 !min-w-8 !px-0"
-              aria-label="收起侧栏"
+              aria-label={t('nav.collapseSidebar')}
               icon={<PanelLeftClose size={16} />}
               onClick={() => setCollapsed(true)}
             />
@@ -297,7 +240,7 @@ export function AppSidebar() {
                 type="text"
                 size="mini"
                 className="!flex !h-8 !w-8 !min-w-8 !items-center !justify-center !p-0"
-                aria-label="展开侧栏"
+                aria-label={t('nav.expandSidebar')}
                 icon={<PanelLeft size={16} strokeWidth={1.85} />}
                 onClick={() => setCollapsed(false)}
               />
@@ -315,7 +258,7 @@ export function AppSidebar() {
           {collapsed ? (
             <nav
               className="sidebar-collapsed-nav flex flex-col items-center gap-2 py-2"
-              aria-label="主导航"
+              aria-label={t('nav.mainNav')}
             >
               {visibleItems.map((item) => {
                 const selected = menuPathSelected(location.pathname, item.key)

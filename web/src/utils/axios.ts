@@ -4,6 +4,8 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from 'axios'
 import { getApiBaseURL } from '@/config/apiConfig'
+import { acceptLanguageHeader } from '@/locale/acceptLanguage'
+import { useLocaleStore } from '@/locale/store'
 import { AUTH_ACCESS_TOKEN_KEY, useAuthStore } from '@/stores/authStore'
 import { redirectUnauthorizedToHome } from '@/utils/authSession'
 
@@ -39,6 +41,8 @@ axiosInstance.interceptors.request.use(
     if (config.data instanceof FormData) {
       delete config.headers['Content-Type']
     }
+
+    config.headers['Accept-Language'] = acceptLanguageHeader(useLocaleStore.getState().locale)
 
     if (config.params) {
       config.params = { ...config.params, _t: Date.now() }

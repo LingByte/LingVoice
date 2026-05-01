@@ -2,6 +2,7 @@ package i18n
 
 import (
 	"embed"
+	"os"
 	"strings"
 	"sync"
 
@@ -13,13 +14,16 @@ import (
 )
 
 const (
-	LangZhCN    = "zh-CN"
-	LangZhTW    = "zh-TW"
-	LangEn      = "en"
-	DefaultLang = LangEn // Fallback to English if language not supported
+	LangZhCN = "zh-CN"
+	LangZhTW = "zh-TW"
+	LangEn   = "en"
+	LangJa   = "ja"
+	// GinContextKeyLanguage is where middleware stores the normalized Accept-Language tag.
+	GinContextKeyLanguage = "lingvoice.i18n.accept_language"
+	DefaultLang           = LangEn // Fallback when no match (overridable via LINGVOICE_DEFAULT_LANG)
 )
 
-//go:embed locales/*.yaml
+//go:embed locales/zh-CN.yaml locales/zh-TW.yaml locales/en.yaml locales/ja.yaml
 var localeFS embed.FS
 
 var (
@@ -27,6 +31,9 @@ var (
 	localizers = make(map[string]*i18n.Localizer)
 	mu         sync.RWMutex
 	initOnce   sync.Once
+	// globalDefaultLang is the process-wide fallback after context/header/user resolution (env LINGVOICE_DEFAULT_LANG).
+	globalDefaultLang = DefaultLang
+	globalDefaultMu   sync.RWMutex
 )
 
 type UserSetting struct {
@@ -59,15 +66,24 @@ func GetContextKeyType[T any](c *gin.Context, key string) (T, bool) {
 	return t, false
 }
 
-// Init initializes the i18n bundle and loads all translation files
+// Init initializes the i18n bundle and loads all translation files.
+// Call once at process startup (e.g. cmd/server/main.go after config load).
 func Init() error {
 	var initErr error
 	initOnce.Do(func() {
-		bundle = i18n.NewBundle(language.Chinese)
+		if v := strings.TrimSpace(os.Getenv("LINGVOICE_DEFAULT_LANG")); v != "" {
+			nv := normalizeLang(v)
+			if IsSupported(nv) {
+				globalDefaultMu.Lock()
+				globalDefaultLang = nv
+				globalDefaultMu.Unlock()
+			}
+		}
+
+		bundle = i18n.NewBundle(language.English)
 		bundle.RegisterUnmarshalFunc("yaml", yaml.Unmarshal)
 
-		// Load embedded translation files
-		files := []string{"locales/zh-CN.yaml", "locales/zh-TW.yaml", "locales/en.yaml"}
+		files := []string{"locales/zh-CN.yaml", "locales/zh-TW.yaml", "locales/en.yaml", "locales/ja.yaml"}
 		for _, file := range files {
 			_, err := bundle.LoadMessageFileFS(localeFS, file)
 			if err != nil {
@@ -76,15 +92,21 @@ func Init() error {
 			}
 		}
 
-		// Pre-create localizers for supported languages
 		localizers[LangZhCN] = i18n.NewLocalizer(bundle, LangZhCN)
 		localizers[LangZhTW] = i18n.NewLocalizer(bundle, LangZhTW)
 		localizers[LangEn] = i18n.NewLocalizer(bundle, LangEn)
+		localizers[LangJa] = i18n.NewLocalizer(bundle, LangJa)
 
-		// Set the TranslateMessage function in common package
 		TranslateMessage = T
 	})
 	return initErr
+}
+
+// GlobalDefaultLang returns the configured process default (LINGVOICE_DEFAULT_LANG or built-in default).
+func GlobalDefaultLang() string {
+	globalDefaultMu.RLock()
+	defer globalDefaultMu.RUnlock()
+	return globalDefaultLang
 }
 
 // GetLocalizer returns a localizer for the specified language
@@ -139,12 +161,12 @@ func Translate(lang, key string, args ...map[string]any) string {
 	return msg
 }
 
-// userLangLoaderFunc is a function that loads user language from database/cache
-// It's set by the model package to avoid circular imports
-var userLangLoaderFunc func(userId int) string
+// userLangLoaderFunc resolves language from the active request (e.g. user profile in DB).
+var userLangLoaderFunc func(c *gin.Context) string
 
-// SetUserLangLoader sets the function to load user language (called from model package)
-func SetUserLangLoader(loader func(userId int) string) {
+// SetUserLangLoader registers how to load a signed-in user's preferred locale from DB/cache.
+// Return "" to fall through to Accept-Language / global default.
+func SetUserLangLoader(loader func(c *gin.Context) string) {
 	userLangLoaderFunc = loader
 }
 
@@ -156,7 +178,7 @@ func SetUserLangLoader(loader func(userId int) string) {
 // 4. Default language (English)
 func GetLangFromContext(c *gin.Context) string {
 	if c == nil {
-		return DefaultLang
+		return GlobalDefaultLang()
 	}
 
 	// 1. Try to get language from user settings (if already loaded by TokenAuth or other middleware)
@@ -169,30 +191,25 @@ func GetLangFromContext(c *gin.Context) string {
 		}
 	}
 
-	// 2. Lazy load user language using user ID (for session-based auth where full settings aren't loaded)
+	// 2. Lazy load from signed-in user (e.g. user_profiles.locale), via SetUserLangLoader.
 	if userLangLoaderFunc != nil {
-		if userId, exists := c.Get("id"); exists {
-			if uid, ok := userId.(int); ok && uid > 0 {
-				lang := userLangLoaderFunc(uid)
-				if lang != "" {
-					normalized := normalizeLang(lang)
-					if IsSupported(normalized) {
-						return normalized
-					}
-				}
+		if lang := userLangLoaderFunc(c); lang != "" {
+			normalized := normalizeLang(lang)
+			if IsSupported(normalized) {
+				return normalized
 			}
 		}
 	}
 
-	// 3. Try to get language from context (set by I18n middleware from Accept-Language)
-	if lang := c.GetString(string("language")); lang != "" {
+	// 3. Normalized tag from AcceptLanguage middleware
+	if lang := c.GetString(GinContextKeyLanguage); lang != "" {
 		normalized := normalizeLang(lang)
 		if IsSupported(normalized) {
 			return normalized
 		}
 	}
 
-	// 4. Try Accept-Language header directly (fallback if middleware didn't run)
+	// 4. Accept-Language header if middleware did not run
 	if acceptLang := c.GetHeader("Accept-Language"); acceptLang != "" {
 		lang := ParseAcceptLanguage(acceptLang)
 		if IsSupported(lang) {
@@ -200,22 +217,20 @@ func GetLangFromContext(c *gin.Context) string {
 		}
 	}
 
-	return DefaultLang
+	return GlobalDefaultLang()
 }
 
 // ParseAcceptLanguage parses the Accept-Language header and returns the preferred language
 func ParseAcceptLanguage(header string) string {
 	if header == "" {
-		return DefaultLang
+		return GlobalDefaultLang()
 	}
 
-	// Simple parsing: take the first language tag
 	parts := strings.Split(header, ",")
 	if len(parts) == 0 {
-		return DefaultLang
+		return GlobalDefaultLang()
 	}
 
-	// Get the first language and remove quality value
 	firstLang := strings.TrimSpace(parts[0])
 	if idx := strings.Index(firstLang, ";"); idx > 0 {
 		firstLang = firstLang[:idx]
@@ -227,23 +242,28 @@ func ParseAcceptLanguage(header string) string {
 // normalizeLang normalizes language code to supported format
 func normalizeLang(lang string) string {
 	lang = strings.ToLower(strings.TrimSpace(lang))
+	if lang == "" {
+		return LangEn
+	}
 
-	// Handle common variations
 	switch {
-	case strings.HasPrefix(lang, "zh-tw"):
+	case strings.HasPrefix(lang, "zh-tw") || lang == "zh_hant":
 		return LangZhTW
 	case strings.HasPrefix(lang, "zh"):
 		return LangZhCN
+	case strings.HasPrefix(lang, "ja"):
+		return LangJa
 	case strings.HasPrefix(lang, "en"):
 		return LangEn
 	default:
-		return DefaultLang
+		// Unknown BCP47 tags: use English catalog; final fallback to process default is GetLangFromContext.
+		return LangEn
 	}
 }
 
 // SupportedLanguages returns a list of supported language codes
 func SupportedLanguages() []string {
-	return []string{LangZhCN, LangZhTW, LangEn}
+	return []string{LangZhCN, LangZhTW, LangEn, LangJa}
 }
 
 // IsSupported checks if a language code is supported

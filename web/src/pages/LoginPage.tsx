@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   Button,
   Form,
@@ -9,6 +10,8 @@ import {
   Typography,
 } from '@arco-design/web-react'
 import { Link, useNavigate } from 'react-router-dom'
+import { useLocaleStore } from '@/locale/store'
+import type { AppLocale } from '@/locale/storage'
 import {
   loginWithEmailCode,
   loginWithPassword,
@@ -19,14 +22,12 @@ import { persistAuthSession } from '@/stores/authStore'
 const { Title } = Typography
 const TabPane = Tabs.TabPane
 
-const LANG_OPTIONS = [
-  { label: '简体中文', value: 'zh-CN' },
-  { label: 'English', value: 'en-US' },
-]
-
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export function LoginPage() {
+  const { t } = useTranslation()
+  const uiLocale = useLocaleStore((s) => s.locale)
+  const setUiLocale = useLocaleStore((s) => s.setLocale)
   const navigate = useNavigate()
   const [pwdForm] = Form.useForm()
   const [emailForm] = Form.useForm()
@@ -41,16 +42,16 @@ export function LoginPage() {
     const email = String(v.email ?? '').trim()
     const password = String(v.password ?? '')
     if (!EMAIL_RE.test(email)) {
-      Message.error('请输入有效邮箱')
+      Message.error(t('auth.invalidEmail'))
       return
     }
     try {
       const session = await loginWithPassword(email, password)
       persistAuthSession(session)
-      Message.success('登录成功')
+      Message.success(t('auth.loginOk'))
       navigate('/', { replace: true })
     } catch (e) {
-      Message.error(e instanceof Error ? e.message : '登录失败')
+      Message.error(e instanceof Error ? e.message : t('auth.loginFail'))
     }
   }
 
@@ -59,16 +60,16 @@ export function LoginPage() {
     if (!v) return
     const email = String(v.email ?? '').trim()
     if (!EMAIL_RE.test(email)) {
-      Message.error('请输入有效邮箱')
+      Message.error(t('auth.invalidEmail'))
       return
     }
     setCodeSending(true)
     try {
       await sendEmailLoginCode(email)
-      Message.success('若该邮箱已注册，将收到验证码邮件，请查收邮箱')
+      Message.success(t('auth.codeSentHint'))
       setCountdown(60)
     } catch (e) {
-      Message.error(e instanceof Error ? e.message : '发送失败')
+      Message.error(e instanceof Error ? e.message : t('auth.sendFail'))
     } finally {
       setCodeSending(false)
     }
@@ -87,21 +88,21 @@ export function LoginPage() {
     const email = String(v.email ?? '').trim()
     const code = String(v.code ?? '').trim()
     if (!EMAIL_RE.test(email)) {
-      Message.error('请输入有效邮箱')
+      Message.error(t('auth.invalidEmail'))
       return
     }
     if (code.replace(/\D/g, '').length < 6) {
-      Message.error('请输入邮件中的 6 位验证码')
+      Message.error(t('auth.codeInvalid'))
       return
     }
     setCodeLoggingIn(true)
     try {
       const session = await loginWithEmailCode(email, code)
       persistAuthSession(session)
-      Message.success('登录成功')
+      Message.success(t('auth.loginOk'))
       navigate('/', { replace: true })
     } catch (e) {
-      Message.error(e instanceof Error ? e.message : '验证码错误或已过期')
+      Message.error(e instanceof Error ? e.message : t('auth.codeWrong'))
     } finally {
       setCodeLoggingIn(false)
     }
@@ -113,11 +114,16 @@ export function LoginPage() {
       <div className="absolute inset-0 bg-gradient-to-br from-purple-500/15 via-pink-400/10 to-blue-500/15 backdrop-blur-sm" />
 
       <div className="absolute right-6 top-6 z-10">
-        <Select
+        <Select<AppLocale>
           size="small"
-          defaultValue="zh-CN"
-          options={LANG_OPTIONS}
-          className="w-32"
+          value={uiLocale}
+          onChange={(v) => setUiLocale(v as AppLocale)}
+          options={[
+            { label: t('locale.zhCN'), value: 'zh-CN' },
+            { label: t('locale.en'), value: 'en' },
+            { label: t('locale.ja'), value: 'ja' },
+          ]}
+          className="w-36"
         />
       </div>
 
@@ -131,7 +137,7 @@ export function LoginPage() {
             className="rounded-2xl shadow-lg shadow-purple-500/40 transition-transform hover:scale-110"
           />
           <Title heading={4} className="!m-0 text-[var(--color-text-1)]">
-            LingVoice
+            {t('auth.brandTitle')}
           </Title>
         </div>
 
@@ -141,7 +147,7 @@ export function LoginPage() {
             onChange={setActiveTab}
             className="mb-2"
           >
-            <TabPane key="password" title="账号密码">
+            <TabPane key="password" title={t('auth.tabPassword')}>
               <Form
                 form={pwdForm}
                 layout="vertical"
@@ -151,24 +157,24 @@ export function LoginPage() {
               >
                 <Form.Item
                   field="email"
-                  label="邮箱"
-                  rules={[{ required: true, message: '请输入邮箱' }]}
+                  label={t('auth.email')}
+                  rules={[{ required: true, message: t('auth.pwdEmailRequired') }]}
                 >
                   <Input
                     size="large"
-                    placeholder="请输入您的邮箱"
+                    placeholder={t('auth.emailPlaceholder')}
                     autoComplete="email"
                     className="!rounded-xl !bg-gray-100/80 !border-transparent hover:!bg-gray-100 focus:!bg-white focus:!border-purple-500 focus:!shadow-[0_0_0_4px_rgba(139,92,246,0.15)] transition-all"
                   />
                 </Form.Item>
                 <Form.Item
                   field="password"
-                  label="密码"
-                  rules={[{ required: true, message: '请输入密码' }]}
+                  label={t('auth.password')}
+                  rules={[{ required: true, message: t('auth.pwdRequired') }]}
                 >
                   <Input.Password
                     size="large"
-                    placeholder="密码"
+                    placeholder={t('auth.passwordPlaceholder')}
                     autoComplete="current-password"
                     className="!rounded-xl !bg-gray-100/80 !border-transparent hover:!bg-gray-100 focus:!bg-white focus:!border-purple-500 focus:!shadow-[0_0_0_4px_rgba(139,92,246,0.15)] transition-all"
                   />
@@ -181,12 +187,12 @@ export function LoginPage() {
                   size="large"
                   className="!h-12 !mb-4 !rounded-xl !text-base !font-semibold !border-none !bg-gradient-to-r !from-purple-500 !via-purple-600 !to-purple-700 !shadow-[0_12px_32px_-12px_rgba(139,92,246,0.5)] hover:!-translate-y-0.5 hover:!shadow-[0_16px_40px_-12px_rgba(139,92,246,0.6)] active:!translate-y-0 active:!shadow-[0_8px_24px_-8px_rgba(139,92,246,0.5)] transition-all"
                 >
-                  登录
+                  {t('auth.login')}
                 </Button>
               </Form>
             </TabPane>
 
-            <TabPane key="email" title="邮箱登录">
+            <TabPane key="email" title={t('auth.tabEmail')}>
               <Form
                 form={emailForm}
                 layout="vertical"
@@ -195,24 +201,24 @@ export function LoginPage() {
               >
                 <Form.Item
                   field="email"
-                  label="邮箱"
-                  rules={[{ required: true, message: '请输入邮箱' }]}
+                  label={t('auth.email')}
+                  rules={[{ required: true, message: t('auth.pwdEmailRequired') }]}
                 >
                   <Input
                     size="large"
-                    placeholder="请输入您的邮箱"
+                    placeholder={t('auth.emailPlaceholder')}
                     autoComplete="email"
                     className="!rounded-xl !bg-gray-100/80 !border-transparent hover:!bg-gray-100 focus:!bg-white focus:!border-purple-500 focus:!shadow-[0_0_0_4px_rgba(139,92,246,0.15)] transition-all"
                   />
                 </Form.Item>
                 <Form.Item
                   field="code"
-                  label="验证码"
-                  rules={[{ required: true, message: '请输入邮件中的验证码' }]}
+                  label={t('auth.code')}
+                  rules={[{ required: true, message: t('auth.codeRequired') }]}
                 >
                   <Input
                     size="large"
-                    placeholder="6 位数字"
+                    placeholder={t('auth.codePlaceholder')}
                     maxLength={16}
                     autoComplete="one-time-code"
                     className="!rounded-xl !bg-gray-100/80 !border-transparent hover:!bg-gray-100 focus:!bg-white focus:!border-purple-500 focus:!shadow-[0_0_0_4px_rgba(139,92,246,0.15)] transition-all"
@@ -225,7 +231,7 @@ export function LoginPage() {
                         onClick={onSendCode}
                         className="px-3"
                       >
-                        {countdown > 0 ? `${countdown}s` : '获取验证码'}
+                        {countdown > 0 ? `${countdown}s` : t('auth.sendCode')}
                       </Button>
                     }
                   />
@@ -238,7 +244,7 @@ export function LoginPage() {
                   loading={codeLoggingIn}
                   onClick={onEmailCodeLogin}
                 >
-                  登录
+                  {t('auth.login')}
                 </Button>
               </Form>
             </TabPane>
@@ -246,7 +252,7 @@ export function LoginPage() {
 
           <div className="flex items-center justify-center gap-2 mb-1 text-sm">
             <Link to="/register" className="text-[var(--color-text-2)] hover:text-purple-600 no-underline">
-              注册账号
+              {t('auth.registerLink')}
             </Link>
           </div>
         </div>
