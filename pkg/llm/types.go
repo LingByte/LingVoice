@@ -78,9 +78,7 @@ type QueryOptions struct {
 	EnableSelfQueryJSONOutput bool
 	// Messages allows callers to pass short-term conversation history explicitly.
 	// Handlers append current user text as the final user turn when needed.
-	Messages []ChatMessage
-
-	// 新增字段用于数据库记录
+	Messages    []ChatMessage
 	SessionID   string // 会话ID
 	UserID      string // 用户ID
 	RequestType string // 请求类型: query, query_stream, rewrite, expand
@@ -206,8 +204,7 @@ const (
 	SignalLLMRequestStart = "llm.request.start"
 	SignalLLMRequestEnd   = "llm.request.end"
 	SignalLLMRequestError = "llm.request.error"
-	// SignalLLMUsage 单次 LLM 调用用量与延迟落库前广播；sender 为 *LLMUsageSignalPayload（见 tracking）。
-	SignalLLMUsage = "llm.usage"
+	SignalLLMUsage        = "llm.usage"
 )
 
 // LLMRequestStartData LLM请求开始信号数据

@@ -30,6 +30,27 @@ type sendVerifyEmailRequest struct {
 	Email string `json:"email" binding:"required"`
 }
 
+type adminPatchUserBody struct {
+	Status             string  `json:"status"`
+	Role               string  `json:"role"`
+	DisplayName        *string `json:"display_name"`
+	Locale             *string `json:"locale"`
+	Phone              *string `json:"phone"`
+	FirstName          *string `json:"first_name"`
+	LastName           *string `json:"last_name"`
+	Avatar             *string `json:"avatar"`
+	Timezone           *string `json:"timezone"`
+	Gender             *string `json:"gender"`
+	City               *string `json:"city"`
+	Region             *string `json:"region"`
+	EmailNotifications *bool   `json:"email_notifications"`
+	PhoneVerified      *bool   `json:"phone_verified"`
+	EmailVerified      *bool   `json:"email_verified"`
+	RemainQuota        *int    `json:"remain_quota"`
+	UsedQuota          *int    `json:"used_quota"`
+	UnlimitedQuota     *bool   `json:"unlimited_quota"`
+}
+
 type registerRequest struct {
 	Email       string `json:"email" binding:"required"`
 	Password    string `json:"password" binding:"required"`
@@ -298,32 +319,8 @@ func (h *Handlers) authRefreshHandler(c *gin.Context) {
 	response.Success(c, "ok", out)
 }
 
-type adminPatchUserBody struct {
-	Status             string  `json:"status"`
-	Role               string  `json:"role"`
-	DisplayName        *string `json:"display_name"`
-	Locale             *string `json:"locale"`
-	Phone              *string `json:"phone"`
-	FirstName          *string `json:"first_name"`
-	LastName           *string `json:"last_name"`
-	Avatar             *string `json:"avatar"`
-	Timezone           *string `json:"timezone"`
-	Gender             *string `json:"gender"`
-	City               *string `json:"city"`
-	Region             *string `json:"region"`
-	EmailNotifications *bool   `json:"email_notifications"`
-	PhoneVerified      *bool   `json:"phone_verified"`
-	EmailVerified      *bool   `json:"email_verified"`
-	RemainQuota        *int    `json:"remain_quota"`
-	UsedQuota          *int    `json:"used_quota"`
-	UnlimitedQuota     *bool   `json:"unlimited_quota"`
-}
-
 // adminUsersListHandler GET /api/admin/users
 func (h *Handlers) adminUsersListHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
 	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
@@ -399,9 +396,6 @@ func (h *Handlers) adminUsersListHandler(c *gin.Context) {
 
 // adminUserDetailHandler GET /api/admin/users/:id
 func (h *Handlers) adminUserDetailHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的用户 id", nil)
@@ -423,9 +417,6 @@ func (h *Handlers) adminUserDetailHandler(c *gin.Context) {
 // adminUserPatchHandler PATCH /api/admin/users/:id
 func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 	op := models.CurrentUser(c)
-	if !models.RequireAdmin(c) {
-		return
-	}
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的用户 id", nil)
@@ -565,9 +556,6 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 // adminUserDeleteHandler DELETE /api/admin/users/:id（软删除；不可删除本人；非超管不可删超级管理员）
 func (h *Handlers) adminUserDeleteHandler(c *gin.Context) {
 	op := models.CurrentUser(c)
-	if !models.RequireAdmin(c) {
-		return
-	}
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的用户 id", nil)

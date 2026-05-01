@@ -13,9 +13,9 @@ import (
 	"time"
 )
 
-const maxOpenAPIAttemptErrBytes = 6000
+const maxRelayAttemptErrBytes = 6000
 
-var upstreamOpenAPIHTTPClient = &http.Client{
+var relayUpstreamHTTPClient = &http.Client{
 	Timeout: 0,
 	Transport: &http.Transport{
 		MaxIdleConns:        64,
@@ -25,7 +25,7 @@ var upstreamOpenAPIHTTPClient = &http.Client{
 	},
 }
 
-// UpstreamChannel OpenAPI 上游渠道（由 HTTP 层从 llm_channels 映射而来）。
+// UpstreamChannel maps one DB-backed llm_channels row to an HTTP upstream (key, base URL, org).
 type UpstreamChannel struct {
 	ID                 int
 	Key                string
@@ -40,8 +40,8 @@ func (u UpstreamChannel) baseURLString() string {
 	return strings.TrimSpace(*u.BaseURL)
 }
 
-// OpenAPIProxyResult 非流式多渠道路由执行结果。
-type OpenAPIProxyResult struct {
+// RelayResult aggregates one successful non-stream hop or the final failure after retries (HTTP layer fills Attempts).
+type RelayResult struct {
 	FinalStatus   int
 	FinalBody     []byte
 	FinalHeader   http.Header
@@ -65,8 +65,8 @@ var hopByHopHeaders = map[string]struct{}{
 	"Upgrade":             {},
 }
 
-// CopyOpenAPIProxyResponseHeaders 复制上游响应头（跳过逐跳头）。
-func CopyOpenAPIProxyResponseHeaders(dst http.Header, src http.Header) {
+// CopyRelayResponseHeaders copies safe upstream response headers (skips hop-by-hop).
+func CopyRelayResponseHeaders(dst http.Header, src http.Header) {
 	if dst == nil || src == nil {
 		return
 	}
@@ -111,7 +111,7 @@ func anthropicMessagesURL(base *string) string {
 	return b + "/v1/messages"
 }
 
-func truncateOpenAPIAttemptMsg(s string, maxBytes int) string {
+func truncateRelayAttemptMsg(s string, maxBytes int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= maxBytes {
 		return s
@@ -150,7 +150,7 @@ func openAIExtractError(buf []byte) (code, msg string) {
 		} `json:"error"`
 	}
 	if json.Unmarshal(buf, &wrap) != nil || wrap.Error == nil {
-		return "invalid_response", truncateOpenAPIAttemptMsg(string(buf), maxOpenAPIAttemptErrBytes)
+		return "invalid_response", truncateRelayAttemptMsg(string(buf), maxRelayAttemptErrBytes)
 	}
 	code = strings.TrimSpace(wrap.Error.Type)
 	if code == "" {
@@ -158,9 +158,9 @@ func openAIExtractError(buf []byte) (code, msg string) {
 	}
 	msg = strings.TrimSpace(wrap.Error.Message)
 	if msg == "" {
-		msg = truncateOpenAPIAttemptMsg(string(buf), maxOpenAPIAttemptErrBytes)
+		msg = truncateRelayAttemptMsg(string(buf), maxRelayAttemptErrBytes)
 	} else {
-		msg = truncateOpenAPIAttemptMsg(msg, maxOpenAPIAttemptErrBytes)
+		msg = truncateRelayAttemptMsg(msg, maxRelayAttemptErrBytes)
 	}
 	return code, msg
 }
@@ -192,17 +192,17 @@ func anthropicExtractError(buf []byte) (code, msg string) {
 		} `json:"error"`
 	}
 	if json.Unmarshal(buf, &wrap) != nil {
-		return "invalid_response", truncateOpenAPIAttemptMsg(string(buf), maxOpenAPIAttemptErrBytes)
+		return "invalid_response", truncateRelayAttemptMsg(string(buf), maxRelayAttemptErrBytes)
 	}
 	if wrap.Type == "error" && wrap.Error != nil {
 		code = strings.TrimSpace(wrap.Error.Type)
 		if code == "" {
 			code = "anthropic_error"
 		}
-		msg = truncateOpenAPIAttemptMsg(strings.TrimSpace(wrap.Error.Message), maxOpenAPIAttemptErrBytes)
+		msg = truncateRelayAttemptMsg(strings.TrimSpace(wrap.Error.Message), maxRelayAttemptErrBytes)
 		return code, msg
 	}
-	return "anthropic_error", truncateOpenAPIAttemptMsg(string(buf), maxOpenAPIAttemptErrBytes)
+	return "anthropic_error", truncateRelayAttemptMsg(string(buf), maxRelayAttemptErrBytes)
 }
 
 func doOpenAIUpstreamOnce(ctx context.Context, ch UpstreamChannel, body []byte, accept string) (status int, respBody []byte, respHdr http.Header, err error) {
@@ -219,7 +219,7 @@ func doOpenAIUpstreamOnce(ctx context.Context, ch UpstreamChannel, body []byte, 
 	if ch.OpenAIOrganization != nil && strings.TrimSpace(*ch.OpenAIOrganization) != "" {
 		req.Header.Set("OpenAI-Organization", strings.TrimSpace(*ch.OpenAIOrganization))
 	}
-	resp, err := upstreamOpenAPIHTTPClient.Do(req)
+	resp, err := relayUpstreamHTTPClient.Do(req)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -248,7 +248,7 @@ func doAnthropicUpstreamOnce(ctx context.Context, ch UpstreamChannel, body []byt
 		req.Header.Set("anthropic-beta", anthropicBeta)
 	}
 	req.Header.Set("x-api-key", strings.TrimSpace(ch.Key))
-	resp, err := upstreamOpenAPIHTTPClient.Do(req)
+	resp, err := relayUpstreamHTTPClient.Do(req)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -261,8 +261,8 @@ func doAnthropicUpstreamOnce(ctx context.Context, ch UpstreamChannel, body []byt
 	return resp.StatusCode, b, hdr, nil
 }
 
-// OpenAPINonStreamUpstreamOnceResult 单次上游尝试的原始结果（不包含跨渠道重试策略）。
-type OpenAPINonStreamUpstreamOnceResult struct {
+// RelayOnceResult is one upstream attempt (no cross-channel policy).
+type RelayOnceResult struct {
 	Status     int
 	Body       []byte
 	Header     http.Header
@@ -270,16 +270,16 @@ type OpenAPINonStreamUpstreamOnceResult struct {
 	Attempt    UsageChannelAttempt
 }
 
-// ProxyOpenAINonStreamOnce 仅执行一次 OpenAI 兼容 chat completions 上游调用。
-// 是否“业务成功”（兼容性/返回体结构校验）由 pkg/llm 内的协议判断决定；跨渠道重试由业务层处理。
-func ProxyOpenAINonStreamOnce(ctx context.Context, body []byte, accept string, ch UpstreamChannel, order int) OpenAPINonStreamUpstreamOnceResult {
+// RelayOpenAIChatCompletionsOnce performs a single OpenAI-compatible POST /v1/chat/completions.
+// Business success is judged here; multi-channel retry stays in the HTTP handler.
+func RelayOpenAIChatCompletionsOnce(ctx context.Context, body []byte, accept string, ch UpstreamChannel, order int) RelayOnceResult {
 	t0 := time.Now()
 	status, buf, hdr, netErr := doOpenAIUpstreamOnce(ctx, ch, body, accept)
 	lat := time.Since(t0).Milliseconds()
 	bu := ch.baseURLString()
 
 	if netErr != nil {
-		return OpenAPINonStreamUpstreamOnceResult{
+		return RelayOnceResult{
 			Status:     status,
 			Body:       buf,
 			Header:     hdr,
@@ -292,14 +292,14 @@ func ProxyOpenAINonStreamOnce(ctx context.Context, body []byte, accept string, c
 				LatencyMs:    lat,
 				TTFTMs:       lat,
 				ErrorCode:    "upstream_network",
-				ErrorMessage: truncateOpenAPIAttemptMsg(netErr.Error(), maxOpenAPIAttemptErrBytes),
+				ErrorMessage: truncateRelayAttemptMsg(netErr.Error(), maxRelayAttemptErrBytes),
 			},
 		}
 	}
 
 	businessOK := status >= 200 && status < 300 && openAIBusinessOK(buf)
 	if businessOK {
-		return OpenAPINonStreamUpstreamOnceResult{
+		return RelayOnceResult{
 			Status:     status,
 			Body:       buf,
 			Header:     hdr,
@@ -321,9 +321,9 @@ func ProxyOpenAINonStreamOnce(ctx context.Context, body []byte, accept string, c
 		ec = "upstream_http"
 	}
 	if em == "" {
-		em = truncateOpenAPIAttemptMsg(string(buf), maxOpenAPIAttemptErrBytes)
+		em = truncateRelayAttemptMsg(string(buf), maxRelayAttemptErrBytes)
 	}
-	return OpenAPINonStreamUpstreamOnceResult{
+	return RelayOnceResult{
 		Status:     status,
 		Body:       buf,
 		Header:     hdr,
@@ -342,16 +342,15 @@ func ProxyOpenAINonStreamOnce(ctx context.Context, body []byte, accept string, c
 	}
 }
 
-// ProxyAnthropicNonStreamOnce 仅执行一次 Anthropic /v1/messages 上游调用。
-// 是否“业务成功”（兼容性/返回体结构校验）由 pkg/llm 内的协议判断决定；跨渠道重试由业务层处理。
-func ProxyAnthropicNonStreamOnce(ctx context.Context, body []byte, anthropicVersion, anthropicBeta string, ch UpstreamChannel, order int) OpenAPINonStreamUpstreamOnceResult {
+// RelayAnthropicMessagesOnce performs a single Anthropic POST /v1/messages.
+func RelayAnthropicMessagesOnce(ctx context.Context, body []byte, anthropicVersion, anthropicBeta string, ch UpstreamChannel, order int) RelayOnceResult {
 	t0 := time.Now()
 	status, buf, hdr, netErr := doAnthropicUpstreamOnce(ctx, ch, body, anthropicVersion, anthropicBeta)
 	lat := time.Since(t0).Milliseconds()
 	bu := ch.baseURLString()
 
 	if netErr != nil {
-		return OpenAPINonStreamUpstreamOnceResult{
+		return RelayOnceResult{
 			Status:     status,
 			Body:       buf,
 			Header:     hdr,
@@ -364,14 +363,14 @@ func ProxyAnthropicNonStreamOnce(ctx context.Context, body []byte, anthropicVers
 				LatencyMs:    lat,
 				TTFTMs:       lat,
 				ErrorCode:    "upstream_network",
-				ErrorMessage: truncateOpenAPIAttemptMsg(netErr.Error(), maxOpenAPIAttemptErrBytes),
+				ErrorMessage: truncateRelayAttemptMsg(netErr.Error(), maxRelayAttemptErrBytes),
 			},
 		}
 	}
 
 	businessOK := status >= 200 && status < 300 && anthropicBusinessOK(buf)
 	if businessOK {
-		return OpenAPINonStreamUpstreamOnceResult{
+		return RelayOnceResult{
 			Status:     status,
 			Body:       buf,
 			Header:     hdr,
@@ -393,9 +392,9 @@ func ProxyAnthropicNonStreamOnce(ctx context.Context, body []byte, anthropicVers
 		ec = "upstream_http"
 	}
 	if em == "" {
-		em = truncateOpenAPIAttemptMsg(string(buf), maxOpenAPIAttemptErrBytes)
+		em = truncateRelayAttemptMsg(string(buf), maxRelayAttemptErrBytes)
 	}
-	return OpenAPINonStreamUpstreamOnceResult{
+	return RelayOnceResult{
 		Status:     status,
 		Body:       buf,
 		Header:     hdr,

@@ -112,13 +112,6 @@ func (h *Handlers) registerLLMModelPlazaRoutes(api *gin.RouterGroup) {
 	}
 }
 
-func (h *Handlers) registerSitePublicRoutes(api *gin.RouterGroup) {
-	site := api.Group("/site")
-	{
-		site.GET("/announcements", h.siteAnnouncementsListHandler)
-	}
-}
-
 func (h *Handlers) registerASRChannelRoutes(api *gin.RouterGroup) {
 	asr := api.Group("/asr-channels")
 	{
@@ -152,7 +145,7 @@ func (h *Handlers) registerLLMUsageRoutes(api *gin.RouterGroup) {
 
 func (h *Handlers) registerSpeechUsageRoutes(api *gin.RouterGroup) {
 	su := api.Group("/speech-usage")
-	su.Use(models.AuthRequired)
+	su.Use(models.AuthRequired, models.AdminRequired)
 	{
 		su.GET("", h.speechUsageListHandler)
 		su.GET("/:id", h.speechUsageDetailHandler)
@@ -161,27 +154,12 @@ func (h *Handlers) registerSpeechUsageRoutes(api *gin.RouterGroup) {
 
 func (h *Handlers) registerAgentRunRoutes(api *gin.RouterGroup) {
 	agent := api.Group("/agent")
-	agent.Use(models.AuthRequired)
+	agent.Use(models.AuthRequired, models.AdminRequired)
 	{
 		ar := agent.Group("/runs")
 		ar.GET("", h.agentRunsListHandler)
 		ar.GET("/:id/steps", h.agentRunStepsListHandler)
 		ar.GET("/:id", h.agentRunDetailHandler)
-	}
-}
-
-func (h *Handlers) registerAdminRoutes(api *gin.RouterGroup) {
-	admin := api.Group("/admin")
-	admin.Use(models.AuthRequired)
-	{
-		admin.GET("/users", h.adminUsersListHandler)
-		admin.GET("/users/:id", h.adminUserDetailHandler)
-		admin.PATCH("/users/:id", h.adminUserPatchHandler)
-		admin.DELETE("/users/:id", h.adminUserDeleteHandler)
-		admin.GET("/announcements", h.adminSiteAnnouncementsListHandler)
-		admin.POST("/announcements", h.adminSiteAnnouncementCreateHandler)
-		admin.PUT("/announcements/:id", h.adminSiteAnnouncementUpdateHandler)
-		admin.DELETE("/announcements/:id", h.adminSiteAnnouncementDeleteHandler)
 	}
 }
 

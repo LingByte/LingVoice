@@ -7,40 +7,12 @@ import (
 	"errors"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/LingByte/LingVoice/internal/models"
 	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
-
-func parseQueryTime(c *gin.Context, name string) (time.Time, bool) {
-	s := strings.TrimSpace(c.Query(name))
-	if s == "" {
-		return time.Time{}, false
-	}
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return time.Time{}, false
-	}
-	return t, true
-}
-
-func parseQueryBool(c *gin.Context, name string) (bool, bool) {
-	s := strings.ToLower(strings.TrimSpace(c.Query(name)))
-	if s == "" {
-		return false, false
-	}
-	switch s {
-	case "1", "true", "yes":
-		return true, true
-	case "0", "false", "no":
-		return false, true
-	default:
-		return false, false
-	}
-}
 
 // userLLMUsageListHandler GET /api/me/llm-usage — 仅当前登录用户本人的用量分页（不要求管理员；忽略 user_id 查询参数）。
 func (h *Handlers) userLLMUsageListHandler(c *gin.Context) {
@@ -96,13 +68,13 @@ func (h *Handlers) listLLMUsageInternal(c *gin.Context, selfOnly bool) {
 	if s := strings.TrimSpace(c.Query("request_type")); s != "" {
 		q = q.Where("request_type = ?", s)
 	}
-	if v, ok := parseQueryBool(c, "success"); ok {
+	if v, ok := models.ParseQueryBool(c, "success"); ok {
 		q = q.Where("success = ?", v)
 	}
-	if t, ok := parseQueryTime(c, "from"); ok {
+	if t, ok := models.ParseQueryTime(c, "from"); ok {
 		q = q.Where("completed_at >= ?", t)
 	}
-	if t, ok := parseQueryTime(c, "to"); ok {
+	if t, ok := models.ParseQueryTime(c, "to"); ok {
 		q = q.Where("completed_at <= ?", t)
 	}
 
@@ -135,13 +107,13 @@ func (h *Handlers) listLLMUsageInternal(c *gin.Context, selfOnly bool) {
 	if s := strings.TrimSpace(c.Query("request_type")); s != "" {
 		listQ = listQ.Where("request_type = ?", s)
 	}
-	if v, ok := parseQueryBool(c, "success"); ok {
+	if v, ok := models.ParseQueryBool(c, "success"); ok {
 		listQ = listQ.Where("success = ?", v)
 	}
-	if t, ok := parseQueryTime(c, "from"); ok {
+	if t, ok := models.ParseQueryTime(c, "from"); ok {
 		listQ = listQ.Where("completed_at >= ?", t)
 	}
-	if t, ok := parseQueryTime(c, "to"); ok {
+	if t, ok := models.ParseQueryTime(c, "to"); ok {
 		listQ = listQ.Where("completed_at <= ?", t)
 	}
 

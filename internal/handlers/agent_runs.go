@@ -16,9 +16,6 @@ import (
 // agentRunsListHandler GET /api/agent/runs
 // 管理员：分页查询 AgentRun（可按 user_id、session_id、status、时间筛选）。
 func (h *Handlers) agentRunsListHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
 	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
@@ -39,10 +36,10 @@ func (h *Handlers) agentRunsListHandler(c *gin.Context) {
 	if s := strings.TrimSpace(c.Query("phase")); s != "" {
 		q = q.Where("phase = ?", s)
 	}
-	if t, ok := parseQueryTime(c, "from"); ok {
+	if t, ok := models.ParseQueryTime(c, "from"); ok {
 		q = q.Where("created_at >= ?", t)
 	}
-	if t, ok := parseQueryTime(c, "to"); ok {
+	if t, ok := models.ParseQueryTime(c, "to"); ok {
 		q = q.Where("created_at <= ?", t)
 	}
 
@@ -65,10 +62,10 @@ func (h *Handlers) agentRunsListHandler(c *gin.Context) {
 	if s := strings.TrimSpace(c.Query("phase")); s != "" {
 		listQ = listQ.Where("phase = ?", s)
 	}
-	if t, ok := parseQueryTime(c, "from"); ok {
+	if t, ok := models.ParseQueryTime(c, "from"); ok {
 		listQ = listQ.Where("created_at >= ?", t)
 	}
-	if t, ok := parseQueryTime(c, "to"); ok {
+	if t, ok := models.ParseQueryTime(c, "to"); ok {
 		listQ = listQ.Where("created_at <= ?", t)
 	}
 
@@ -97,9 +94,6 @@ func (h *Handlers) agentRunsListHandler(c *gin.Context) {
 
 // agentRunDetailHandler GET /api/agent/runs/:id
 func (h *Handlers) agentRunDetailHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
 		response.FailWithCode(c, 400, "无效的 id", nil)
@@ -119,9 +113,6 @@ func (h *Handlers) agentRunDetailHandler(c *gin.Context) {
 
 // agentRunStepsListHandler GET /api/agent/runs/:id/steps
 func (h *Handlers) agentRunStepsListHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
 	rid := strings.TrimSpace(c.Param("id"))
 	if rid == "" {
 		response.FailWithCode(c, 400, "无效的 run id", nil)

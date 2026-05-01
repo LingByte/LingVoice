@@ -13,8 +13,46 @@ import (
 	"gorm.io/gorm"
 )
 
-// siteAnnouncementsListHandler GET /api/site/announcements 已启用公告列表（无需登录）。
-func (h *Handlers) siteAnnouncementsListHandler(c *gin.Context) {
+func (h *Handlers) registerSitePublicRoutes(api *gin.RouterGroup) {
+	site := api.Group("/site")
+	{
+		site.GET("/announcements", h.announcementsListHandler)
+	}
+}
+
+func (h *Handlers) registerAdminRoutes(api *gin.RouterGroup) {
+	admin := api.Group("/admin")
+	admin.Use(models.AuthRequired, models.AdminRequired)
+	{
+		admin.GET("/users", h.adminUsersListHandler)
+		admin.GET("/users/:id", h.adminUserDetailHandler)
+		admin.PATCH("/users/:id", h.adminUserPatchHandler)
+		admin.DELETE("/users/:id", h.adminUserDeleteHandler)
+		admin.GET("/announcements", h.adminAnnouncementsListHandler)
+		admin.POST("/announcements", h.adminAnnouncementCreateHandler)
+		admin.PUT("/announcements/:id", h.adminAnnouncementUpdateHandler)
+		admin.DELETE("/announcements/:id", h.adminAnnouncementDeleteHandler)
+	}
+}
+
+type SiteAnnouncementPatch struct {
+	Title     *string `json:"title" binding:"omitempty,max=255"`
+	Body      *string `json:"body"`
+	Pinned    *bool   `json:"pinned"`
+	Enabled   *bool   `json:"enabled"`
+	SortOrder *int    `json:"sort_order"`
+}
+
+type SiteAnnouncementWrite struct {
+	Title     string  `json:"title" binding:"required,max=255"`
+	Body      *string `json:"body"`
+	Pinned    *bool   `json:"pinned"`
+	Enabled   *bool   `json:"enabled"`
+	SortOrder *int    `json:"sort_order"`
+}
+
+// announcementsListHandler GET /api/site/announcements 已启用公告列表（无需登录）。
+func (h *Handlers) announcementsListHandler(c *gin.Context) {
 	var rows []models.Announcement
 	if err := h.db.Where("enabled = ?", true).
 		Order("pinned DESC, sort_order ASC, id DESC").
@@ -25,19 +63,8 @@ func (h *Handlers) siteAnnouncementsListHandler(c *gin.Context) {
 	response.Success(c, "ok", gin.H{"list": rows})
 }
 
-type siteAnnouncementWrite struct {
-	Title     string  `json:"title" binding:"required,max=255"`
-	Body      *string `json:"body"`
-	Pinned    *bool   `json:"pinned"`
-	Enabled   *bool   `json:"enabled"`
-	SortOrder *int    `json:"sort_order"`
-}
-
-// adminSiteAnnouncementsListHandler GET /api/admin/announcements
-func (h *Handlers) adminSiteAnnouncementsListHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
+// adminAnnouncementsListHandler GET /api/admin/announcements
+func (h *Handlers) adminAnnouncementsListHandler(c *gin.Context) {
 	var rows []models.Announcement
 	if err := h.db.Order("pinned DESC, sort_order ASC, id DESC").Find(&rows).Error; err != nil {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
@@ -46,12 +73,9 @@ func (h *Handlers) adminSiteAnnouncementsListHandler(c *gin.Context) {
 	response.Success(c, "ok", gin.H{"list": rows})
 }
 
-// adminSiteAnnouncementCreateHandler POST /api/admin/announcements
-func (h *Handlers) adminSiteAnnouncementCreateHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
-	var body siteAnnouncementWrite
+// adminAnnouncementCreateHandler POST /api/admin/announcements
+func (h *Handlers) adminAnnouncementCreateHandler(c *gin.Context) {
+	var body SiteAnnouncementWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
 		return
@@ -77,25 +101,14 @@ func (h *Handlers) adminSiteAnnouncementCreateHandler(c *gin.Context) {
 	response.Success(c, "已创建", gin.H{"announcement": row})
 }
 
-type siteAnnouncementPatch struct {
-	Title     *string `json:"title" binding:"omitempty,max=255"`
-	Body      *string `json:"body"`
-	Pinned    *bool   `json:"pinned"`
-	Enabled   *bool   `json:"enabled"`
-	SortOrder *int    `json:"sort_order"`
-}
-
-// adminSiteAnnouncementUpdateHandler PUT /api/admin/announcements/:id
-func (h *Handlers) adminSiteAnnouncementUpdateHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
+// adminAnnouncementUpdateHandler PUT /api/admin/announcements/:id
+func (h *Handlers) adminAnnouncementUpdateHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
 	}
-	var body siteAnnouncementPatch
+	var body SiteAnnouncementPatch
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
 		return
@@ -139,11 +152,8 @@ func (h *Handlers) adminSiteAnnouncementUpdateHandler(c *gin.Context) {
 	response.Success(c, "已更新", gin.H{"announcement": row})
 }
 
-// adminSiteAnnouncementDeleteHandler DELETE /api/admin/announcements/:id
-func (h *Handlers) adminSiteAnnouncementDeleteHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
+// adminAnnouncementDeleteHandler DELETE /api/admin/announcements/:id
+func (h *Handlers) adminAnnouncementDeleteHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
 		response.FailWithCode(c, 400, "无效的 id", nil)

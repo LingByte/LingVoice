@@ -35,7 +35,7 @@ func speechUsageSnapJSON(h gin.H) string {
 	if err != nil {
 		return "{}"
 	}
-	return llm.ClipOpenAPIUsageBody(string(b))
+	return llm.ClipRelayUsageBody(string(b))
 }
 
 func speechUsageClipAnyJSON(v any) string {
@@ -46,7 +46,7 @@ func speechUsageClipAnyJSON(v any) string {
 	if err != nil {
 		return ""
 	}
-	return llm.ClipOpenAPIUsageBody(string(b))
+	return llm.ClipRelayUsageBody(string(b))
 }
 
 func speechRedactJSONKey(k string) bool {
@@ -80,7 +80,7 @@ func speechRedactMapNested(m map[string]interface{}, depth int) map[string]inter
 	return out
 }
 
-func summarizeASRRequestForUsage(body *OpenapiASRTranscribeReq) gin.H {
+func summarizeASRRequestForUsage(body *models.SpeechASRTranscribeReq) gin.H {
 	if body == nil {
 		return gin.H{}
 	}
@@ -109,7 +109,7 @@ func summarizeASRRequestForUsage(body *OpenapiASRTranscribeReq) gin.H {
 	return out
 }
 
-func summarizeTTSRequestForUsage(body *OpenapiTTSSynthesizeReq, merged map[string]interface{}) gin.H {
+func summarizeTTSRequestForUsage(body *models.SpeechTTSSynthesizeReq, merged map[string]interface{}) gin.H {
 	if body == nil {
 		return gin.H{}
 	}
@@ -121,7 +121,7 @@ func summarizeTTSRequestForUsage(body *OpenapiTTSSynthesizeReq, merged map[strin
 	out := gin.H{
 		"group":                    strings.TrimSpace(body.Group),
 		"voice":                    strings.TrimSpace(body.Voice),
-		"response_type":            normalizeTTSResponseType(body.ResponseType, body.Output),
+		"response_type":            models.NormalizeRelayTTSResponseType(body.ResponseType, body.Output),
 		"response_type_raw":        strings.TrimSpace(body.ResponseType),
 		"output_raw":               strings.TrimSpace(body.Output),
 		"audio_format":             strings.TrimSpace(body.AudioFormat),
@@ -146,7 +146,7 @@ func summarizeTTSRequestForUsage(body *OpenapiTTSSynthesizeReq, merged map[strin
 	return out
 }
 
-func (h *Handlers) recordOpenAPIASRUsage(c *gin.Context, started time.Time, cred *models.Credential, ch *models.ASRChannel, httpCode int, success bool, errMsg string, body *OpenapiASRTranscribeReq, respPayload gin.H, audioInBytes int64, audioSrc string) {
+func (h *Handlers) recordOpenAPIASRUsage(c *gin.Context, started time.Time, cred *models.Credential, ch *models.ASRChannel, httpCode int, success bool, errMsg string, body *models.SpeechASRTranscribeReq, respPayload gin.H, audioInBytes int64, audioSrc string) {
 	if h.db == nil || cred == nil || started.IsZero() {
 		return
 	}
@@ -181,7 +181,7 @@ func (h *Handlers) recordOpenAPIASRUsage(c *gin.Context, started time.Time, cred
 		ID:              newSpeechUsageRowID(),
 		RequestID:       newSpeechUsageRowID(),
 		CredentialID:    cred.Id,
-		UserID:          credentialUserIDString(cred.UserId),
+		UserID:          models.CredentialUserIDString(cred.UserId),
 		Kind:            models.SpeechUsageKindASR,
 		Provider:        provider,
 		ChannelID:       chid,
@@ -204,11 +204,11 @@ func (h *Handlers) recordOpenAPIASRUsage(c *gin.Context, started time.Time, cred
 		return
 	}
 	if delta >= 1 {
-		llmCredAndUserDecrementQuota(h.db, cred, delta)
+		models.DecrementCredentialAndUserQuota(h.db, cred, delta)
 	}
 }
 
-func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred *models.Credential, ch *models.TTSChannel, httpCode int, success bool, errMsg string, body *OpenapiTTSSynthesizeReq, merged map[string]interface{}, respPayload gin.H, audioOutBytes int64, textChars int) {
+func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred *models.Credential, ch *models.TTSChannel, httpCode int, success bool, errMsg string, body *models.SpeechTTSSynthesizeReq, merged map[string]interface{}, respPayload gin.H, audioOutBytes int64, textChars int) {
 	if h.db == nil || cred == nil || started.IsZero() {
 		return
 	}
@@ -237,7 +237,7 @@ func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred
 		ID:               newSpeechUsageRowID(),
 		RequestID:        newSpeechUsageRowID(),
 		CredentialID:     cred.Id,
-		UserID:           credentialUserIDString(cred.UserId),
+		UserID:           models.CredentialUserIDString(cred.UserId),
 		Kind:             models.SpeechUsageKindTTS,
 		Provider:         provider,
 		ChannelID:        chid,
@@ -261,15 +261,12 @@ func (h *Handlers) recordOpenAPITTSUsage(c *gin.Context, started time.Time, cred
 		return
 	}
 	if delta >= 1 {
-		llmCredAndUserDecrementQuota(h.db, cred, delta)
+		models.DecrementCredentialAndUserQuota(h.db, cred, delta)
 	}
 }
 
 // speechUsageListHandler 分页查询语音用量（管理员）。
 func (h *Handlers) speechUsageListHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
 	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
@@ -303,13 +300,13 @@ func (h *Handlers) speechUsageListHandler(c *gin.Context) {
 	if s := strings.TrimSpace(c.Query("request_type")); s != "" {
 		q = q.Where("request_type = ?", s)
 	}
-	if v, ok := parseQueryBool(c, "success"); ok {
+	if v, ok := models.ParseQueryBool(c, "success"); ok {
 		q = q.Where("success = ?", v)
 	}
-	if t, ok := parseQueryTime(c, "from"); ok {
+	if t, ok := models.ParseQueryTime(c, "from"); ok {
 		q = q.Where("completed_at >= ?", t)
 	}
-	if t, ok := parseQueryTime(c, "to"); ok {
+	if t, ok := models.ParseQueryTime(c, "to"); ok {
 		q = q.Where("completed_at <= ?", t)
 	}
 
@@ -345,13 +342,13 @@ func (h *Handlers) speechUsageListHandler(c *gin.Context) {
 	if s := strings.TrimSpace(c.Query("request_type")); s != "" {
 		listQ = listQ.Where("request_type = ?", s)
 	}
-	if v, ok := parseQueryBool(c, "success"); ok {
+	if v, ok := models.ParseQueryBool(c, "success"); ok {
 		listQ = listQ.Where("success = ?", v)
 	}
-	if t, ok := parseQueryTime(c, "from"); ok {
+	if t, ok := models.ParseQueryTime(c, "from"); ok {
 		listQ = listQ.Where("completed_at >= ?", t)
 	}
-	if t, ok := parseQueryTime(c, "to"); ok {
+	if t, ok := models.ParseQueryTime(c, "to"); ok {
 		listQ = listQ.Where("completed_at <= ?", t)
 	}
 
@@ -375,9 +372,6 @@ func (h *Handlers) speechUsageListHandler(c *gin.Context) {
 
 // speechUsageDetailHandler 按主键 id 查询单条语音用量（管理员）。
 func (h *Handlers) speechUsageDetailHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
 		response.FailWithCode(c, 400, "无效的 id", nil)

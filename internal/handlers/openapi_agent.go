@@ -31,14 +31,14 @@ func agentOpenAPIQueryOpts(c *gin.Context, cred *models.Credential, sessionID st
 	if ch == nil {
 		return &llm.QueryOptions{
 			SessionID:     strings.TrimSpace(sessionID),
-			UserID:        credentialUserIDString(cred.UserId),
+			UserID:        models.CredentialUserIDString(cred.UserId),
 			HTTPUserAgent: c.Request.UserAgent(),
 			ClientIP:      c.ClientIP(),
 		}
 	}
 	return &llm.QueryOptions{
 		SessionID:      strings.TrimSpace(sessionID),
-		UserID:         credentialUserIDString(cred.UserId),
+		UserID:         models.CredentialUserIDString(cred.UserId),
 		HTTPUserAgent:  c.Request.UserAgent(),
 		ClientIP:       c.ClientIP(),
 		UsageChannelID: ch.Id,
@@ -106,9 +106,9 @@ func (h *Handlers) openAPIAgentChatStreamHandler(c *gin.Context) {
 		maxTasks = 32
 	}
 
-	channels, err := listLLMChannelsForRelay(h.db, cred, models.LLMChannelProtocolOpenAI, model)
+	channels, err := models.ListLLMChannelsForRelay(h.db, cred, models.LLMChannelProtocolOpenAI, model)
 	if err != nil || len(channels) == 0 {
-		c.JSON(http.StatusServiceUnavailable, openAINoLLMChannelResponse(cred))
+		c.JSON(http.StatusServiceUnavailable, models.OpenAINoLLMChannelPayload(cred))
 		return
 	}
 	ch := channels[0]
@@ -225,7 +225,7 @@ func (h *Handlers) openAPIAgentChatStreamHandler(c *gin.Context) {
 			gr = config.GlobalConfig.OpenAPIQuotaGroupRatio(cred.Group)
 		}
 		d := QuotaDeltaForAgentRun(h.db, model, gr)
-		llmCredAndUserDecrementQuota(h.db, cred, d)
+		models.DecrementCredentialAndUserQuota(h.db, cred, d)
 	}
 	errMsg := ""
 	if runErr != nil {

@@ -1,21 +1,18 @@
 // Copyright (c) 2026 LingByte. All rights reserved.
 // SPDX-License-Identifier: AGPL-3.0
 
-package handlers
+package models
 
 import (
 	"encoding/json"
-	"net/http"
 	"strings"
 	"time"
 
-	"github.com/LingByte/LingVoice/internal/models"
-	"github.com/LingByte/LingVoice/pkg/middleware"
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
-func splitChannelModelList(s string) []string {
+// SplitChannelModelList splits comma / newline separated model lists from channel config.
+func SplitChannelModelList(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
@@ -33,7 +30,8 @@ func splitChannelModelList(s string) []string {
 	return out
 }
 
-func modelLimitSet(cred *models.Credential) map[string]struct{} {
+// ModelLimitSetFromCredential returns allowed model ids when credential.ModelLimitsEnabled; nil means no limit.
+func ModelLimitSetFromCredential(cred *Credential) map[string]struct{} {
 	if cred == nil || !cred.ModelLimitsEnabled {
 		return nil
 	}
@@ -53,14 +51,14 @@ func modelLimitSet(cred *models.Credential) map[string]struct{} {
 		return m
 	}
 	m := make(map[string]struct{})
-	for _, id := range splitChannelModelList(raw) {
+	for _, id := range SplitChannelModelList(raw) {
 		m[id] = struct{}{}
 	}
 	return m
 }
 
-// parseCredentialOpenAPIModelCatalog 解析凭证 openapi_model_catalog_json；支持 [{"id":"x"}] 或 ["x","y"]。
-func parseCredentialOpenAPIModelCatalog(jsonStr string) []string {
+// ParseCredentialOpenAPIModelCatalog parses credential.OpenAPIModelCatalogJSON; supports [{"id":"x"}] or ["x","y"].
+func ParseCredentialOpenAPIModelCatalog(jsonStr string) []string {
 	jsonStr = strings.TrimSpace(jsonStr)
 	if jsonStr == "" {
 		return nil
@@ -96,11 +94,11 @@ func parseCredentialOpenAPIModelCatalog(jsonStr string) []string {
 	return nil
 }
 
-func collectOpenAPIModelIDsFromChannels(chs []models.LLMChannel) []string {
+func collectOpenAPIModelIDsFromChannels(chs []LLMChannel) []string {
 	seen := make(map[string]struct{})
 	var order []string
 	for i := range chs {
-		for _, id := range splitChannelModelList(chs[i].Models) {
+		for _, id := range SplitChannelModelList(chs[i].Models) {
 			if _, ok := seen[id]; ok {
 				continue
 			}
@@ -111,8 +109,8 @@ func collectOpenAPIModelIDsFromChannels(chs []models.LLMChannel) []string {
 	return order
 }
 
-// collectOpenAPIAbilityModelsFromGroup 按凭证分组从 llm_abilities × 启用渠道 推导可用模型 id（与 new-api 能力表思路一致）；无行时返回空切片。
-func collectOpenAPIAbilityModelsFromGroup(db *gorm.DB, group, protocol string) ([]string, error) {
+// CollectOpenAPIAbilityModelsFromGroup derives model ids from llm_abilities × enabled channels; empty if none.
+func CollectOpenAPIAbilityModelsFromGroup(db *gorm.DB, group, protocol string) ([]string, error) {
 	if db == nil {
 		return nil, nil
 	}
@@ -122,7 +120,7 @@ func collectOpenAPIAbilityModelsFromGroup(db *gorm.DB, group, protocol string) (
 	}
 	protocol = strings.TrimSpace(protocol)
 	if protocol == "" {
-		protocol = models.LLMChannelProtocolOpenAI
+		protocol = LLMChannelProtocolOpenAI
 	}
 	var out []string
 	err := db.Raw(
@@ -140,7 +138,7 @@ func collectOpenAPIAbilityModelsFromGroup(db *gorm.DB, group, protocol string) (
 	return out, nil
 }
 
-// CollectOpenAILLMModelIDsForGroup 返回某分组下 OpenAPI 可用的模型 id（llm_abilities 优先，否则 OpenAI 渠道 models 汇总）。
+// CollectOpenAILLMModelIDsForGroup returns OpenAPI-visible model ids for a group (abilities first, else channel models).
 func CollectOpenAILLMModelIDsForGroup(db *gorm.DB, group string) ([]string, error) {
 	if db == nil {
 		return nil, nil
@@ -149,13 +147,13 @@ func CollectOpenAILLMModelIDsForGroup(db *gorm.DB, group string) ([]string, erro
 	if g == "" {
 		g = "default"
 	}
-	var chs []models.LLMChannel
-	q := db.Where("status = ? AND protocol = ? AND `group` = ?", 1, models.LLMChannelProtocolOpenAI, g).
+	var chs []LLMChannel
+	q := db.Where("status = ? AND protocol = ? AND `group` = ?", 1, LLMChannelProtocolOpenAI, g).
 		Order("(CASE WHEN priority IS NULL THEN 0 ELSE priority END) DESC").Order("id ASC")
 	if err := q.Find(&chs).Error; err != nil {
 		return nil, err
 	}
-	abilityIDs, err := collectOpenAPIAbilityModelsFromGroup(db, g, models.LLMChannelProtocolOpenAI)
+	abilityIDs, err := CollectOpenAPIAbilityModelsFromGroup(db, g, LLMChannelProtocolOpenAI)
 	if err != nil {
 		return nil, err
 	}
@@ -165,12 +163,21 @@ func CollectOpenAILLMModelIDsForGroup(db *gorm.DB, group string) ([]string, erro
 	return collectOpenAPIModelIDsFromChannels(chs), nil
 }
 
-func buildOpenAPIModelListForCredential(db *gorm.DB, cred *models.Credential) ([]gin.H, error) {
+// OpenAPIRelayModelItem is one row in GET /v1/models data[] (OpenAI-compatible shape).
+type OpenAPIRelayModelItem struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int    `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+// BuildOpenAPIModelListForCredential builds the model list for a credential (catalog or group channels, model_limits filter).
+func BuildOpenAPIModelListForCredential(db *gorm.DB, cred *Credential) ([]OpenAPIRelayModelItem, error) {
 	if cred == nil {
 		return nil, nil
 	}
 	var ids []string
-	if cat := parseCredentialOpenAPIModelCatalog(cred.OpenAPIModelCatalogJSON); len(cat) > 0 {
+	if cat := ParseCredentialOpenAPIModelCatalog(cred.OpenAPIModelCatalogJSON); len(cat) > 0 {
 		ids = cat
 	} else {
 		var err error
@@ -179,7 +186,7 @@ func buildOpenAPIModelListForCredential(db *gorm.DB, cred *models.Credential) ([
 			return nil, err
 		}
 	}
-	lim := modelLimitSet(cred)
+	lim := ModelLimitSetFromCredential(cred)
 	if lim != nil {
 		var filtered []string
 		for _, id := range ids {
@@ -190,37 +197,14 @@ func buildOpenAPIModelListForCredential(db *gorm.DB, cred *models.Credential) ([
 		ids = filtered
 	}
 	created := int(time.Now().Unix())
-	out := make([]gin.H, 0, len(ids))
+	out := make([]OpenAPIRelayModelItem, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, gin.H{
-			"id":       id,
-			"object":   "model",
-			"created":  created,
-			"owned_by": "lingvoice",
+		out = append(out, OpenAPIRelayModelItem{
+			ID:      id,
+			Object:  "model",
+			Created: created,
+			OwnedBy: "lingvoice",
 		})
 	}
 	return out, nil
-}
-
-// openAPIModelsListHandler GET /v1/models：返回本密钥可用的模型列表（凭证 catalog 或 group 渠道汇总，并受 model_limits 过滤）。
-func (h *Handlers) openAPIModelsListHandler(c *gin.Context) {
-	cred, ok := middleware.OpenAPILLMCredentialFromContext(c)
-	if !ok || cred == nil {
-		return
-	}
-	list, err := buildOpenAPIModelListForCredential(h.db, cred)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": gin.H{
-				"message": err.Error(),
-				"type":    "api_error",
-				"code":    "internal_error",
-			},
-		})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"object": "list",
-		"data":   list,
-	})
 }

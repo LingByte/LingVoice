@@ -168,9 +168,9 @@ func (t *LLMRequestTracker) Complete(response *QueryResponse) {
 
 	base.Sig().Emit(SignalLLMRequestEnd, t, endData)
 
-	respClip := ClipOpenAPIUsageBody(output)
+	respClip := ClipRelayUsageBody(output)
 	if strings.TrimSpace(t.responseContent) != "" {
-		respClip = ClipOpenAPIUsageBody(t.responseContent)
+		respClip = ClipRelayUsageBody(t.responseContent)
 	}
 	payload := LLMUsageSignalPayload{
 		RequestID:       t.requestID,
@@ -238,7 +238,7 @@ func (t *LLMRequestTracker) Error(errCode, errorMessage string) {
 		LatencyMs:       latencyMs,
 		QueueTimeMs:     queueTimeMs,
 		RequestContent:  t.requestContent,
-		ResponseContent: ClipOpenAPIUsageBody(t.responseContent),
+		ResponseContent: ClipRelayUsageBody(t.responseContent),
 		UserAgent:       t.userAgent,
 		IPAddress:       t.ipAddress,
 		StatusCode:      t.statusCode,

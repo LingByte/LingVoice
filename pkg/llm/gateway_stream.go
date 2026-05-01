@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// EnsureOpenAIChatStreamIncludeUsage 在 stream 为 true 时合并 stream_options.include_usage，便于上游返回 usage 块。
+// EnsureOpenAIChatStreamIncludeUsage merges stream_options.include_usage when stream is true so upstream can emit usage chunks.
 func EnsureOpenAIChatStreamIncludeUsage(body []byte) []byte {
 	var m map[string]json.RawMessage
 	if json.Unmarshal(body, &m) != nil {
@@ -35,7 +35,7 @@ func EnsureOpenAIChatStreamIncludeUsage(body []byte) []byte {
 		if err != nil {
 			return body
 		}
-		m["stream_options"] = json.RawMessage(b)
+		m["stream_options"] = b
 		out, err := json.Marshal(m)
 		if err != nil {
 			return body
@@ -45,7 +45,7 @@ func EnsureOpenAIChatStreamIncludeUsage(body []byte) []byte {
 	return body
 }
 
-// OpenAIStreamCapture 流式结束后用于用量信号（依赖上游在流中返回 usage，见 EnsureOpenAIChatStreamIncludeUsage）。
+// OpenAIStreamCapture summarizes an OpenAI-style SSE stream for usage signals (see EnsureOpenAIChatStreamIncludeUsage).
 type OpenAIStreamCapture struct {
 	StatusCode       int
 	WallLatencyMs    int64
@@ -58,15 +58,14 @@ type OpenAIStreamCapture struct {
 	CompletionTokens int
 	TotalTokens      int
 	CachedPrompt     int // prompt_tokens_details.cached_tokens
-	// assistantBuf 从 SSE delta 拼接的助手文本（有字节上限），用于用量表 response_content 近似非流式形态。
-	assistantBuf []byte
+	assistantBuf     []byte
 }
 
 func (c *OpenAIStreamCapture) effectiveRequestID() string {
 	if strings.TrimSpace(c.RequestID) != "" {
 		return c.RequestID
 	}
-	return openapiUsageFailRequestID("ling-openapi-openai-stream-")
+	return relayUsageFailRequestID("ling-relay-openai-stream-")
 }
 
 func appendStreamCaptureText(dst *[]byte, part string, maxBytes int) {
@@ -87,7 +86,6 @@ func appendStreamCaptureText(dst *[]byte, part string, maxBytes int) {
 	*dst = append(*dst, p...)
 }
 
-// streamResponseContentForUsage 合成与 chat completion 相近的 JSON，便于用量详情展示；正文为流式拼接结果。
 func (cap *OpenAIStreamCapture) streamResponseContentForUsage() string {
 	if cap == nil {
 		return ""
@@ -124,11 +122,11 @@ func (cap *OpenAIStreamCapture) streamResponseContentForUsage() string {
 	if err != nil {
 		return ""
 	}
-	return clipForOpenAPIUsageStore(string(b))
+	return clipForRelayUsageStore(string(b))
 }
 
-// ProxyOpenAIStreamWithCapture 流式转发并解析 SSE data 行中的 id/model/usage；将字节原样写入 w。
-func ProxyOpenAIStreamWithCapture(ctx context.Context, body []byte, accept string, ch UpstreamChannel, w http.ResponseWriter) (*OpenAIStreamCapture, error) {
+// RelayOpenAIStreamWithCapture forwards OpenAI-style SSE to w and parses id/model/usage from data lines.
+func RelayOpenAIStreamWithCapture(ctx context.Context, body []byte, accept string, ch UpstreamChannel, w http.ResponseWriter) (*OpenAIStreamCapture, error) {
 	cap := &OpenAIStreamCapture{}
 	overall := time.Now()
 	cap.StartedAtMs = overall.UnixMilli()
@@ -146,14 +144,14 @@ func ProxyOpenAIStreamWithCapture(ctx context.Context, body []byte, accept strin
 	if ch.OpenAIOrganization != nil && strings.TrimSpace(*ch.OpenAIOrganization) != "" {
 		req.Header.Set("OpenAI-Organization", strings.TrimSpace(*ch.OpenAIOrganization))
 	}
-	resp, err := upstreamOpenAPIHTTPClient.Do(req)
+	resp, err := relayUpstreamHTTPClient.Do(req)
 	if err != nil {
 		return cap, err
 	}
 	defer resp.Body.Close()
 	cap.StatusCode = resp.StatusCode
 
-	CopyOpenAPIProxyResponseHeaders(w.Header(), resp.Header)
+	CopyRelayResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
 	fl, _ := w.(http.Flusher)
@@ -199,9 +197,9 @@ func parseOpenAISSELine(line []byte, cap *OpenAIStreamCapture, firstTokenRecorde
 		return
 	}
 	var chunk struct {
-		ID      string `json:"id"`
-		Model   string `json:"model"`
-		Usage   *struct {
+		ID    string `json:"id"`
+		Model string `json:"model"`
+		Usage *struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 			TotalTokens      int `json:"total_tokens"`
@@ -236,7 +234,7 @@ func parseOpenAISSELine(line []byte, cap *OpenAIStreamCapture, firstTokenRecorde
 		}
 	}
 	for i := range chunk.Choices {
-		appendStreamCaptureText(&cap.assistantBuf, chunk.Choices[i].Delta.Content, maxOpenAPIUsageBodyClip)
+		appendStreamCaptureText(&cap.assistantBuf, chunk.Choices[i].Delta.Content, maxRelayUsageBodyClip)
 	}
 	if !*firstTokenRecorded && len(chunk.Choices) > 0 && strings.TrimSpace(chunk.Choices[0].Delta.Content) != "" {
 		cap.FirstTokenAtMs = time.Now().UnixMilli()
@@ -244,7 +242,7 @@ func parseOpenAISSELine(line []byte, cap *OpenAIStreamCapture, firstTokenRecorde
 	}
 }
 
-// AnthropicStreamCapture Anthropic SSE 流摘要（message_start / message_delta.usage）。
+// AnthropicStreamCapture summarizes Anthropic SSE (message_start / message_delta.usage).
 type AnthropicStreamCapture struct {
 	StatusCode       int
 	WallLatencyMs    int64
@@ -263,7 +261,7 @@ func (c *AnthropicStreamCapture) effectiveRequestID() string {
 	if strings.TrimSpace(c.RequestID) != "" {
 		return c.RequestID
 	}
-	return openapiUsageFailRequestID("ling-openapi-anthropic-stream-")
+	return relayUsageFailRequestID("ling-relay-anthropic-stream-")
 }
 
 func (cap *AnthropicStreamCapture) streamResponseContentForUsage() string {
@@ -295,11 +293,11 @@ func (cap *AnthropicStreamCapture) streamResponseContentForUsage() string {
 	if err != nil {
 		return ""
 	}
-	return clipForOpenAPIUsageStore(string(b))
+	return clipForRelayUsageStore(string(b))
 }
 
-// ProxyAnthropicStreamWithCapture 流式转发并解析 Anthropic SSE。
-func ProxyAnthropicStreamWithCapture(ctx context.Context, body []byte, anthropicVersion, anthropicBeta string, ch UpstreamChannel, w http.ResponseWriter) (*AnthropicStreamCapture, error) {
+// RelayAnthropicStreamWithCapture forwards Anthropic SSE to w and parses usage fields.
+func RelayAnthropicStreamWithCapture(ctx context.Context, body []byte, anthropicVersion, anthropicBeta string, ch UpstreamChannel, w http.ResponseWriter) (*AnthropicStreamCapture, error) {
 	cap := &AnthropicStreamCapture{}
 	overall := time.Now()
 	cap.StartedAtMs = overall.UnixMilli()
@@ -319,14 +317,14 @@ func ProxyAnthropicStreamWithCapture(ctx context.Context, body []byte, anthropic
 		req.Header.Set("anthropic-beta", anthropicBeta)
 	}
 	req.Header.Set("x-api-key", strings.TrimSpace(ch.Key))
-	resp, err := upstreamOpenAPIHTTPClient.Do(req)
+	resp, err := relayUpstreamHTTPClient.Do(req)
 	if err != nil {
 		return cap, err
 	}
 	defer resp.Body.Close()
 	cap.StatusCode = resp.StatusCode
 
-	CopyOpenAPIProxyResponseHeaders(w.Header(), resp.Header)
+	CopyRelayResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
 	fl, _ := w.(http.Flusher)
@@ -373,17 +371,14 @@ func parseAnthropicSSELine(line []byte, cap *AnthropicStreamCapture, firstConten
 	}
 	var wrap struct {
 		Type string `json:"type"`
-		// message_start
 		Message *struct {
 			ID    string `json:"id"`
 			Model string `json:"model"`
 		} `json:"message"`
-		// message_delta
 		Usage *struct {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
-		// content_block_delta
 		Delta *struct {
 			Text string `json:"text"`
 		} `json:"delta"`
@@ -409,7 +404,7 @@ func parseAnthropicSSELine(line []byte, cap *AnthropicStreamCapture, firstConten
 		}
 	case "content_block_delta":
 		if wrap.Delta != nil && strings.TrimSpace(wrap.Delta.Text) != "" {
-			appendStreamCaptureText(&cap.assistantBuf, wrap.Delta.Text, maxOpenAPIUsageBodyClip)
+			appendStreamCaptureText(&cap.assistantBuf, wrap.Delta.Text, maxRelayUsageBodyClip)
 		}
 		if !*firstContent && wrap.Delta != nil && strings.TrimSpace(wrap.Delta.Text) != "" {
 			cap.FirstTokenAtMs = time.Now().UnixMilli()

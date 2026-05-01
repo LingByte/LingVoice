@@ -12,33 +12,33 @@ import (
 	"github.com/LingByte/LingVoice/pkg/utils/base"
 )
 
-const maxOpenAPIUsageBodyClip = 512 * 1024
+const maxRelayUsageBodyClip = 512 * 1024
 
-func clipForOpenAPIUsageStore(s string) string {
-	if len(s) <= maxOpenAPIUsageBodyClip {
+func clipForRelayUsageStore(s string) string {
+	if len(s) <= maxRelayUsageBodyClip {
 		return s
 	}
 	b := []byte(s)
-	n := maxOpenAPIUsageBodyClip
+	n := maxRelayUsageBodyClip
 	for n > 0 && n < len(b) && b[n-1]&0xC0 == 0x80 {
 		n--
 	}
 	return string(b[:n]) + "…(truncated)"
 }
 
-// ClipOpenAPIUsageBody 裁剪大段 JSON/文本，供用量审计或其它落库复用。
-func ClipOpenAPIUsageBody(s string) string {
-	return clipForOpenAPIUsageStore(s)
+// ClipRelayUsageBody truncates large JSON/text for usage audit or storage.
+func ClipRelayUsageBody(s string) string {
+	return clipForRelayUsageStore(s)
 }
 
-// OpenAPIUsageEmitMeta 由 HTTP 层填入，用于 OpenAPI 代理用量信号（不含 gin / models）。
-type OpenAPIUsageEmitMeta struct {
+// RelayUsageMeta is filled by the HTTP layer for relay usage signals (no gin/models).
+type RelayUsageMeta struct {
 	UserIDStr string
 	UserAgent string
 	ClientIP  string
 }
 
-func openapiUsageFailRequestID(prefix string) string {
+func relayUsageFailRequestID(prefix string) string {
 	if base.SnowflakeUtil != nil {
 		return prefix + base.SnowflakeUtil.GenID()
 	}
@@ -52,8 +52,8 @@ func tpsFromOutputTokens(outTok int, hopMs int64) float64 {
 	return float64(outTok) / (float64(hopMs) / 1000.0)
 }
 
-// EmitOpenAPIOpenAIUsageSuccess 非流式 OpenAI 兼容 chat completion 成功后的用量信号。
-func EmitOpenAPIOpenAIUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta, quotaDelta int) {
+// EmitRelayOpenAIUsageSuccess emits a usage signal after non-stream OpenAI-compatible chat completion success.
+func EmitRelayOpenAIUsageSuccess(reqBody []byte, res *RelayResult, meta RelayUsageMeta, quotaDelta int) {
 	if res == nil || res.WinChannelID <= 0 || len(res.FinalBody) == 0 {
 		return
 	}
@@ -123,8 +123,8 @@ func EmitOpenAPIOpenAIUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta
 		TTFTMs:          res.WinHopMs,
 		TPS:             tps,
 		QueueTimeMs:     res.QueueMs,
-		RequestContent:  clipForOpenAPIUsageStore(string(reqBody)),
-		ResponseContent: clipForOpenAPIUsageStore(string(res.FinalBody)),
+		RequestContent:  clipForRelayUsageStore(string(reqBody)),
+		ResponseContent: clipForRelayUsageStore(string(res.FinalBody)),
 		UserAgent:       meta.UserAgent,
 		IPAddress:       meta.ClientIP,
 		StatusCode:      res.FinalStatus,
@@ -137,10 +137,9 @@ func EmitOpenAPIOpenAIUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta
 	base.Sig().Emit(SignalLLMUsage, payload)
 }
 
-// EmitOpenAPIOpenAIUsageFailure 非流式或流式入口失败时的用量信号。
-// errorCode/errorMessage 由业务层传入，以区分“无渠道/上游失败/多渠道耗尽”等策略差异。
-func EmitOpenAPIOpenAIUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta, errorCode string, extraMsg string) {
-	rid := openapiUsageFailRequestID("ling-openapi-openai-fail-")
+// EmitRelayOpenAIUsageFailure emits usage on non-stream or stream entry failure.
+func EmitRelayOpenAIUsageFailure(reqBody []byte, res *RelayResult, meta RelayUsageMeta, errorCode string, extraMsg string) {
+	rid := relayUsageFailRequestID("ling-relay-openai-fail-")
 	msg := strings.TrimSpace(extraMsg)
 	if msg == "" && res != nil && len(res.Attempts) > 0 {
 		last := res.Attempts[len(res.Attempts)-1]
@@ -167,7 +166,7 @@ func EmitOpenAPIOpenAIUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta
 			httpCode = res.FinalStatus
 		}
 		if len(res.FinalBody) > 0 {
-			respClip = clipForOpenAPIUsageStore(string(res.FinalBody))
+			respClip = clipForRelayUsageStore(string(res.FinalBody))
 		}
 	}
 	ms := time.Now().UnixMilli()
@@ -185,14 +184,14 @@ func EmitOpenAPIOpenAIUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta
 		TTFTMs:          0,
 		TPS:             0,
 		QueueTimeMs:     queue,
-		RequestContent:  clipForOpenAPIUsageStore(string(reqBody)),
+		RequestContent:  clipForRelayUsageStore(string(reqBody)),
 		ResponseContent: respClip,
 		UserAgent:       meta.UserAgent,
 		IPAddress:       meta.ClientIP,
 		StatusCode:      httpCode,
 		Success:         false,
 		ErrorCode:       strings.TrimSpace(errorCode),
-		ErrorMessage:    truncateOpenAPIAttemptMsg(msg, maxOpenAPIAttemptErrBytes),
+		ErrorMessage:    truncateRelayAttemptMsg(msg, maxRelayAttemptErrBytes),
 		RequestedAtMs:   ms,
 		StartedAtMs:     ms,
 		FirstTokenAtMs:  0,
@@ -201,8 +200,8 @@ func EmitOpenAPIOpenAIUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta
 	base.Sig().Emit(SignalLLMUsage, payload)
 }
 
-// EmitOpenAPIAnthropicUsageSuccess 非流式 Anthropic /v1/messages 成功。
-func EmitOpenAPIAnthropicUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta, quotaDelta int) {
+// EmitRelayAnthropicUsageSuccess emits usage after non-stream Anthropic /v1/messages success.
+func EmitRelayAnthropicUsageSuccess(reqBody []byte, res *RelayResult, meta RelayUsageMeta, quotaDelta int) {
 	if res == nil || res.WinChannelID <= 0 {
 		return
 	}
@@ -245,8 +244,8 @@ func EmitOpenAPIAnthropicUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, m
 		TTFTMs:          res.WinHopMs,
 		TPS:             tps,
 		QueueTimeMs:     res.QueueMs,
-		RequestContent:  clipForOpenAPIUsageStore(string(reqBody)),
-		ResponseContent: clipForOpenAPIUsageStore(string(res.FinalBody)),
+		RequestContent:  clipForRelayUsageStore(string(reqBody)),
+		ResponseContent: clipForRelayUsageStore(string(res.FinalBody)),
 		UserAgent:       meta.UserAgent,
 		IPAddress:       meta.ClientIP,
 		StatusCode:      res.FinalStatus,
@@ -259,10 +258,9 @@ func EmitOpenAPIAnthropicUsageSuccess(reqBody []byte, res *OpenAPIProxyResult, m
 	base.Sig().Emit(SignalLLMUsage, payload)
 }
 
-// EmitOpenAPIAnthropicUsageFailure 非流式或流式入口失败。
-// errorCode/errorMessage 由业务层传入，以区分“无渠道/上游失败/多渠道耗尽”等策略差异。
-func EmitOpenAPIAnthropicUsageFailure(reqBody []byte, res *OpenAPIProxyResult, meta OpenAPIUsageEmitMeta, errorCode string, extraMsg string) {
-	rid := openapiUsageFailRequestID("ling-openapi-anthropic-fail-")
+// EmitRelayAnthropicUsageFailure emits usage on Anthropic relay failure.
+func EmitRelayAnthropicUsageFailure(reqBody []byte, res *RelayResult, meta RelayUsageMeta, errorCode string, extraMsg string) {
+	rid := relayUsageFailRequestID("ling-relay-anthropic-fail-")
 	msg := strings.TrimSpace(extraMsg)
 	if msg == "" && res != nil && len(res.Attempts) > 0 {
 		last := res.Attempts[len(res.Attempts)-1]
@@ -289,7 +287,7 @@ func EmitOpenAPIAnthropicUsageFailure(reqBody []byte, res *OpenAPIProxyResult, m
 			httpCode = res.FinalStatus
 		}
 		if len(res.FinalBody) > 0 {
-			respClip = clipForOpenAPIUsageStore(string(res.FinalBody))
+			respClip = clipForRelayUsageStore(string(res.FinalBody))
 		}
 	}
 	ms := time.Now().UnixMilli()
@@ -305,14 +303,14 @@ func EmitOpenAPIAnthropicUsageFailure(reqBody []byte, res *OpenAPIProxyResult, m
 		QuotaDelta:      0,
 		LatencyMs:       wall,
 		QueueTimeMs:     queue,
-		RequestContent:  clipForOpenAPIUsageStore(string(reqBody)),
+		RequestContent:  clipForRelayUsageStore(string(reqBody)),
 		ResponseContent: respClip,
 		UserAgent:       meta.UserAgent,
 		IPAddress:       meta.ClientIP,
 		StatusCode:      httpCode,
 		Success:         false,
 		ErrorCode:       strings.TrimSpace(errorCode),
-		ErrorMessage:    truncateOpenAPIAttemptMsg(msg, maxOpenAPIAttemptErrBytes),
+		ErrorMessage:    truncateRelayAttemptMsg(msg, maxRelayAttemptErrBytes),
 		RequestedAtMs:   ms,
 		StartedAtMs:     ms,
 		FirstTokenAtMs:  0,
@@ -321,8 +319,8 @@ func EmitOpenAPIAnthropicUsageFailure(reqBody []byte, res *OpenAPIProxyResult, m
 	base.Sig().Emit(SignalLLMUsage, payload)
 }
 
-// EmitOpenAPIOpenAIUsageStreamSuccess 流式 chat completion 成功后的用量（建议请求体含 stream_options.include_usage）。
-func EmitOpenAPIOpenAIUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMeta, cap *OpenAIStreamCapture, channelID int, baseURL string, attempts []UsageChannelAttempt, quotaDelta int) {
+// EmitRelayOpenAIStreamUsageSuccess emits usage after streaming chat completion (prefer stream_options.include_usage in request).
+func EmitRelayOpenAIStreamUsageSuccess(reqBody []byte, meta RelayUsageMeta, cap *OpenAIStreamCapture, channelID int, baseURL string, attempts []UsageChannelAttempt, quotaDelta int) {
 	if cap == nil || strings.TrimSpace(meta.UserIDStr) == "" {
 		return
 	}
@@ -356,7 +354,7 @@ func EmitOpenAPIOpenAIUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMe
 		TTFTMs:          ttft,
 		TPS:             tps,
 		QueueTimeMs:     0,
-		RequestContent:  clipForOpenAPIUsageStore(string(reqBody)),
+		RequestContent:  clipForRelayUsageStore(string(reqBody)),
 		ResponseContent: cap.streamResponseContentForUsage(),
 		UserAgent:       meta.UserAgent,
 		IPAddress:       meta.ClientIP,
@@ -370,8 +368,8 @@ func EmitOpenAPIOpenAIUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMe
 	base.Sig().Emit(SignalLLMUsage, payload)
 }
 
-// EmitOpenAPIAnthropicUsageStreamSuccess Anthropic 流式 messages 成功。
-func EmitOpenAPIAnthropicUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmitMeta, cap *AnthropicStreamCapture, channelID int, baseURL string, attempts []UsageChannelAttempt, quotaDelta int) {
+// EmitRelayAnthropicStreamUsageSuccess emits usage after Anthropic streaming messages.
+func EmitRelayAnthropicStreamUsageSuccess(reqBody []byte, meta RelayUsageMeta, cap *AnthropicStreamCapture, channelID int, baseURL string, attempts []UsageChannelAttempt, quotaDelta int) {
 	if cap == nil || strings.TrimSpace(meta.UserIDStr) == "" {
 		return
 	}
@@ -409,7 +407,7 @@ func EmitOpenAPIAnthropicUsageStreamSuccess(reqBody []byte, meta OpenAPIUsageEmi
 		TTFTMs:          ttft,
 		TPS:             tps,
 		QueueTimeMs:     0,
-		RequestContent:  clipForOpenAPIUsageStore(string(reqBody)),
+		RequestContent:  clipForRelayUsageStore(string(reqBody)),
 		ResponseContent: cap.streamResponseContentForUsage(),
 		UserAgent:       meta.UserAgent,
 		IPAddress:       meta.ClientIP,

@@ -290,7 +290,7 @@ func (h *Handlers) credentialsLLMAvailableModelsHandler(c *gin.Context) {
 	if eff == "" {
 		eff = "default"
 	}
-	ids, err := CollectOpenAILLMModelIDsForGroup(h.db, g)
+	ids, err := models.CollectOpenAILLMModelIDsForGroup(h.db, g)
 	if err != nil {
 		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
 		return

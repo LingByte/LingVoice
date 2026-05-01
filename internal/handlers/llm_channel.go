@@ -15,8 +15,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// ---------- LLM ----------
-
 type llmChannelWrite struct {
 	Type               int                   `json:"type"`
 	Key                string                `json:"key"`

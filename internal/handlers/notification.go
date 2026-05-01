@@ -31,9 +31,7 @@ func (h *Handlers) registerInnerNotificationRoutes(api *gin.RouterGroup) {
 	in.Use(models.AuthRequired)
 	{
 		in.GET("", h.innerNotificationsListHandler)
-		in.POST("", h.innerNotificationCreateHandler)
 		in.GET("/:id", h.innerNotificationDetailHandler)
-		in.PUT("/:id", h.innerNotificationUpdateHandler)
 		in.PATCH("/:id/read", h.innerNotificationMarkReadHandler)
 		in.DELETE("/:id", h.innerNotificationDeleteHandler)
 	}
@@ -362,69 +360,6 @@ func (h *Handlers) innerNotificationDetailHandler(c *gin.Context) {
 		return
 	}
 	response.Success(c, "ok", row)
-}
-
-func (h *Handlers) innerNotificationCreateHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
-	var req InnerNotificationCreateReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
-		return
-	}
-	admin := models.CurrentUser(c)
-	row := models.InternalNotification{
-		UserID:  req.UserID,
-		Title:   req.Title,
-		Content: req.Content,
-		Remark:  req.Remark,
-		Read:    false,
-	}
-	row.SetCreateInfo(models.OperatorFromUser(admin))
-	if err := models.CreateInternalNotification(h.db, &row); err != nil {
-		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
-		return
-	}
-	response.Success(c, "创建成功", row)
-}
-
-func (h *Handlers) innerNotificationUpdateHandler(c *gin.Context) {
-	if !models.RequireAdmin(c) {
-		return
-	}
-	id, ok := models.ParseUintParam(c, "id")
-	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
-		return
-	}
-	var req InnerNotificationUpdateReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
-		return
-	}
-	row, err := models.GetInternalNotificationByID(h.db, id)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "通知不存在", nil)
-			return
-		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
-		return
-	}
-	admin := models.CurrentUser(c)
-	row.Title = req.Title
-	row.Content = req.Content
-	row.Remark = req.Remark
-	if req.Read != nil {
-		row.Read = *req.Read
-	}
-	row.SetUpdateInfo(models.OperatorFromUser(admin))
-	if err := models.SaveInternalNotification(h.db, row); err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
-		return
-	}
-	response.Success(c, "更新成功", row)
 }
 
 func (h *Handlers) innerNotificationMarkReadHandler(c *gin.Context) {

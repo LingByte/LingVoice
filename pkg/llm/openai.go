@@ -513,9 +513,9 @@ func (oh *OpenaiHandler) QueryWithOptions(text string, options *QueryOptions) (*
 		request.LogitBias = options.LogitBias
 	}
 	if reqAudit, err := json.Marshal(request); err == nil {
-		tracker.SetRequestContent(ClipOpenAPIUsageBody(string(reqAudit)))
+		tracker.SetRequestContent(ClipRelayUsageBody(string(reqAudit)))
 	} else {
-		tracker.SetRequestContent(ClipOpenAPIUsageBody(text))
+		tracker.SetRequestContent(ClipRelayUsageBody(text))
 	}
 
 	reqCtx, cancel := context.WithCancel(oh.ctx)
@@ -526,7 +526,7 @@ func (oh *OpenaiHandler) QueryWithOptions(text string, options *QueryOptions) (*
 	}()
 	response, err := oh.client.CreateChatCompletion(reqCtx, request)
 	if err != nil {
-		tracker.SetResponseContent(ClipOpenAPIUsageBody(err.Error()))
+		tracker.SetResponseContent(ClipRelayUsageBody(err.Error()))
 		tracker.SetStatusCode(http.StatusBadGateway)
 		tracker.Error("API_ERROR", err.Error())
 		return nil, err
@@ -647,7 +647,7 @@ func (oh *OpenaiHandler) QueryWithOptions(text string, options *QueryOptions) (*
 	}
 	if b, e := json.Marshal(response); e == nil {
 		llmDetails.RawResponseJSON = string(b)
-		tracker.SetResponseContent(ClipOpenAPIUsageBody(string(b)))
+		tracker.SetResponseContent(ClipRelayUsageBody(string(b)))
 	}
 
 	tracker.Complete(resp)

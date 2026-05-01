@@ -8,7 +8,6 @@ import (
 
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/utils/base"
-	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -118,16 +117,6 @@ func OperatorFromUser(u *User) string {
 	return fmt.Sprintf("uid:%d", u.ID)
 }
 
-// RequireAdmin writes 403 and returns false if the caller is not an admin.
-func RequireAdmin(c *gin.Context) bool {
-	u := CurrentUser(c)
-	if u == nil || !u.IsAdmin() {
-		response.FailWithCode(c, 403, "需要管理员权限", nil)
-		return false
-	}
-	return true
-}
-
 // ParseUintParam parses a positive uint path param.
 func ParseUintParam(c *gin.Context, name string) (uint, bool) {
 	s := strings.TrimSpace(c.Param(name))
@@ -211,4 +200,31 @@ func ParseQueryUint(c *gin.Context, name string) (uint, bool) {
 		return 0, false
 	}
 	return uint(n), true
+}
+
+func ParseQueryTime(c *gin.Context, name string) (time.Time, bool) {
+	s := strings.TrimSpace(c.Query(name))
+	if s == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+func ParseQueryBool(c *gin.Context, name string) (bool, bool) {
+	s := strings.ToLower(strings.TrimSpace(c.Query(name)))
+	if s == "" {
+		return false, false
+	}
+	switch s {
+	case "1", "true", "yes":
+		return true, true
+	case "0", "false", "no":
+		return false, true
+	default:
+		return false, false
+	}
 }

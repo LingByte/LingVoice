@@ -12,7 +12,7 @@ import (
 // Copyright (c) 2026 LingByte
 // SPDX-License-Identifier: MIT
 
-// ErrCredentialUniqueKeyExhausted 多次尝试仍因唯一键冲突无法插入凭证。
+// ErrCredentialUniqueKeyExhausted 多次尝试仍因唯一键冲突无法插入
 var ErrCredentialUniqueKeyExhausted = errors.New("credential: unique key retries exhausted")
 
 // 凭证服务类型：同一套「密钥 + 配额 + IP 限制」承载多种上游能力。

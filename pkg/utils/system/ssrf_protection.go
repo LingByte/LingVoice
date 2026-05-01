@@ -21,16 +21,6 @@ type SSRFProtection struct {
 	ApplyIPFilterForDomain bool     // 对域名启用IP过滤
 }
 
-// DefaultSSRFProtection 默认SSRF防护配置
-var DefaultSSRFProtection = &SSRFProtection{
-	AllowPrivateIp:   false,
-	DomainFilterMode: true,
-	DomainList:       []string{},
-	IpFilterMode:     true,
-	IpList:           []string{},
-	AllowedPorts:     []int{},
-}
-
 // isPrivateIP 检查IP是否为私有地址
 func isPrivateIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
