@@ -98,7 +98,7 @@ func (h *Handlers) llmChannelsListHandler(c *gin.Context) {
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	var list []models.LLMChannel
@@ -107,14 +107,14 @@ func (h *Handlers) llmChannelsListHandler(c *gin.Context) {
 		listQ = listQ.Where("`group` = ?", g)
 	}
 	if err := listQ.Order("id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	totalPage := int(total) / pageSize
 	if int(total)%pageSize != 0 {
 		totalPage++
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"list":      list,
 		"total":     total,
 		"page":      page,
@@ -151,7 +151,7 @@ func (h *Handlers) llmChannelsCatalogHandler(c *gin.Context) {
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	var list []models.LLMChannel
@@ -160,7 +160,7 @@ func (h *Handlers) llmChannelsCatalogHandler(c *gin.Context) {
 		listQ = listQ.Where("`group` = ?", g)
 	}
 	if err := listQ.Order("id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	out := make([]llmChannelCatalogItem, 0, len(list))
@@ -179,7 +179,7 @@ func (h *Handlers) llmChannelsCatalogHandler(c *gin.Context) {
 	if int(total)%pageSize != 0 {
 		totalPage++
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"list":      out,
 		"total":     total,
 		"page":      page,
@@ -191,29 +191,29 @@ func (h *Handlers) llmChannelsCatalogHandler(c *gin.Context) {
 func (h *Handlers) llmChannelDetailHandler(c *gin.Context) {
 	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var row models.LLMChannel
 	if err := h.db.First(&row, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "渠道不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "渠道不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{"channel": row})
+	response.SuccessOK(c, gin.H{"channel": row})
 }
 
 func (h *Handlers) llmChannelCreateHandler(c *gin.Context) {
 	var body llmChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	if strings.TrimSpace(body.Key) == "" {
-		response.FailWithCode(c, 400, "key 不能为空", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "key 不能为空"), nil)
 		return
 	}
 	now := time.Now().Unix()
@@ -227,7 +227,7 @@ func (h *Handlers) llmChannelCreateHandler(c *gin.Context) {
 	}
 	applyLLMWrite(&body, &row, false)
 	if !models.IsLLMChannelProtocolKnown(row.Protocol) {
-		response.FailWithCode(c, 400, "无效的 protocol，可选: openai, anthropic, coze, ollama, lmstudio", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 protocol，可选: openai, anthropic, coze, ollama, lmstudio"), nil)
 		return
 	}
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
@@ -236,39 +236,39 @@ func (h *Handlers) llmChannelCreateHandler(c *gin.Context) {
 		}
 		return models.SyncLLMAbilitiesFromChannel(tx, &row)
 	}); err != nil {
-		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "创建失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "创建成功", row)
+	response.Success(c, response.Msg(c, "创建成功"), row)
 }
 
 func (h *Handlers) llmChannelUpdateHandler(c *gin.Context) {
 	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var body llmChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	var row models.LLMChannel
 	if err := h.db.First(&row, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "渠道不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "渠道不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	applyLLMWrite(&body, &row, true)
 	if strings.TrimSpace(row.Key) == "" {
-		response.FailWithCode(c, 400, "key 不能为空", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "key 不能为空"), nil)
 		return
 	}
 	if strings.TrimSpace(body.Protocol) != "" && !models.IsLLMChannelProtocolKnown(row.Protocol) {
-		response.FailWithCode(c, 400, "无效的 protocol", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 protocol"), nil)
 		return
 	}
 	if !models.IsLLMChannelProtocolKnown(row.Protocol) {
@@ -280,25 +280,25 @@ func (h *Handlers) llmChannelUpdateHandler(c *gin.Context) {
 		}
 		return models.SyncLLMAbilitiesFromChannel(tx, &row)
 	}); err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "更新成功", row)
+	response.Success(c, response.Msg(c, "更新成功"), row)
 }
 
 func (h *Handlers) llmChannelDeleteHandler(c *gin.Context) {
 	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var probe models.LLMChannel
 	if err := h.db.First(&probe, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "渠道不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "渠道不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	if err := h.db.Transaction(func(tx *gorm.DB) error {
@@ -307,10 +307,10 @@ func (h *Handlers) llmChannelDeleteHandler(c *gin.Context) {
 		}
 		return tx.Delete(&models.LLMChannel{}, id).Error
 	}); err != nil {
-		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "删除失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "删除成功", gin.H{"id": id})
+	response.Success(c, response.Msg(c, "删除成功"), gin.H{"id": id})
 }
 
 type SpeechChannelWrite struct {
@@ -380,7 +380,7 @@ func (h *Handlers) asrChannelsListHandler(c *gin.Context) {
 	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	var list []models.ASRChannel
@@ -392,14 +392,14 @@ func (h *Handlers) asrChannelsListHandler(c *gin.Context) {
 		listQ = listQ.Where("provider = ?", p)
 	}
 	if err := listQ.Order("sort_order ASC, id ASC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	totalPage := int(total) / pageSize
 	if int(total)%pageSize != 0 {
 		totalPage++
 	}
-	response.Success(c, "ok", gin.H{"list": list, "total": total, "page": page, "pageSize": pageSize, "totalPage": totalPage})
+	response.SuccessOK(c, gin.H{"list": list, "total": total, "page": page, "pageSize": pageSize, "totalPage": totalPage})
 }
 
 func (h *Handlers) ttsChannelsListHandler(c *gin.Context) {
@@ -419,7 +419,7 @@ func (h *Handlers) ttsChannelsListHandler(c *gin.Context) {
 	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	var list []models.TTSChannel
@@ -431,56 +431,56 @@ func (h *Handlers) ttsChannelsListHandler(c *gin.Context) {
 		listQ = listQ.Where("provider = ?", p)
 	}
 	if err := listQ.Order("sort_order ASC, id ASC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	totalPage := int(total) / pageSize
 	if int(total)%pageSize != 0 {
 		totalPage++
 	}
-	response.Success(c, "ok", gin.H{"list": list, "total": total, "page": page, "pageSize": pageSize, "totalPage": totalPage})
+	response.SuccessOK(c, gin.H{"list": list, "total": total, "page": page, "pageSize": pageSize, "totalPage": totalPage})
 }
 
 func (h *Handlers) asrChannelDetailHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var row models.ASRChannel
 	if err := h.db.First(&row, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "渠道不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "渠道不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{"channel": row})
+	response.SuccessOK(c, gin.H{"channel": row})
 }
 
 func (h *Handlers) ttsChannelDetailHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var row models.TTSChannel
 	if err := h.db.First(&row, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "渠道不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "渠道不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{"channel": row})
+	response.SuccessOK(c, gin.H{"channel": row})
 }
 
 func (h *Handlers) asrChannelCreateHandler(c *gin.Context) {
 	var body SpeechChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	if err := validateConfigJSON(body.ConfigJSON); err != nil {
@@ -492,16 +492,16 @@ func (h *Handlers) asrChannelCreateHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	row.SetCreateInfo(models.OperatorFromUser(u))
 	if err := h.db.Create(&row).Error; err != nil {
-		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "创建失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "创建成功", row)
+	response.Success(c, response.Msg(c, "创建成功"), row)
 }
 
 func (h *Handlers) ttsChannelCreateHandler(c *gin.Context) {
 	var body SpeechChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	if err := validateConfigJSON(body.ConfigJSON); err != nil {
@@ -513,21 +513,21 @@ func (h *Handlers) ttsChannelCreateHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	row.SetCreateInfo(models.OperatorFromUser(u))
 	if err := h.db.Create(&row).Error; err != nil {
-		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "创建失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "创建成功", row)
+	response.Success(c, response.Msg(c, "创建成功"), row)
 }
 
 func (h *Handlers) asrChannelUpdateHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var body SpeechChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	if err := validateConfigJSON(body.ConfigJSON); err != nil {
@@ -537,30 +537,30 @@ func (h *Handlers) asrChannelUpdateHandler(c *gin.Context) {
 	var row models.ASRChannel
 	if err := h.db.First(&row, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "渠道不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "渠道不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	speechWriteToASR(&body, &row)
 	row.SetUpdateInfo(models.OperatorFromUser(models.CurrentUser(c)))
 	if err := h.db.Save(&row).Error; err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "更新成功", row)
+	response.Success(c, response.Msg(c, "更新成功"), row)
 }
 
 func (h *Handlers) ttsChannelUpdateHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var body SpeechChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	if err := validateConfigJSON(body.ConfigJSON); err != nil {
@@ -570,53 +570,53 @@ func (h *Handlers) ttsChannelUpdateHandler(c *gin.Context) {
 	var row models.TTSChannel
 	if err := h.db.First(&row, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "渠道不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "渠道不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	speechWriteToTTS(&body, &row)
 	row.SetUpdateInfo(models.OperatorFromUser(models.CurrentUser(c)))
 	if err := h.db.Save(&row).Error; err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "更新成功", row)
+	response.Success(c, response.Msg(c, "更新成功"), row)
 }
 
 func (h *Handlers) asrChannelDeleteHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	res := h.db.Delete(&models.ASRChannel{}, id)
 	if res.Error != nil {
-		response.Fail(c, "删除失败", gin.H{"error": res.Error.Error()})
+		response.Fail(c, response.Msg(c, "删除失败"), gin.H{"error": res.Error.Error()})
 		return
 	}
 	if res.RowsAffected == 0 {
-		response.FailWithCode(c, 404, "渠道不存在", nil)
+		response.FailWithCode(c, 404, response.Msg(c, "渠道不存在"), nil)
 		return
 	}
-	response.Success(c, "删除成功", gin.H{"id": id})
+	response.Success(c, response.Msg(c, "删除成功"), gin.H{"id": id})
 }
 
 func (h *Handlers) ttsChannelDeleteHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	res := h.db.Delete(&models.TTSChannel{}, id)
 	if res.Error != nil {
-		response.Fail(c, "删除失败", gin.H{"error": res.Error.Error()})
+		response.Fail(c, response.Msg(c, "删除失败"), gin.H{"error": res.Error.Error()})
 		return
 	}
 	if res.RowsAffected == 0 {
-		response.FailWithCode(c, 404, "渠道不存在", nil)
+		response.FailWithCode(c, 404, response.Msg(c, "渠道不存在"), nil)
 		return
 	}
-	response.Success(c, "删除成功", gin.H{"id": id})
+	response.Success(c, response.Msg(c, "删除成功"), gin.H{"id": id})
 }

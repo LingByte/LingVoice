@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/internal/models"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -39,7 +40,7 @@ func OpenAPILLMCredentialFromContext(c *gin.Context) (*models.Credential, bool) 
 func OpenAPILLMProxyAuth(db *gorm.DB, errStyle OpenAPILLMProxyAuthStyle) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if db == nil {
-			abortLLMAuth(c, errStyle, http.StatusInternalServerError, "service_unavailable", "database not configured")
+			abortLLMAuth(c, errStyle, http.StatusInternalServerError, "service_unavailable", "数据库未配置")
 			return
 		}
 		if c.Request.Method == http.MethodOptions {
@@ -49,28 +50,28 @@ func OpenAPILLMProxyAuth(db *gorm.DB, errStyle OpenAPILLMProxyAuthStyle) gin.Han
 
 		token := extractLLMProxyBearerOrAPIKey(c)
 		if token == "" {
-			abortLLMAuth(c, errStyle, http.StatusUnauthorized, "invalid_api_key", "Missing or invalid authentication")
+			abortLLMAuth(c, errStyle, http.StatusUnauthorized, "invalid_api_key", "缺少或无效的认证信息")
 			return
 		}
 
 		var cred models.Credential
 		if err := db.Where("`key` = ? AND status = ? AND kind = ?", token, 1, models.CredentialKindLLM).
 			First(&cred).Error; err != nil {
-			abortLLMAuth(c, errStyle, http.StatusUnauthorized, "invalid_api_key", "Incorrect API key provided")
+			abortLLMAuth(c, errStyle, http.StatusUnauthorized, "invalid_api_key", "API Key 不正确")
 			return
 		}
 		now := time.Now().Unix()
 		if cred.ExpiredTime != -1 && cred.ExpiredTime > 0 && cred.ExpiredTime < now {
-			abortLLMAuth(c, errStyle, http.StatusUnauthorized, "invalid_api_key", "API key expired")
+			abortLLMAuth(c, errStyle, http.StatusUnauthorized, "invalid_api_key", "API Key 已过期")
 			return
 		}
 		if !openAPICredentialIPAllowed(&cred, c.ClientIP()) {
-			abortLLMAuth(c, errStyle, http.StatusForbidden, "permission_denied", "Client IP not allowed")
+			abortLLMAuth(c, errStyle, http.StatusForbidden, "permission_denied", "当前 IP 不在凭证允许列表中")
 			return
 		}
 		if !models.CredentialHasRemainingQuota(&cred) {
 			abortLLMAuth(c, errStyle, http.StatusForbidden, models.OpenAPIQuotaReasonCredentialExhausted,
-				"This API key has no remaining credential quota; increase remain_quota or enable unlimited_quota on the key.")
+				"该 API Key 凭证额度已用尽")
 			return
 		}
 
@@ -79,15 +80,15 @@ func OpenAPILLMProxyAuth(db *gorm.DB, errStyle OpenAPILLMProxyAuthStyle) gin.Han
 			if err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					abortLLMAuth(c, errStyle, http.StatusForbidden, models.OpenAPIQuotaReasonUserNotFound,
-						"The user account bound to this API key could not be found.")
+						"该 API Key 绑定的用户不存在")
 					return
 				}
-				abortLLMAuth(c, errStyle, http.StatusInternalServerError, "service_error", "Failed to verify user quota")
+				abortLLMAuth(c, errStyle, http.StatusInternalServerError, "service_error", "校验用户额度失败")
 				return
 			}
 			if !ok {
 				abortLLMAuth(c, errStyle, http.StatusForbidden, models.OpenAPIQuotaReasonUserExhausted,
-					"The owning user account has no remaining user-level quota (separate from API key quota).")
+					"该用户账号用户级额度已用尽")
 				return
 			}
 		}
@@ -113,7 +114,8 @@ func extractLLMProxyBearerOrAPIKey(c *gin.Context) string {
 	return ""
 }
 
-func abortLLMAuth(c *gin.Context, style OpenAPILLMProxyAuthStyle, status int, code, msg string) {
+func abortLLMAuth(c *gin.Context, style OpenAPILLMProxyAuthStyle, status int, code, msgID string) {
+	msg := response.Msg(c, msgID)
 	switch style {
 	case OpenAPILLMStyleAnthropic:
 		errType := "invalid_request_error"

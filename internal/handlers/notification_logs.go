@@ -64,7 +64,7 @@ func (h *Handlers) mailLogsListHandler(c *gin.Context) {
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	var list []mail.MailLog
@@ -82,14 +82,14 @@ func (h *Handlers) mailLogsListHandler(c *gin.Context) {
 		listQ = listQ.Where("channel_name = ?", s)
 	}
 	if err := listQ.Order("id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	totalPage := int(total) / pageSize
 	if int(total)%pageSize != 0 {
 		totalPage++
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"list":      list,
 		"total":     total,
 		"page":      page,
@@ -101,20 +101,20 @@ func (h *Handlers) mailLogsListHandler(c *gin.Context) {
 func (h *Handlers) mailLogDetailHandler(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var row mail.MailLog
 	orgID := models.CurrentOrgID(c)
 	if err := h.db.Where("org_id = ? AND id = ?", orgID, id).First(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "记录不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "记录不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", row)
+	response.SuccessOK(c, row)
 }
 
 // sendCloudWebhookHandler receives SendCloud webhook events and applies them to mail_logs.
@@ -163,19 +163,19 @@ func (h *Handlers) smsLogsListHandler(c *gin.Context) {
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	var list []sms.SMSLog
 	if err := q.Order("id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	totalPage := int(total) / pageSize
 	if int(total)%pageSize != 0 {
 		totalPage++
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"list":      list,
 		"total":     total,
 		"page":      page,
@@ -187,20 +187,20 @@ func (h *Handlers) smsLogsListHandler(c *gin.Context) {
 func (h *Handlers) smsLogDetailHandler(c *gin.Context) {
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	var row sms.SMSLog
 	if err := h.db.Where("org_id = ? AND id = ?", orgID, id).First(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "记录不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "记录不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", row)
+	response.SuccessOK(c, row)
 }
 
 type smsSendBody struct {
@@ -214,23 +214,23 @@ type smsSendBody struct {
 func (h *Handlers) smsSendHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	var req smsSendBody
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	chans, err := listeners.EnabledSMSChannels(h.db, orgID)
 	if err != nil {
-		response.FailWithCode(c, 503, "未配置可用短信渠道", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 503, response.Msg(c, "未配置可用短信渠道"), gin.H{"error": err.Error()})
 		return
 	}
 	sender, err := sms.NewMultiSender(chans, h.db, c.ClientIP(), sms.WithSMSLogOrgID(orgID), sms.WithSMSLogUserID(u.ID))
 	if err != nil {
-		response.FailWithCode(c, 503, "短信服务不可用", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 503, response.Msg(c, "短信服务不可用"), gin.H{"error": err.Error()})
 		return
 	}
 	msg := sms.Message{
@@ -243,8 +243,8 @@ func (h *Handlers) smsSendHandler(c *gin.Context) {
 		Message: msg,
 	}
 	if err := sender.Send(context.Background(), sendReq); err != nil {
-		response.Fail(c, "发送失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "发送失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "已发送", gin.H{"to": req.To})
+	response.Success(c, response.Msg(c, "已发送"), gin.H{"to": req.To})
 }

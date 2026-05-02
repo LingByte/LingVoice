@@ -39,36 +39,36 @@ type chatMessageCreateBody struct {
 func (h *Handlers) chatSessionsListHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	rows, err := models.ListChatSessionsForUser(h.db, strconv.FormatUint(uint64(u.ID), 10), 200)
 	if err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	out := make([]models.ChatSessionAPIRow, 0, len(rows))
 	for i := range rows {
 		out = append(out, models.ChatSessionToAPIRow(&rows[i]))
 	}
-	response.Success(c, "ok", gin.H{"list": out})
+	response.SuccessOK(c, gin.H{"list": out})
 }
 
 // chatSessionCreateHandler POST /api/chat/sessions
 func (h *Handlers) chatSessionCreateHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	var body chatSessionCreateBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	model := strings.TrimSpace(body.Model)
 	if model == "" {
-		response.FailWithCode(c, 400, "缺少 model", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "缺少 model"), nil)
 		return
 	}
 	prov := strings.TrimSpace(body.Provider)
@@ -89,10 +89,10 @@ func (h *Handlers) chatSessionCreateHandler(c *gin.Context) {
 		Status:       "active",
 	}
 	if err := models.CreateChatSession(h.db, &row); err != nil {
-		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "创建失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "创建成功", gin.H{
+	response.Success(c, response.Msg(c, "创建成功"), gin.H{
 		"session": models.ChatSessionToAPIRow(&row),
 	})
 }
@@ -101,24 +101,24 @@ func (h *Handlers) chatSessionCreateHandler(c *gin.Context) {
 func (h *Handlers) chatSessionDetailHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	sid := strings.TrimSpace(c.Param("id"))
 	if sid == "" {
-		response.FailWithCode(c, 400, "无效的会话 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的会话 id"), nil)
 		return
 	}
 	row, err := models.GetChatSessionOwned(h.db, strconv.FormatUint(uint64(u.ID), 10), sid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "会话不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "会话不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"session": models.ChatSessionToAPIRow(row),
 	})
 }
@@ -127,95 +127,95 @@ func (h *Handlers) chatSessionDetailHandler(c *gin.Context) {
 func (h *Handlers) chatSessionPatchHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	sid := strings.TrimSpace(c.Param("id"))
 	if sid == "" {
-		response.FailWithCode(c, 400, "无效的会话 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的会话 id"), nil)
 		return
 	}
 	var body chatSessionPatchBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	_, err := models.GetChatSessionOwned(h.db, strconv.FormatUint(uint64(u.ID), 10), sid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "会话不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "会话不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	title := strings.TrimSpace(body.Title)
 	if err := models.UpdateChatSessionTitle(h.db, strconv.FormatUint(uint64(u.ID), 10), sid, title); err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "已更新", gin.H{"id": sid, "title": title})
+	response.Success(c, response.Msg(c, "已更新"), gin.H{"id": sid, "title": title})
 }
 
 // chatSessionDeleteHandler DELETE /api/chat/sessions/:id
 func (h *Handlers) chatSessionDeleteHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	sid := strings.TrimSpace(c.Param("id"))
 	if sid == "" {
-		response.FailWithCode(c, 400, "无效的会话 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的会话 id"), nil)
 		return
 	}
 	_, err := models.GetChatSessionOwned(h.db, strconv.FormatUint(uint64(u.ID), 10), sid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "会话不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "会话不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	if err := models.SoftDeleteChatSession(h.db, strconv.FormatUint(uint64(u.ID), 10), sid); err != nil {
-		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "删除失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "已删除", gin.H{"id": sid})
+	response.Success(c, response.Msg(c, "已删除"), gin.H{"id": sid})
 }
 
 // chatSessionMessagesListHandler GET /api/chat/sessions/:id/messages
 func (h *Handlers) chatSessionMessagesListHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	sid := strings.TrimSpace(c.Param("id"))
 	if sid == "" {
-		response.FailWithCode(c, 400, "无效的会话 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的会话 id"), nil)
 		return
 	}
 	sess, err := models.GetChatSessionOwned(h.db, strconv.FormatUint(uint64(u.ID), 10), sid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "会话不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "会话不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	rows, err := models.ListChatMessagesForSession(h.db, sid, 500)
 	if err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	out := make([]models.ChatMessageAPIRow, 0, len(rows))
 	for i := range rows {
 		out = append(out, models.ChatMessageToAPIRow(&rows[i]))
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"list": out,
 		"session": gin.H{
 			"id":       sess.ID,
@@ -230,31 +230,31 @@ func (h *Handlers) chatSessionMessagesListHandler(c *gin.Context) {
 func (h *Handlers) chatSessionMessageCreateHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	sid := strings.TrimSpace(c.Param("id"))
 	if sid == "" {
-		response.FailWithCode(c, 400, "无效的会话 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的会话 id"), nil)
 		return
 	}
 	sess, err := models.GetChatSessionOwned(h.db, strconv.FormatUint(uint64(u.ID), 10), sid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "会话不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "会话不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	var body chatMessageCreateBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	role := strings.ToLower(strings.TrimSpace(body.Role))
 	if role != "user" && role != "assistant" && role != "system" {
-		response.FailWithCode(c, 400, "role 须为 user、assistant 或 system", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "role 须为 user、assistant 或 system"), nil)
 		return
 	}
 	model := strings.TrimSpace(body.Model)
@@ -276,11 +276,11 @@ func (h *Handlers) chatSessionMessageCreateHandler(c *gin.Context) {
 		RequestID:  strings.TrimSpace(body.RequestID),
 	}
 	if err := models.CreateChatMessage(h.db, &msg); err != nil {
-		response.Fail(c, "保存失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "保存失败"), gin.H{"error": err.Error()})
 		return
 	}
 	_ = models.TouchChatSessionUpdatedAt(h.db, sid)
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"message": models.ChatMessageToAPIRow(&msg),
 	})
 }

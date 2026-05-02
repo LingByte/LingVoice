@@ -74,19 +74,19 @@ func (h *Handlers) mailTemplatesListHandler(c *gin.Context) {
 	orgID := models.CurrentOrgID(c)
 	total, err := models.CountMailTemplatesByOrg(h.db, orgID)
 	if err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	list, err := models.ListMailTemplatesByOrg(h.db, orgID, offset, pageSize)
 	if err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	totalPage := int(total) / pageSize
 	if int(total)%pageSize != 0 {
 		totalPage++
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"list":      list,
 		"total":     total,
 		"page":      page,
@@ -98,26 +98,26 @@ func (h *Handlers) mailTemplatesListHandler(c *gin.Context) {
 func (h *Handlers) mailTemplateDetailHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	tpl, err := models.GetMailTemplateByOrgAndID(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "模版不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "模版不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", tpl)
+	response.SuccessOK(c, tpl)
 }
 
 func (h *Handlers) mailTemplateCreateHandler(c *gin.Context) {
 	var req MailTemplateCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	u := models.CurrentUser(c)
@@ -136,31 +136,31 @@ func (h *Handlers) mailTemplateCreateHandler(c *gin.Context) {
 	}
 	tpl.SetCreateInfo(models.OperatorFromUser(u))
 	if err := models.CreateMailTemplate(h.db, &tpl); err != nil {
-		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "创建失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "创建成功", tpl)
+	response.Success(c, response.Msg(c, "创建成功"), tpl)
 }
 
 func (h *Handlers) mailTemplateUpdateHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var req MailTemplateUpdateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	tpl, err := models.GetMailTemplateByOrgAndID(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "模版不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "模版不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	u := models.CurrentUser(c)
@@ -173,47 +173,47 @@ func (h *Handlers) mailTemplateUpdateHandler(c *gin.Context) {
 	}
 	tpl.SetUpdateInfo(models.OperatorFromUser(u))
 	if err := models.SaveMailTemplate(h.db, tpl); err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "更新成功", tpl)
+	response.Success(c, response.Msg(c, "更新成功"), tpl)
 }
 
 func (h *Handlers) mailTemplateDeleteHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	n, err := models.DeleteMailTemplateByOrgAndID(h.db, orgID, id)
 	if err != nil {
-		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "删除失败"), gin.H{"error": err.Error()})
 		return
 	}
 	if n == 0 {
-		response.FailWithCode(c, 404, "模版不存在", nil)
+		response.FailWithCode(c, 404, response.Msg(c, "模版不存在"), nil)
 		return
 	}
-	response.Success(c, "删除成功", gin.H{"id": id})
+	response.Success(c, response.Msg(c, "删除成功"), gin.H{"id": id})
 }
 
 // translateMailTemplate calls MyMemory (see pkg/utils/translator.go) to translate template fields.
 func (h *Handlers) mailTemplateTranslateHandler(c *gin.Context) {
 	var req TranslateMailTemplateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	from := strings.TrimSpace(req.FromLocale)
 	to := strings.TrimSpace(req.ToLocale)
 	if to == "" {
-		response.FailWithCode(c, 400, "toLocale 不能为空（请选择模版目标语言）", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "toLocale 不能为空（请选择模版目标语言）"), nil)
 		return
 	}
 	if from == to {
 		html := req.HTMLBody
-		response.Success(c, "ok", TranslateMailTemplateResp{
+		response.SuccessOK(c, TranslateMailTemplateResp{
 			Name:        req.Name,
 			HTMLBody:    html,
 			TextBody:    base.HTMLToPlainText(html),
@@ -240,7 +240,7 @@ func (h *Handlers) mailTemplateTranslateHandler(c *gin.Context) {
 		out.Name, err = base.TranslateLong(tr, req.Name, from, to, maxShort, pause)
 		if err != nil {
 			logger.Warn("translate name", zap.Error(err))
-			response.Fail(c, "翻译失败", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "翻译失败"), gin.H{"error": err.Error()})
 			return
 		}
 	}
@@ -248,7 +248,7 @@ func (h *Handlers) mailTemplateTranslateHandler(c *gin.Context) {
 		out.Description, err = base.TranslateLong(tr, req.Description, from, to, maxShort, pause)
 		if err != nil {
 			logger.Warn("translate description", zap.Error(err))
-			response.Fail(c, "翻译失败", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "翻译失败"), gin.H{"error": err.Error()})
 			return
 		}
 	}
@@ -258,12 +258,12 @@ func (h *Handlers) mailTemplateTranslateHandler(c *gin.Context) {
 		translatedInner, err := base.TranslateLong(tr, inner, from, to, maxHTMLChunk, pause)
 		if err != nil {
 			logger.Warn("translate html body", zap.Error(err))
-			response.Fail(c, "翻译失败", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "翻译失败"), gin.H{"error": err.Error()})
 			return
 		}
 		out.HTMLBody = base.JoinHTMLBodyAfterTranslation(pre, translatedInner, suf)
 	}
 	out.TextBody = base.HTMLToPlainText(out.HTMLBody)
 
-	response.Success(c, "ok", out)
+	response.SuccessOK(c, out)
 }

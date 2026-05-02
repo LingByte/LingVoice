@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/internal/models"
+	"github.com/LingByte/LingVoice/pkg/utils/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -91,7 +92,7 @@ func OpenAPIEmailCredential(db *gorm.DB) gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		if db == nil {
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": "服务未就绪", "data": nil})
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": response.Msg(c, "服务未就绪"), "data": nil})
 			return
 		}
 		if c.Request.Method == http.MethodOptions {
@@ -102,42 +103,42 @@ func OpenAPIEmailCredential(db *gorm.DB) gin.HandlerFunc {
 		auth := strings.TrimSpace(c.GetHeader("LAuthorization"))
 		token, ok := openAPIParseBearerLAuth(auth)
 		if !ok || token == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": "缺少或无效的 LAuthorization（需 Bearer APIKEY）", "data": nil})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": response.Msg(c, "缺少或无效的 LAuthorization（需 Bearer APIKEY）"), "data": nil})
 			return
 		}
 		tsStr := strings.TrimSpace(c.GetHeader("L-Timestamp"))
 		nonce := strings.TrimSpace(c.GetHeader("L-Nonce"))
 		if tsStr == "" || nonce == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "缺少 L-Timestamp 或 L-Nonce", "data": nil})
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"code": 400, "msg": response.Msg(c, "缺少 L-Timestamp 或 L-Nonce"), "data": nil})
 			return
 		}
 		ts, err := strconv.ParseInt(tsStr, 10, 64)
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "L-Timestamp 须为 Unix 秒", "data": nil})
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"code": 400, "msg": response.Msg(c, "L-Timestamp 须为 Unix 秒"), "data": nil})
 			return
 		}
 		now := time.Now().Unix()
 		if ts < now-int64(skew.Seconds()) || ts > now+int64(skew.Seconds()) {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": "L-Timestamp 超出允许时间窗", "data": nil})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": response.Msg(c, "L-Timestamp 超出允许时间窗"), "data": nil})
 			return
 		}
 
 		var cred models.Credential
 		if err := db.Where("`key` = ? AND status = ? AND kind = ?", token, 1, models.CredentialKindEmail).
 			First(&cred).Error; err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": "API Key 无效或已禁用", "data": nil})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": response.Msg(c, "API Key 无效或已禁用"), "data": nil})
 			return
 		}
 		if !openAPIConsumeNonce(nonce, nonceTTL) {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": "L-Nonce 重复或无效", "data": nil})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": response.Msg(c, "L-Nonce 重复或无效"), "data": nil})
 			return
 		}
 		if cred.ExpiredTime != -1 && cred.ExpiredTime > 0 && cred.ExpiredTime < now {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": "API Key 已过期", "data": nil})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "msg": response.Msg(c, "API Key 已过期"), "data": nil})
 			return
 		}
 		if !openAPICredentialIPAllowed(&cred, c.ClientIP()) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": 403, "msg": "当前 IP 不在凭证允许列表中", "data": nil})
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": 403, "msg": response.Msg(c, "当前 IP 不在凭证允许列表中"), "data": nil})
 			return
 		}
 

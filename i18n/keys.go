@@ -3,6 +3,21 @@ package i18n
 // Message keys for i18n translations
 // Use these constants instead of hardcoded strings
 
+// API envelope (HTTP handlers)
+const (
+	MsgAPIOK = "api.ok"
+)
+
+// HTTP / signup abort (response.AbortWithStatusJSON)
+const (
+	MsgHTTPAbortUsernameMinLen     = "http.abort.username_min_len"
+	MsgHTTPAbortUsernameFormat     = "http.abort.username_format"
+	MsgHTTPAbortEmailExists        = "http.abort.email_exists"
+	MsgHTTPAbortPasswordMinLen     = "http.abort.password_min_len"
+	MsgHTTPAbortCaptchaRequired    = "http.abort.captcha_required"
+	MsgHTTPAbortCaptchaInvalid       = "http.abort.captcha_invalid"
+)
+
 // Common error messages
 const (
 	MsgInvalidParams     = "common.invalid_params"

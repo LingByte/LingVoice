@@ -16,16 +16,15 @@ import (
 )
 
 type llmModelMetaWrite struct {
-	ModelName       string `json:"model_name" binding:"required,max=255"`
-	Description     string `json:"description"`
-	Tags            string `json:"tags"`
-	Status          *int   `json:"status"`
-	IconURL         string `json:"icon_url"`
-	Vendor          string `json:"vendor"`
-	SortOrder       *int   `json:"sort_order"`
-	ContextLength   *int   `json:"context_length"`
-	MaxOutputTokens *int   `json:"max_output_tokens"`
-	// 额度策略（与 new-api 模型倍率/按次/按 token/缓存折算思路对齐）
+	ModelName            string   `json:"model_name" binding:"required,max=255"`
+	Description          string   `json:"description"`
+	Tags                 string   `json:"tags"`
+	Status               *int     `json:"status"`
+	IconURL              string   `json:"icon_url"`
+	Vendor               string   `json:"vendor"`
+	SortOrder            *int     `json:"sort_order"`
+	ContextLength        *int     `json:"context_length"`
+	MaxOutputTokens      *int     `json:"max_output_tokens"`
 	QuotaBillingMode     *string  `json:"quota_billing_mode"`
 	QuotaModelRatio      *float64 `json:"quota_model_ratio"`
 	QuotaPromptRatio     *float64 `json:"quota_prompt_ratio"`
@@ -91,7 +90,7 @@ func (h *Handlers) llmModelMetasListHandler(c *gin.Context) {
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	listQ := h.db.Model(&models.LLMModelMeta{})
@@ -106,14 +105,14 @@ func (h *Handlers) llmModelMetasListHandler(c *gin.Context) {
 	}
 	var list []models.LLMModelMeta
 	if err := listQ.Order("sort_order ASC, id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	totalPage := int(total) / pageSize
 	if int(total)%pageSize != 0 {
 		totalPage++
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"list":      list,
 		"total":     total,
 		"page":      page,
@@ -125,25 +124,25 @@ func (h *Handlers) llmModelMetasListHandler(c *gin.Context) {
 func (h *Handlers) llmModelMetaDetailHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var row models.LLMModelMeta
 	if err := h.db.First(&row, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "记录不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "记录不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{"meta": row})
+	response.SuccessOK(c, gin.H{"meta": row})
 }
 
 func (h *Handlers) llmModelMetaCreateHandler(c *gin.Context) {
 	var body llmModelMetaWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	now := time.Now().Unix()
@@ -167,30 +166,30 @@ func (h *Handlers) llmModelMetaCreateHandler(c *gin.Context) {
 	}
 	mergeLLMModelMetaQuota(&row, &body, true)
 	if err := h.db.Create(&row).Error; err != nil {
-		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "创建失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "创建成功", gin.H{"meta": row})
+	response.Success(c, response.Msg(c, "创建成功"), gin.H{"meta": row})
 }
 
 func (h *Handlers) llmModelMetaUpdateHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var body llmModelMetaWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	var row models.LLMModelMeta
 	if err := h.db.First(&row, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "记录不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "记录不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	row.ModelName = strings.TrimSpace(body.ModelName)
@@ -213,32 +212,32 @@ func (h *Handlers) llmModelMetaUpdateHandler(c *gin.Context) {
 	mergeLLMModelMetaQuota(&row, &body, false)
 	row.UpdatedTime = time.Now().Unix()
 	if err := h.db.Save(&row).Error; err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "更新成功", gin.H{"meta": row})
+	response.Success(c, response.Msg(c, "更新成功"), gin.H{"meta": row})
 }
 
 func (h *Handlers) llmModelMetaDeleteHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	if err := h.db.Model(&models.LLMAbility{}).Where("model_meta_id = ?", id).Update("model_meta_id", nil).Error; err != nil {
-		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "删除失败"), gin.H{"error": err.Error()})
 		return
 	}
 	res := h.db.Delete(&models.LLMModelMeta{}, id)
 	if res.Error != nil {
-		response.Fail(c, "删除失败", gin.H{"error": res.Error.Error()})
+		response.Fail(c, response.Msg(c, "删除失败"), gin.H{"error": res.Error.Error()})
 		return
 	}
 	if res.RowsAffected == 0 {
-		response.FailWithCode(c, 404, "记录不存在", nil)
+		response.FailWithCode(c, 404, response.Msg(c, "记录不存在"), nil)
 		return
 	}
-	response.Success(c, "已删除", nil)
+	response.Success(c, response.Msg(c, "已删除"), nil)
 }
 
 type llmModelPlazaCatalogItem struct {
@@ -286,7 +285,7 @@ func (h *Handlers) llmModelPlazaListHandler(c *gin.Context) {
 
 	var metas []models.LLMModelMeta
 	if err := q.Order("sort_order ASC, id DESC").Find(&metas).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -317,7 +316,7 @@ SELECT DISTINCT a.model FROM llm_abilities a
 WHERE NOT EXISTS (SELECT 1 FROM llm_model_metas m WHERE m.model_name = a.model AND m.status = 1)
 ORDER BY a.model
 `).Scan(&orphan).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	if orphan == nil {
@@ -350,7 +349,7 @@ ORDER BY a.model
 	var totalMeta int64
 	_ = h.db.Model(&models.LLMModelMeta{}).Where("status = ?", 1).Count(&totalMeta).Error
 
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"catalog":             catalog,
 		"models_without_meta": orphan,
 		"total_filtered":      len(catalog),

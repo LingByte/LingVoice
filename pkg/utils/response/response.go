@@ -10,8 +10,22 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/LingByte/LingVoice/i18n"
 	"github.com/gin-gonic/gin"
 )
+
+// Msg returns a localized string for the current request (Accept-Language / user locale).
+func Msg(c *gin.Context, messageID string, templateData ...map[string]any) string {
+	if len(templateData) > 0 && templateData[0] != nil {
+		return i18n.T(c, messageID, templateData[0])
+	}
+	return i18n.T(c, messageID)
+}
+
+// SuccessOK responds with code 200 and a localized "OK" message.
+func SuccessOK(c *gin.Context, data interface{}) {
+	Success(c, Msg(c, i18n.MsgAPIOK), data)
+}
 
 type Response struct {
 	Code    int         `json:"code"` // 状态码，通常为 200 表示成功，非 200 为错误码
@@ -82,27 +96,27 @@ func AbortWithStatusJSON(c *gin.Context, httpStatus int, err error) {
 	switch {
 	case strings.Contains(errorMsg, "username must be at least 2 characters long"):
 		errorResponse["code"] = 400
-		errorResponse["msg"] = "用户名至少需要2个字符"
+		errorResponse["msg"] = Msg(c, i18n.MsgHTTPAbortUsernameMinLen)
 		errorResponse["error"] = "INVALID_USERNAME_LENGTH"
 	case strings.Contains(errorMsg, "username can only contain"):
 		errorResponse["code"] = 400
-		errorResponse["msg"] = "用户名只能包含字母（包括中文）、数字、下划线和连字符"
+		errorResponse["msg"] = Msg(c, i18n.MsgHTTPAbortUsernameFormat)
 		errorResponse["error"] = "INVALID_USERNAME_FORMAT"
 	case strings.Contains(errorMsg, "email has exists"):
 		errorResponse["code"] = 400
-		errorResponse["msg"] = "该邮箱已被注册"
+		errorResponse["msg"] = Msg(c, i18n.MsgHTTPAbortEmailExists)
 		errorResponse["error"] = "EMAIL_EXISTS"
 	case strings.Contains(errorMsg, "password must be at least 8 characters long"):
 		errorResponse["code"] = 400
-		errorResponse["msg"] = "密码至少需要8个字符"
+		errorResponse["msg"] = Msg(c, i18n.MsgHTTPAbortPasswordMinLen)
 		errorResponse["error"] = "INVALID_PASSWORD_LENGTH"
 	case strings.Contains(errorMsg, "captcha is required"):
 		errorResponse["code"] = 400
-		errorResponse["msg"] = "请输入验证码"
+		errorResponse["msg"] = Msg(c, i18n.MsgHTTPAbortCaptchaRequired)
 		errorResponse["error"] = "CAPTCHA_REQUIRED"
 	case strings.Contains(errorMsg, "invalid captcha code"):
 		errorResponse["code"] = 400
-		errorResponse["msg"] = "验证码错误"
+		errorResponse["msg"] = Msg(c, i18n.MsgHTTPAbortCaptchaInvalid)
 		errorResponse["error"] = "INVALID_CAPTCHA"
 	default:
 		// 保持原始错误信息

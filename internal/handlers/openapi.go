@@ -76,12 +76,12 @@ func (h *Handlers) registerV1RelayRoutes(engine *gin.Engine) {
 func (h *Handlers) openAPIMailTemplateCreateHandler(c *gin.Context) {
 	cred, ok := middleware.OpenAPICredentialFromContext(c)
 	if !ok || cred == nil {
-		response.FailWithCode(c, 401, "未授权", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未授权"), nil)
 		return
 	}
 	var req MailTemplateCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	orgID := uint(0)
@@ -106,25 +106,25 @@ func (h *Handlers) openAPIMailTemplateCreateHandler(c *gin.Context) {
 	}
 	tpl.SetCreateInfo(fmt.Sprintf("openapi-credential:%d", cred.Id))
 	if err := models.CreateMailTemplate(h.db, &tpl); err != nil {
-		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "创建失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "创建成功", tpl)
+	response.Success(c, response.Msg(c, "创建成功"), tpl)
 }
 
 func (h *Handlers) openAPIMailSendHandler(c *gin.Context) {
 	cred, ok := middleware.OpenAPICredentialFromContext(c)
 	if !ok || cred == nil {
-		response.FailWithCode(c, 401, "未授权", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未授权"), nil)
 		return
 	}
 	var body OpenapiSendMailBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	if body.TemplateID == 0 {
-		response.FailWithCode(c, 400, "缺少有效的 template_id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "缺少有效的 template_id"), nil)
 		return
 	}
 	orgID := uint(0)
@@ -140,18 +140,18 @@ func (h *Handlers) openAPIMailSendHandler(c *gin.Context) {
 	tpl, err := models.GetMailTemplateByID(h.db, body.TemplateID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "模版不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "模版不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询模版失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询模版失败"), gin.H{"error": err.Error()})
 		return
 	}
 	if orgID != 0 && tpl.OrgID != 0 && tpl.OrgID != orgID {
-		response.FailWithCode(c, 403, "无权访问该模版", nil)
+		response.FailWithCode(c, 403, response.Msg(c, "无权访问该模版"), nil)
 		return
 	}
 	if !tpl.Enabled {
-		response.FailWithCode(c, 400, "模版已禁用", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "模版已禁用"), nil)
 		return
 	}
 	params := body.Params
@@ -160,7 +160,7 @@ func (h *Handlers) openAPIMailSendHandler(c *gin.Context) {
 	}
 	htmlOut, err := LingVoice.RenderMailHTML(tpl.HTMLBody, params)
 	if err != nil {
-		response.FailWithCode(c, 400, "正文模版渲染失败", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "正文模版渲染失败"), gin.H{"error": err.Error()})
 		return
 	}
 	subject := strings.TrimSpace(body.Subject)
@@ -172,51 +172,51 @@ func (h *Handlers) openAPIMailSendHandler(c *gin.Context) {
 	} else if strings.Contains(subject, "{{") {
 		subject, err = LingVoice.RenderMailText(subject, params)
 		if err != nil {
-			response.FailWithCode(c, 400, "主题模版渲染失败", gin.H{"error": err.Error()})
+			response.FailWithCode(c, 400, response.Msg(c, "主题模版渲染失败"), gin.H{"error": err.Error()})
 			return
 		}
 		subject = strings.TrimSpace(subject)
 	}
 	if !models.CredentialHasRemainingQuota(cred) {
-		response.FailWithCode(c, 403, "该邮件 API 凭证剩余额度已用尽", gin.H{"reason": models.OpenAPIQuotaReasonCredentialExhausted})
+		response.FailWithCode(c, 403, response.Msg(c, "该邮件 API 凭证剩余额度已用尽"), gin.H{"reason": models.OpenAPIQuotaReasonCredentialExhausted})
 		return
 	}
 	if cred.UserId > 0 {
 		ok, uerr := models.UserHasSpendableQuota(h.db, uint(cred.UserId))
 		if uerr != nil {
 			if errors.Is(uerr, gorm.ErrRecordNotFound) {
-				response.FailWithCode(c, 403, "API Key 所属用户不存在", gin.H{"reason": models.OpenAPIQuotaReasonUserNotFound})
+				response.FailWithCode(c, 403, response.Msg(c, "API Key 所属用户不存在"), gin.H{"reason": models.OpenAPIQuotaReasonUserNotFound})
 				return
 			}
-			response.FailWithCode(c, 500, "校验用户额度失败", gin.H{"error": uerr.Error()})
+			response.FailWithCode(c, 500, response.Msg(c, "校验用户额度失败"), gin.H{"error": uerr.Error()})
 			return
 		}
 		if !ok {
-			response.FailWithCode(c, 403, "所属用户账户剩余额度已用尽", gin.H{"reason": models.OpenAPIQuotaReasonUserExhausted})
+			response.FailWithCode(c, 403, response.Msg(c, "所属用户账户剩余额度已用尽"), gin.H{"reason": models.OpenAPIQuotaReasonUserExhausted})
 			return
 		}
 	}
 
 	cfgs, err := listeners.EnabledMailConfigs(h.db)
 	if err != nil {
-		response.FailWithCode(c, 503, "未配置可用发信渠道", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 503, response.Msg(c, "未配置可用发信渠道"), gin.H{"error": err.Error()})
 		return
 	}
 	mailer, err := mail.NewMailer(cfgs, h.db, c.ClientIP(), mail.WithMailLogUserID(logUID), mail.WithMailLogOrgID(orgID))
 	if err != nil {
-		response.FailWithCode(c, 503, "发信服务不可用", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 503, response.Msg(c, "发信服务不可用"), gin.H{"error": err.Error()})
 		return
 	}
 	ctx := context.Background()
 	to := strings.TrimSpace(body.To)
 	if err := mailer.SendHTML(ctx, to, subject, htmlOut); err != nil {
-		response.Fail(c, "发送失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "发送失败"), gin.H{"error": err.Error()})
 		return
 	}
 
 	_ = models.BumpCredentialUsedAndDecrementRemain(h.db, cred.Id, cred.UnlimitedQuota, 1)
 
-	response.Success(c, "已发送", gin.H{
+	response.Success(c, response.Msg(c, "已发送"), gin.H{
 		"to":          to,
 		"template_id": tpl.ID,
 		"code":        tpl.Code,

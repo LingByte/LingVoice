@@ -63,7 +63,7 @@ type registerRequest struct {
 func (h *Handlers) authSendVerifyEmailHandler(c *gin.Context) {
 	var req sendVerifyEmailRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "无效的请求", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的请求"), nil)
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(req.Email))
@@ -72,8 +72,6 @@ func (h *Handlers) authSendVerifyEmailHandler(c *gin.Context) {
 	isRegistration := false
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// For registration, create a temporary user record to store the verification code
-			// This will be replaced when the actual registration happens
 			isRegistration = true
 			tempUser := &models.User{
 				Email:         email,
@@ -81,48 +79,48 @@ func (h *Handlers) authSendVerifyEmailHandler(c *gin.Context) {
 				EmailVerified: false,
 			}
 			if err := db.Create(tempUser).Error; err != nil {
-				response.FailWithCode(c, 500, "无法创建临时记录", nil)
+				response.FailWithCode(c, 500, response.Msg(c, "无法创建临时记录"), nil)
 				return
 			}
 			user = tempUser
 		} else {
-			response.FailWithCode(c, 500, "查询失败", nil)
+			response.FailWithCode(c, 500, response.Msg(c, "查询失败"), nil)
 			return
 		}
 	}
 	// Rate limiting: check if verification code was sent within last 60 seconds
 	if user.EmailVerifyExpires != nil && time.Since(*user.EmailVerifyExpires) < -9*time.Minute {
-		response.FailWithCode(c, 429, "验证码发送过于频繁，请60秒后再试", nil)
+		response.FailWithCode(c, 429, response.Msg(c, "验证码发送过于频繁，请60秒后再试"), nil)
 		return
 	}
 	code, err := models.GenerateEmailVerifyToken(db, user)
 	if err != nil {
-		response.FailWithCode(c, 500, "无法生成验证码", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "无法生成验证码"), nil)
 		return
 	}
 	base.Sig().Emit(constants.SigUserVerifyEmail, user, code, c.ClientIP(), c.Request.UserAgent(), db)
 	if isRegistration {
-		response.Success(c, "验证码已发送，请查收邮箱", nil)
+		response.Success(c, response.Msg(c, "验证码已发送，请查收邮箱"), nil)
 	} else {
-		response.Success(c, "若该邮箱已注册，将收到验证码邮件", nil)
+		response.Success(c, response.Msg(c, "若该邮箱已注册，将收到验证码邮件"), nil)
 	}
 }
 
 func (h *Handlers) authLoginHandler(c *gin.Context) {
 	var form models.LoginForm
 	if err := c.ShouldBindJSON(&form); err != nil {
-		response.FailWithCode(c, 400, "无效的请求", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的请求"), nil)
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(form.Email))
 	user, err := models.GetUserByEmail(h.db, email)
 	if err != nil || user == nil {
-		response.FailWithCode(c, 401, "邮箱或密码错误", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "邮箱或密码错误"), nil)
 		return
 	}
 	pw := strings.TrimSpace(form.Password)
 	if pw == "" {
-		response.FailWithCode(c, 401, "邮箱或密码错误", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "邮箱或密码错误"), nil)
 		return
 	}
 	ok := false
@@ -132,11 +130,11 @@ func (h *Handlers) authLoginHandler(c *gin.Context) {
 		ok = models.CheckPassword(user, pw)
 	}
 	if !ok {
-		response.FailWithCode(c, 401, "邮箱或密码错误", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "邮箱或密码错误"), nil)
 		return
 	}
 	if err := models.CheckUserAllowLogin(h.db, user); err != nil {
-		response.FailWithCode(c, 403, "账号当前不可登录", nil)
+		response.FailWithCode(c, 403, response.Msg(c, "账号当前不可登录"), nil)
 		return
 	}
 	if strings.TrimSpace(form.Timezone) != "" {
@@ -146,23 +144,23 @@ func (h *Handlers) authLoginHandler(c *gin.Context) {
 	payload, err := models.BuildLoginResponse(h.db, user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
-		response.FailWithCode(c, 500, "登录令牌签发失败", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "登录令牌签发失败"), nil)
 		return
 	}
-	response.Success(c, "登录成功", payload)
+	response.Success(c, response.Msg(c, "登录成功"), payload)
 }
 
 func (h *Handlers) authRegisterHandler(c *gin.Context) {
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "无效的请求", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的请求"), nil)
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	code := strings.TrimSpace(req.Code)
 	password := strings.TrimSpace(req.Password)
 	if email == "" || password == "" || code == "" {
-		response.FailWithCode(c, 400, "邮箱、密码和验证码不能为空", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "邮箱、密码和验证码不能为空"), nil)
 		return
 	}
 	// Verify email code before allowing registration
@@ -170,15 +168,15 @@ func (h *Handlers) authRegisterHandler(c *gin.Context) {
 	err := h.db.Where("email = ? AND email_verify_token = ? AND email_verify_expires > ?", email, code, time.Now()).First(&tempUser).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 400, "验证码无效或已过期", nil)
+			response.FailWithCode(c, 400, response.Msg(c, "验证码无效或已过期"), nil)
 		} else {
-			response.FailWithCode(c, 500, "验证码验证失败", nil)
+			response.FailWithCode(c, 500, response.Msg(c, "验证码验证失败"), nil)
 		}
 		return
 	}
 	// Check if this is a pending registration (status = pending_verification) or an existing user
 	if tempUser.Status == models.UserStatusActive && tempUser.Password != "" {
-		response.FailWithCode(c, 400, "该邮箱已被注册", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "该邮箱已被注册"), nil)
 		return
 	}
 	// Update the temporary user record with the actual registration data
@@ -194,13 +192,13 @@ func (h *Handlers) authRegisterHandler(c *gin.Context) {
 		updateData["display_name"] = strings.TrimSpace(req.DisplayName)
 	}
 	if err := models.UpdateUserFields(h.db, &tempUser, updateData); err != nil {
-		response.FailWithCode(c, 500, "注册失败", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "注册失败"), nil)
 		return
 	}
 	// Reload the user to get updated data
 	user, err := models.GetUserByEmail(h.db, email)
 	if err != nil {
-		response.FailWithCode(c, 500, "注册失败", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "注册失败"), nil)
 		return
 	}
 	// Ensure personal organization and default org binding for multi-tenancy.
@@ -211,30 +209,30 @@ func (h *Handlers) authRegisterHandler(c *gin.Context) {
 	payload, err := models.BuildLoginResponse(h.db, user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
-		response.FailWithCode(c, 500, "注册成功但令牌签发失败", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "注册成功但令牌签发失败"), nil)
 		return
 	}
-	response.Success(c, "注册成功", payload)
+	response.Success(c, response.Msg(c, "注册成功"), payload)
 }
 
 func (h *Handlers) authLogoutHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	models.Logout(c, u)
-	response.Success(c, "已退出", nil)
+	response.Success(c, response.Msg(c, "已退出"), nil)
 }
 
 func (h *Handlers) authMeHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	prof, err := models.EnsureUserProfile(h.db, u.ID)
 	if err != nil {
-		response.FailWithCode(c, 500, "加载用户资料失败", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 500, response.Msg(c, "加载用户资料失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", models.MeResponse{User: models.NewUserResponse(u, prof)})
+	response.SuccessOK(c, models.MeResponse{User: models.NewUserResponse(u, prof)})
 }
 
 type verifyEmailLoginRequest struct {
@@ -246,7 +244,7 @@ type verifyEmailLoginRequest struct {
 func (h *Handlers) authVerifyEmailLoginHandler(c *gin.Context) {
 	var req verifyEmailLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "无效的请求", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的请求"), nil)
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(req.Email))
@@ -256,17 +254,17 @@ func (h *Handlers) authVerifyEmailLoginHandler(c *gin.Context) {
 		return
 	}
 	if err := models.CheckUserAllowLogin(h.db, user); err != nil {
-		response.FailWithCode(c, 403, "账号当前不可登录", nil)
+		response.FailWithCode(c, 403, response.Msg(c, "账号当前不可登录"), nil)
 		return
 	}
 	models.Login(c, user)
 	payload, err := models.BuildLoginResponse(h.db, user)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
-		response.FailWithCode(c, 500, "登录令牌签发失败", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "登录令牌签发失败"), nil)
 		return
 	}
-	response.Success(c, "登录成功", payload)
+	response.Success(c, response.Msg(c, "登录成功"), payload)
 }
 
 type refreshTokenRequest struct {
@@ -276,12 +274,12 @@ type refreshTokenRequest struct {
 // authRefreshHandler exchanges a valid refresh JWT for a new access + refresh pair.
 func (h *Handlers) authRefreshHandler(c *gin.Context) {
 	if config.GlobalConfig == nil {
-		response.FailWithCode(c, 500, "服务未初始化", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "服务未初始化"), nil)
 		return
 	}
 	var req refreshTokenRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "无效的请求", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的请求"), nil)
 		return
 	}
 	rt := strings.TrimSpace(req.RefreshToken)
@@ -297,26 +295,26 @@ func (h *Handlers) authRefreshHandler(c *gin.Context) {
 		payload, err = accessutils.ParseRefreshToken(rt, config.GlobalConfig.Auth.RefreshJWTSigningKey())
 	}
 	if err != nil {
-		response.FailWithCode(c, 401, "刷新令牌无效或已过期", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "刷新令牌无效或已过期"), nil)
 		return
 	}
 	var fresh models.User
 	if err := h.db.Where("id = ?", payload.UserID).First(&fresh).Error; err != nil {
-		response.FailWithCode(c, 401, "刷新令牌无效", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "刷新令牌无效"), nil)
 		return
 	}
 	if err := models.CheckUserAllowLogin(h.db, &fresh); err != nil {
-		response.FailWithCode(c, 403, "账号当前不可登录", nil)
+		response.FailWithCode(c, 403, response.Msg(c, "账号当前不可登录"), nil)
 		return
 	}
 	models.Login(c, &fresh)
 	out, err := models.BuildLoginResponse(h.db, &fresh)
 	if err != nil {
 		logger.Error("auth.jwt.sign_failed", zap.Error(err))
-		response.FailWithCode(c, 500, "令牌签发失败", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "令牌签发失败"), nil)
 		return
 	}
-	response.Success(c, "ok", out)
+	response.SuccessOK(c, out)
 }
 
 // adminUsersListHandler GET /api/admin/users
@@ -341,7 +339,7 @@ func (h *Handlers) adminUsersListHandler(c *gin.Context) {
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -358,7 +356,7 @@ func (h *Handlers) adminUsersListHandler(c *gin.Context) {
 
 	var list []models.User
 	if err := listQ.Order("id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	profByID := make(map[uint]*models.UserProfile)
@@ -369,7 +367,7 @@ func (h *Handlers) adminUsersListHandler(c *gin.Context) {
 		}
 		var profs []models.UserProfile
 		if err := h.db.Where("user_id IN ?", ids).Find(&profs).Error; err != nil {
-			response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 			return
 		}
 		for i := range profs {
@@ -385,7 +383,7 @@ func (h *Handlers) adminUsersListHandler(c *gin.Context) {
 	if int(total)%pageSize != 0 {
 		totalPage++
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"list":      listOut,
 		"total":     total,
 		"page":      page,
@@ -398,20 +396,20 @@ func (h *Handlers) adminUsersListHandler(c *gin.Context) {
 func (h *Handlers) adminUserDetailHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的用户 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的用户 id"), nil)
 		return
 	}
 	var row models.User
 	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "用户不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "用户不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	prof, _ := models.GetUserProfile(h.db, row.ID)
-	response.Success(c, "ok", gin.H{"user": models.AdminUserJSON(row, prof)})
+	response.SuccessOK(c, gin.H{"user": models.AdminUserJSON(row, prof)})
 }
 
 // adminUserPatchHandler PATCH /api/admin/users/:id
@@ -419,26 +417,26 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 	op := models.CurrentUser(c)
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的用户 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的用户 id"), nil)
 		return
 	}
 	var body adminPatchUserBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	var row models.User
 	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "用户不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "用户不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 
 	if row.IsSuperAdmin() && !op.IsSuperAdmin() {
-		response.FailWithCode(c, 403, "无权修改超级管理员账号", nil)
+		response.FailWithCode(c, 403, response.Msg(c, "无权修改超级管理员账号"), nil)
 		return
 	}
 
@@ -446,19 +444,19 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 	profVals := map[string]any{}
 	if status := strings.TrimSpace(body.Status); status != "" {
 		if op.ID == row.ID && !models.UserStatusAllowsLogin(status) {
-			response.FailWithCode(c, 400, "不能将本人账号设为不可登录状态", nil)
+			response.FailWithCode(c, 400, response.Msg(c, "不能将本人账号设为不可登录状态"), nil)
 			return
 		}
 		userVals["status"] = status
 	}
 	if r := strings.TrimSpace(body.Role); r != "" {
 		if r != models.RoleUser && r != models.RoleAdmin && r != models.RoleSuperAdmin {
-			response.FailWithCode(c, 400, "无效的 role", nil)
+			response.FailWithCode(c, 400, response.Msg(c, "无效的 role"), nil)
 			return
 		}
 		if r != row.Role {
 			if !op.IsSuperAdmin() {
-				response.FailWithCode(c, 403, "仅超级管理员可变更用户角色", nil)
+				response.FailWithCode(c, 403, response.Msg(c, "仅超级管理员可变更用户角色"), nil)
 				return
 			}
 			userVals["role"] = r
@@ -473,7 +471,7 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 	if body.Phone != nil {
 		p := strings.TrimSpace(*body.Phone)
 		if len(p) > 64 {
-			response.FailWithCode(c, 400, "phone 过长", nil)
+			response.FailWithCode(c, 400, response.Msg(c, "phone 过长"), nil)
 			return
 		}
 		userVals["phone"] = p
@@ -511,7 +509,7 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 	if body.RemainQuota != nil {
 		v := *body.RemainQuota
 		if v < 0 {
-			response.FailWithCode(c, 400, "remain_quota 不能为负", nil)
+			response.FailWithCode(c, 400, response.Msg(c, "remain_quota 不能为负"), nil)
 			return
 		}
 		userVals["remain_quota"] = v
@@ -519,7 +517,7 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 	if body.UsedQuota != nil {
 		v := *body.UsedQuota
 		if v < 0 {
-			response.FailWithCode(c, 400, "used_quota 不能为负", nil)
+			response.FailWithCode(c, 400, response.Msg(c, "used_quota 不能为负"), nil)
 			return
 		}
 		userVals["used_quota"] = v
@@ -528,29 +526,29 @@ func (h *Handlers) adminUserPatchHandler(c *gin.Context) {
 		userVals["unlimited_quota"] = *body.UnlimitedQuota
 	}
 	if len(userVals) == 0 && len(profVals) == 0 {
-		response.FailWithCode(c, 400, "无可更新字段", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无可更新字段"), nil)
 		return
 	}
 	if len(userVals) > 0 {
 		userVals["update_by"] = models.OperatorFromUser(op)
 		if err := models.UpdateUserFields(h.db, &row, userVals); err != nil {
-			response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 			return
 		}
 	}
 	if len(profVals) > 0 {
 		if err := models.UpdateUserProfileFields(h.db, id, profVals); err != nil {
-			response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 			return
 		}
 	}
 	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
-		response.Success(c, "已更新", gin.H{"user": gin.H{"id": strconv.FormatUint(uint64(id), 10)}})
+		response.Success(c, response.Msg(c, "已更新"), gin.H{"user": gin.H{"id": strconv.FormatUint(uint64(id), 10)}})
 		return
 	}
 	_ = models.UpdateProfileComplete(h.db, &row)
 	prof, _ := models.GetUserProfile(h.db, row.ID)
-	response.Success(c, "已更新", gin.H{"user": models.AdminUserJSON(row, prof)})
+	response.Success(c, response.Msg(c, "已更新"), gin.H{"user": models.AdminUserJSON(row, prof)})
 }
 
 // adminUserDeleteHandler DELETE /api/admin/users/:id（软删除；不可删除本人；非超管不可删超级管理员）
@@ -558,31 +556,31 @@ func (h *Handlers) adminUserDeleteHandler(c *gin.Context) {
 	op := models.CurrentUser(c)
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的用户 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的用户 id"), nil)
 		return
 	}
 	if op.ID == id {
-		response.FailWithCode(c, 400, "不能删除本人账号", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "不能删除本人账号"), nil)
 		return
 	}
 	var row models.User
 	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "用户不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "用户不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	if row.IsSuperAdmin() && !op.IsSuperAdmin() {
-		response.FailWithCode(c, 403, "无权删除超级管理员账号", nil)
+		response.FailWithCode(c, 403, response.Msg(c, "无权删除超级管理员账号"), nil)
 		return
 	}
 	if err := h.db.Delete(&row).Error; err != nil {
-		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "删除失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "已删除", gin.H{"id": strconv.FormatUint(uint64(id), 10)})
+	response.Success(c, response.Msg(c, "已删除"), gin.H{"id": strconv.FormatUint(uint64(id), 10)})
 }
 
 type patchUserProfileBody struct {
@@ -615,12 +613,12 @@ type userResetPasswordByCodeBody struct {
 func (h *Handlers) userProfilePatchHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	var body patchUserProfileBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), nil)
 		return
 	}
 	userVals := map[string]any{}
@@ -650,74 +648,74 @@ func (h *Handlers) userProfilePatchHandler(c *gin.Context) {
 		profVals["timezone"] = strings.TrimSpace(body.Timezone)
 	}
 	if len(userVals) == 0 && len(profVals) == 0 {
-		response.FailWithCode(c, 400, "无可更新字段", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无可更新字段"), nil)
 		return
 	}
 	if len(userVals) > 0 {
 		userVals["update_by"] = models.OperatorFromUser(u)
 		if err := models.UpdateUserFields(h.db, u, userVals); err != nil {
-			response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 			return
 		}
 	}
 	if len(profVals) > 0 {
 		if err := models.UpdateUserProfileFields(h.db, u.ID, profVals); err != nil {
-			response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 			return
 		}
 	}
 	if err := h.db.Where("id = ?", u.ID).First(u).Error; err != nil {
-		response.Success(c, "已更新", nil)
+		response.Success(c, response.Msg(c, "已更新"), nil)
 		return
 	}
 	_ = models.UpdateProfileComplete(h.db, u)
 	prof, err := models.EnsureUserProfile(h.db, u.ID)
 	if err != nil {
-		response.FailWithCode(c, 500, "加载用户资料失败", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 500, response.Msg(c, "加载用户资料失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "已更新", gin.H{"user": models.NewUserResponse(u, prof)})
+	response.Success(c, response.Msg(c, "已更新"), gin.H{"user": models.NewUserResponse(u, prof)})
 }
 
 // userChangePasswordHandler POST /api/user/password/change - 登录态下通过旧密码改新密码
 func (h *Handlers) userChangePasswordHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	var body userChangePasswordBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	oldPwd := strings.TrimSpace(body.OldPassword)
 	newPwd := strings.TrimSpace(body.NewPassword)
 	if oldPwd == "" || newPwd == "" {
-		response.FailWithCode(c, 400, "旧密码和新密码不能为空", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "旧密码和新密码不能为空"), nil)
 		return
 	}
 	if len(newPwd) < 6 {
-		response.FailWithCode(c, 400, "新密码长度至少 6 位", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "新密码长度至少 6 位"), nil)
 		return
 	}
 	if err := models.ChangePassword(h.db, u, oldPwd, newPwd); err != nil {
 		response.FailWithCode(c, 400, err.Error(), nil)
 		return
 	}
-	response.Success(c, "密码修改成功", nil)
+	response.Success(c, response.Msg(c, "密码修改成功"), nil)
 }
 
 // userSendPasswordResetCodeHandler POST /api/user/password/send-code - 向当前登录邮箱发送重置验证码
 func (h *Handlers) userSendPasswordResetCodeHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	var body userSendPasswordCodeBody
 	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(body.Email))
@@ -725,56 +723,56 @@ func (h *Handlers) userSendPasswordResetCodeHandler(c *gin.Context) {
 		email = strings.ToLower(strings.TrimSpace(u.Email))
 	}
 	if email == "" || !strings.EqualFold(email, strings.TrimSpace(u.Email)) {
-		response.FailWithCode(c, 400, "仅支持向当前登录邮箱发送验证码", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "仅支持向当前登录邮箱发送验证码"), nil)
 		return
 	}
 	code, err := models.GenerateEmailVerifyToken(h.db, u)
 	if err != nil {
-		response.FailWithCode(c, 500, "验证码生成失败", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 500, response.Msg(c, "验证码生成失败"), gin.H{"error": err.Error()})
 		return
 	}
 	base.Sig().Emit(constants.SigUserVerifyEmail, u, code, c.ClientIP(), c.Request.UserAgent(), h.db)
-	response.Success(c, "验证码已发送，请查收邮箱", nil)
+	response.Success(c, response.Msg(c, "验证码已发送，请查收邮箱"), nil)
 }
 
 // userResetPasswordByCodeHandler POST /api/user/password/reset-by-code - 登录态下通过邮箱验证码重置密码
 func (h *Handlers) userResetPasswordByCodeHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	var body userResetPasswordByCodeBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	email := strings.ToLower(strings.TrimSpace(body.Email))
 	if email == "" || !strings.EqualFold(email, strings.TrimSpace(u.Email)) {
-		response.FailWithCode(c, 400, "邮箱与当前登录账号不一致", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "邮箱与当前登录账号不一致"), nil)
 		return
 	}
 	code := strings.TrimSpace(body.Code)
 	if code == "" {
-		response.FailWithCode(c, 400, "验证码不能为空", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "验证码不能为空"), nil)
 		return
 	}
 	newPwd := strings.TrimSpace(body.NewPassword)
 	if len(newPwd) < 6 {
-		response.FailWithCode(c, 400, "新密码长度至少 6 位", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "新密码长度至少 6 位"), nil)
 		return
 	}
 	var userRow models.User
 	if err := h.db.Where("id = ? AND email = ? AND email_verify_token = ? AND email_verify_expires > ?", u.ID, email, code, time.Now()).First(&userRow).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 400, "验证码无效或已过期", nil)
+			response.FailWithCode(c, 400, response.Msg(c, "验证码无效或已过期"), nil)
 			return
 		}
-		response.FailWithCode(c, 500, "验证码校验失败", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 500, response.Msg(c, "验证码校验失败"), gin.H{"error": err.Error()})
 		return
 	}
 	if err := models.ResetPassword(h.db, &userRow, newPwd); err != nil {
-		response.FailWithCode(c, 500, "密码重置失败", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 500, response.Msg(c, "密码重置失败"), gin.H{"error": err.Error()})
 		return
 	}
 	_ = models.UpdateUserFields(h.db, &userRow, map[string]any{
@@ -782,7 +780,7 @@ func (h *Handlers) userResetPasswordByCodeHandler(c *gin.Context) {
 		"email_verify_expires": nil,
 		"update_by":            models.OperatorFromUser(u),
 	})
-	response.Success(c, "密码重置成功", nil)
+	response.Success(c, response.Msg(c, "密码重置成功"), nil)
 }
 
 type uploadAvatarResponse struct {
@@ -793,16 +791,16 @@ type uploadAvatarResponse struct {
 func (h *Handlers) userAvatarUploadHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	file, err := c.FormFile("file")
 	if err != nil {
-		response.FailWithCode(c, 400, "请上传文件", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "请上传文件"), nil)
 		return
 	}
 	if file.Size > 5*1024*1024 {
-		response.FailWithCode(c, 400, "文件大小不能超过 5MB", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "文件大小不能超过 5MB"), nil)
 		return
 	}
 	allowedTypes := []string{"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -814,22 +812,22 @@ func (h *Handlers) userAvatarUploadHandler(c *gin.Context) {
 		}
 	}
 	if !isAllowed {
-		response.FailWithCode(c, 400, "仅支持 JPG、PNG、GIF、WebP 格式", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "仅支持 JPG、PNG、GIF、WebP 格式"), nil)
 		return
 	}
 	src, err := file.Open()
 	if err != nil {
-		response.FailWithCode(c, 500, "文件读取失败", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "文件读取失败"), nil)
 		return
 	}
 	defer src.Close()
 	if config.GlobalStore == nil {
-		response.FailWithCode(c, 500, "存储服务未初始化", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "存储服务未初始化"), nil)
 		return
 	}
 	fileBytes, err := io.ReadAll(src)
 	if err != nil {
-		response.FailWithCode(c, 500, "文件读取失败", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "文件读取失败"), nil)
 		return
 	}
 	objectKey := fmt.Sprintf("avatars/%d/%d%s", u.ID, time.Now().UnixMilli(), filepath.Ext(file.Filename))
@@ -841,14 +839,14 @@ func (h *Handlers) userAvatarUploadHandler(c *gin.Context) {
 	})
 	if upErr != nil {
 		logger.Error("avatar.upload_failed", zap.Error(upErr))
-		response.FailWithCode(c, 500, "上传失败", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "上传失败"), nil)
 		return
 	}
 	if err := models.UpdateUserFields(h.db, u, map[string]any{"avatar": up.URL}); err != nil {
 		logger.Error("avatar.update_failed", zap.Error(err))
-		response.FailWithCode(c, 500, "保存失败", nil)
+		response.FailWithCode(c, 500, response.Msg(c, "保存失败"), nil)
 		return
 	}
 	u.Avatar = up.URL
-	response.Success(c, "上传成功", uploadAvatarResponse{URL: up.URL})
+	response.Success(c, response.Msg(c, "上传成功"), uploadAvatarResponse{URL: up.URL})
 }

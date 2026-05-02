@@ -28,7 +28,7 @@ func (h *Handlers) llmUsageListHandler(c *gin.Context) {
 func (h *Handlers) listLLMUsageInternal(c *gin.Context, selfOnly bool) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	selfID := strconv.FormatUint(uint64(u.ID), 10)
@@ -80,7 +80,7 @@ func (h *Handlers) listLLMUsageInternal(c *gin.Context, selfOnly bool) {
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -119,14 +119,14 @@ func (h *Handlers) listLLMUsageInternal(c *gin.Context, selfOnly bool) {
 
 	var list []models.LLMUsage
 	if err := listQ.Order("created_at DESC").Order("id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	totalPage := int(total) / pageSize
 	if int(total)%pageSize != 0 {
 		totalPage++
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"list":      list,
 		"total":     total,
 		"page":      page,
@@ -148,34 +148,34 @@ func (h *Handlers) llmUsageDetailHandler(c *gin.Context) {
 func (h *Handlers) getLLMUsageInternal(c *gin.Context, selfOnly bool) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var row models.LLMUsage
 	if err := h.db.Where("id = ?", id).First(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "记录不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "记录不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	self := strconv.FormatUint(uint64(u.ID), 10)
 	if selfOnly {
 		if row.UserID != self {
-			response.FailWithCode(c, 403, "无权访问该记录", nil)
+			response.FailWithCode(c, 403, response.Msg(c, "无权访问该记录"), nil)
 			return
 		}
 	} else if !u.IsAdmin() {
 		if row.UserID != self {
-			response.FailWithCode(c, 403, "无权访问该记录", nil)
+			response.FailWithCode(c, 403, response.Msg(c, "无权访问该记录"), nil)
 			return
 		}
 	}
-	response.Success(c, "ok", gin.H{"usage": row})
+	response.SuccessOK(c, gin.H{"usage": row})
 }

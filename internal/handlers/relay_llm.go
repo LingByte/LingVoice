@@ -18,13 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func openapiQuotaGroupRatio(cred *models.Credential) float64 {
-	if cred == nil || config.GlobalConfig == nil {
-		return 1
-	}
-	return config.GlobalConfig.OpenAPIQuotaGroupRatio(cred.Group)
-}
-
 func relayLLMChannelsToUpstream(chs []models.LLMChannel) []llm.UpstreamChannel {
 	out := make([]llm.UpstreamChannel, 0, len(chs))
 	for i := range chs {
@@ -37,14 +30,6 @@ func relayLLMChannelsToUpstream(chs []models.LLMChannel) []llm.UpstreamChannel {
 		})
 	}
 	return out
-}
-
-func relayUsageMeta(c *gin.Context, cred *models.Credential) llm.RelayUsageMeta {
-	return llm.RelayUsageMeta{
-		UserIDStr: models.CredentialUserIDString(cred.UserId),
-		UserAgent: c.Request.UserAgent(),
-		ClientIP:  c.ClientIP(),
-	}
 }
 
 func openAIStreamAttempts(ch models.LLMChannel, cap *llm.OpenAIStreamCapture, streamOK bool) []llm.UsageChannelAttempt {
@@ -101,7 +86,11 @@ func (h *Handlers) openAPIOpenAIChatCompletionsHandler(c *gin.Context) {
 	}
 	_ = json.Unmarshal(body, &probe)
 	accept := strings.TrimSpace(c.GetHeader("Accept"))
-	meta := relayUsageMeta(c, cred)
+	meta := llm.RelayUsageMeta{
+		UserIDStr: models.CredentialUserIDString(cred.UserId),
+		UserAgent: c.Request.UserAgent(),
+		ClientIP:  c.ClientIP(),
+	}
 
 	if probe.Stream {
 		channels, err := models.ListLLMChannelsForRelay(h.db, cred, models.LLMChannelProtocolOpenAI, models.ExtractJSONModelField(body))
@@ -145,7 +134,7 @@ func (h *Handlers) openAPIOpenAIChatCompletionsHandler(c *gin.Context) {
 			if u.Model == "" {
 				u.Model = models.ExtractJSONModelField(streamBody)
 			}
-			d := QuotaDeltaOpenAI(h.db, u.Model, u, openapiQuotaGroupRatio(cred))
+			d := QuotaDeltaOpenAI(h.db, u.Model, u, config.GlobalConfig.OpenAPIQuotaGroupRatio(cred.Group))
 			models.DecrementCredentialAndUserQuota(h.db, cred, d)
 			llm.EmitRelayOpenAIStreamUsageSuccess(streamBody, meta, cap, ch.Id, models.LLMChannelBaseURLString(&ch), openAIStreamAttempts(ch, cap, true), d)
 		} else {
@@ -236,7 +225,7 @@ func (h *Handlers) openAPIOpenAIChatCompletionsHandler(c *gin.Context) {
 		if strings.TrimSpace(u.Model) == "" {
 			u.Model = models.ExtractJSONModelField(body)
 		}
-		d := QuotaDeltaOpenAI(h.db, u.Model, u, openapiQuotaGroupRatio(cred))
+		d := QuotaDeltaOpenAI(h.db, u.Model, u, config.GlobalConfig.OpenAPIQuotaGroupRatio(cred.Group))
 		models.DecrementCredentialAndUserQuota(h.db, cred, d)
 		llm.EmitRelayOpenAIUsageSuccess(body, res, meta, d)
 	} else {
@@ -265,7 +254,11 @@ func (h *Handlers) openAPIAnthropicMessagesHandler(c *gin.Context) {
 	_ = json.Unmarshal(body, &probe)
 	av := strings.TrimSpace(c.GetHeader("anthropic-version"))
 	ab := strings.TrimSpace(c.GetHeader("anthropic-beta"))
-	meta := relayUsageMeta(c, cred)
+	meta := llm.RelayUsageMeta{
+		UserIDStr: models.CredentialUserIDString(cred.UserId),
+		UserAgent: c.Request.UserAgent(),
+		ClientIP:  c.ClientIP(),
+	}
 
 	if probe.Stream {
 		channels, err := models.ListLLMChannelsForRelay(h.db, cred, models.LLMChannelProtocolAnthropic, models.ExtractJSONModelField(body))
@@ -314,7 +307,7 @@ func (h *Handlers) openAPIAnthropicMessagesHandler(c *gin.Context) {
 			if u.Model == "" {
 				u.Model = models.ExtractJSONModelField(body)
 			}
-			d := QuotaDeltaOpenAI(h.db, u.Model, u, openapiQuotaGroupRatio(cred))
+			d := QuotaDeltaOpenAI(h.db, u.Model, u, config.GlobalConfig.OpenAPIQuotaGroupRatio(cred.Group))
 			models.DecrementCredentialAndUserQuota(h.db, cred, d)
 			llm.EmitRelayAnthropicStreamUsageSuccess(body, meta, cap, ch.Id, models.LLMChannelBaseURLString(&ch), anthropicStreamAttempts(ch, cap, true), d)
 		} else {
@@ -405,7 +398,7 @@ func (h *Handlers) openAPIAnthropicMessagesHandler(c *gin.Context) {
 
 	if !res.AllFailed && res.FinalStatus >= 200 && res.FinalStatus < 300 {
 		u := ParseAnthropicUsageFromResponseJSON(res.FinalBody, models.ExtractJSONModelField(body))
-		d := QuotaDeltaOpenAI(h.db, u.Model, u, openapiQuotaGroupRatio(cred))
+		d := QuotaDeltaOpenAI(h.db, u.Model, u, config.GlobalConfig.OpenAPIQuotaGroupRatio(cred.Group))
 		models.DecrementCredentialAndUserQuota(h.db, cred, d)
 		llm.EmitRelayAnthropicUsageSuccess(body, res, meta, d)
 	} else {

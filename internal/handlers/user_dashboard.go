@@ -29,7 +29,7 @@ type dashboardModelAgg struct {
 func (h *Handlers) dashboardOverviewHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	days := models.ParseQueryInt(c, "days", 30)
@@ -43,7 +43,7 @@ func (h *Handlers) dashboardOverviewHandler(c *gin.Context) {
 
 	var fresh models.User
 	if err := h.db.Where("id = ?", u.ID).First(&fresh).Error; err != nil {
-		response.Fail(c, "用户查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "用户查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -64,7 +64,7 @@ func (h *Handlers) dashboardOverviewHandler(c *gin.Context) {
 			COALESCE(SUM(quota_sum),0) AS quota_sum`).
 		Where("user_id = ? AND stat_date >= ? AND stat_date <= ?", uid, fromDay, toDay).
 		Scan(&agg).Error; err != nil {
-		response.Fail(c, "统计失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "统计失败"), gin.H{"error": err.Error()})
 		return
 	}
 	// 无上卷数据时回退一次明细表（升级后首次访问或历史数据）
@@ -77,7 +77,7 @@ func (h *Handlers) dashboardOverviewHandler(c *gin.Context) {
 			Where("user_id = ?", uid).
 			Where("completed_at >= ?", from)
 		if err := q.Scan(&agg).Error; err != nil {
-			response.Fail(c, "统计失败", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "统计失败"), gin.H{"error": err.Error()})
 			return
 		}
 	}
@@ -213,5 +213,5 @@ LIMIT 8`, uid, fromDay, toDay).Scan(&modelsTop).Error
 		"daily_series": dailySeries,
 		"users_rank":   usersRank,
 	}
-	response.Success(c, "ok", payload)
+	response.SuccessOK(c, payload)
 }

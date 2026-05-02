@@ -350,33 +350,33 @@ type KnowledgeRecallTestReq struct {
 func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	nsRow, err := models.GetKnowledgeNamespace(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识库不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识库不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	fh, err := c.FormFile("file")
 	if err != nil {
-		response.FailWithCode(c, 400, "缺少文件 file", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "缺少文件 file"), gin.H{"error": err.Error()})
 		return
 	}
 	f, err := fh.Open()
 	if err != nil {
-		response.Fail(c, "打开文件失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "打开文件失败"), gin.H{"error": err.Error()})
 		return
 	}
 	defer f.Close()
 	b, err := io.ReadAll(f)
 	if err != nil {
-		response.Fail(c, "读取文件失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "读取文件失败"), gin.H{"error": err.Error()})
 		return
 	}
 	sum := md5.Sum(b)
@@ -392,7 +392,7 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 		Status:    models.KnowledgeStatusProcessing,
 	})
 	if err != nil {
-		response.Fail(c, "写入文档记录失败（DB）", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "写入文档记录失败（DB）"), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -436,11 +436,11 @@ func (h *Handlers) knowledgeNamespaceUploadHandler(c *gin.Context) {
 			zap.Error(submitErr),
 		)
 		h.knowledgeDocFinalizeFailed(orgID, docRow.ID)
-		response.Fail(c, "后台任务提交失败（队列已满或已关闭）", gin.H{"error": submitErr.Error(), "document": docRow, "task_id": task.ID})
+		response.Fail(c, response.Msg(c, "后台任务提交失败（队列已满或已关闭）"), gin.H{"error": submitErr.Error(), "document": docRow, "task_id": task.ID})
 		return
 	}
 
-	response.Success(c, "已提交后台处理", gin.H{"document": docRow, "task_id": task.ID})
+	response.Success(c, response.Msg(c, "已提交后台处理"), gin.H{"document": docRow, "task_id": task.ID})
 }
 
 func (h *Handlers) runKnowledgeUploadJob(ctx context.Context, orgID uint, ns models.KnowledgeNamespace, docID uint, fileName string, fileHash string, content []byte) error {
@@ -1292,23 +1292,23 @@ func (h *Handlers) runKnowledgeTextPutJob(ctx context.Context, orgID uint, ns mo
 func (h *Handlers) knowledgeNamespaceRecallTestHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	nsRow, err := models.GetKnowledgeNamespace(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识库不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识库不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 
 	var req KnowledgeRecallTestReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	topK := req.TopK
@@ -1320,7 +1320,7 @@ func (h *Handlers) knowledgeNamespaceRecallTestHandler(c *gin.Context) {
 		minScore = 0
 	}
 	if minScore > 1 {
-		response.FailWithCode(c, 400, "minScore 取值范围应为 0~1（Cosine 相似度）", gin.H{
+		response.FailWithCode(c, 400, response.Msg(c, "minScore 取值范围应为 0~1（Cosine 相似度）"), gin.H{
 			"got":  req.MinScore,
 			"hint": "例如 0 / 0.2 / 0.3；不要填 2。",
 		})
@@ -1332,12 +1332,12 @@ func (h *Handlers) knowledgeNamespaceRecallTestHandler(c *gin.Context) {
 	if req.DocID != nil && strings.TrimSpace(*req.DocID) != "" {
 		n, err := strconv.ParseUint(strings.TrimSpace(*req.DocID), 10, 64)
 		if err != nil || n == 0 {
-			response.FailWithCode(c, 400, "docId 无效", gin.H{"docId": *req.DocID})
+			response.FailWithCode(c, 400, response.Msg(c, "docId 无效"), gin.H{"docId": *req.DocID})
 			return
 		}
 		d, err := models.GetKnowledgeDocument(h.db, orgID, uint(n))
 		if err != nil {
-			response.Fail(c, "查询文档失败", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "查询文档失败"), gin.H{"error": err.Error()})
 			return
 		}
 		docRow = d
@@ -1351,12 +1351,12 @@ func (h *Handlers) knowledgeNamespaceRecallTestHandler(c *gin.Context) {
 
 	embedder, err := embedderFromEnv()
 	if err != nil {
-		response.Fail(c, "Embedder 未配置", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "Embedder 未配置"), gin.H{"error": err.Error()})
 		return
 	}
 	kh, err := knowledgeHandlerForNS(nsRow, embedder)
 	if err != nil {
-		response.Fail(c, "知识库后端未就绪", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "知识库后端未就绪"), gin.H{"error": err.Error()})
 		return
 	}
 	vecResults, err := kh.Query(ctx, strings.TrimSpace(req.Query), &knowledge.QueryOptions{
@@ -1373,7 +1373,7 @@ func (h *Handlers) knowledgeNamespaceRecallTestHandler(c *gin.Context) {
 		}(),
 	})
 	if err != nil {
-		response.Fail(c, "召回失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "召回失败"), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1517,7 +1517,7 @@ func (h *Handlers) knowledgeNamespaceRecallTestHandler(c *gin.Context) {
 		precisionAtK = float64(hits) / float64(len(results))
 	}
 
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"namespace":      nsRow,
 		"query":          req.Query,
 		"topK":           topK,
@@ -1543,10 +1543,10 @@ func (h *Handlers) knowledgeNamespacesListHandler(c *gin.Context) {
 	orgID := models.CurrentOrgID(c)
 	out, err := models.ListKnowledgeNamespaces(h.db, orgID, status, page, pageSize)
 	if err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"list":      out.List,
 		"total":     out.Total,
 		"page":      out.Page,
@@ -1558,26 +1558,26 @@ func (h *Handlers) knowledgeNamespacesListHandler(c *gin.Context) {
 func (h *Handlers) knowledgeNamespaceDetailHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	row, err := models.GetKnowledgeNamespace(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识库不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识库不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{"namespace": row})
+	response.SuccessOK(c, gin.H{"namespace": row})
 }
 
 func (h *Handlers) knowledgeNamespaceCreateHandler(c *gin.Context) {
 	var req KnowledgeNamespaceUpsertReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	var status string
@@ -1592,18 +1592,18 @@ func (h *Handlers) knowledgeNamespaceCreateHandler(c *gin.Context) {
 	defer cancel()
 
 	if strings.TrimSpace(req.Namespace) == "" {
-		response.FailWithCode(c, 400, "namespace（collection 名）不能为空", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "namespace（collection 名）不能为空"), nil)
 		return
 	}
 
 	embedder, err := embedderFromEnv()
 	if err != nil {
-		response.Fail(c, "Embedder 未配置", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "Embedder 未配置"), gin.H{"error": err.Error()})
 		return
 	}
 	probe, err := embedder.Embed(ctx, []string{"dimension_probe"})
 	if err != nil || len(probe) == 0 || len(probe[0]) == 0 {
-		response.Fail(c, "向量模型不可用（无法推导维度）", gin.H{"error": fmt.Sprintf("%v", err)})
+		response.Fail(c, response.Msg(c, "向量模型不可用（无法推导维度）"), gin.H{"error": fmt.Sprintf("%v", err)})
 		return
 	}
 	realDim := len(probe[0])
@@ -1613,12 +1613,12 @@ func (h *Handlers) knowledgeNamespaceCreateHandler(c *gin.Context) {
 	}
 	kh, err := knowledgeHandlerForNS(tmpNS, embedder)
 	if err != nil {
-		response.Fail(c, "向量后端不可用", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "向量后端不可用"), gin.H{"error": err.Error()})
 		return
 	}
 	// Always verify backend connectivity on create.
 	if err := kh.Ping(ctx); err != nil {
-		response.Fail(c, "向量后端不可用（Ping 失败）", gin.H{
+		response.Fail(c, response.Msg(c, "向量后端不可用（Ping 失败）"), gin.H{
 			"provider": vp,
 			"error":    err.Error(),
 		})
@@ -1626,7 +1626,7 @@ func (h *Handlers) knowledgeNamespaceCreateHandler(c *gin.Context) {
 	}
 	if vp == models.KnowledgeVectorProviderQdrant {
 		if err := kh.CreateNamespace(ctx, strings.TrimSpace(req.Namespace)); err != nil {
-			response.Fail(c, "创建知识库失败（Qdrant）", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "创建知识库失败（Qdrant）"), gin.H{"error": err.Error()})
 			return
 		}
 	}
@@ -1644,21 +1644,21 @@ func (h *Handlers) knowledgeNamespaceCreateHandler(c *gin.Context) {
 		if vp == models.KnowledgeVectorProviderQdrant {
 			_ = kh.DeleteNamespace(context.Background(), strings.TrimSpace(req.Namespace))
 		}
-		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "创建失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "创建成功", row)
+	response.Success(c, response.Msg(c, "创建成功"), row)
 }
 
 func (h *Handlers) knowledgeNamespaceUpdateHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var req KnowledgeNamespaceUpsertReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1672,22 +1672,22 @@ func (h *Handlers) knowledgeNamespaceUpdateHandler(c *gin.Context) {
 	existing, err := models.GetKnowledgeNamespace(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识库不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识库不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	if strings.TrimSpace(existing.Namespace) != strings.TrimSpace(req.Namespace) {
-		response.FailWithCode(c, 400, "namespace 不允许修改（对应向量后端资源标识）", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "namespace 不允许修改（对应向量后端资源标识）"), nil)
 		return
 	}
 	if models.NormalizeVectorProvider(req.VectorProvider) != models.NormalizeVectorProvider(existing.VectorProvider) {
-		response.FailWithCode(c, 400, "vector_provider 不允许修改", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "vector_provider 不允许修改"), nil)
 		return
 	}
 	if existing.VectorDim > 0 && req.VectorDim > 0 && existing.VectorDim != req.VectorDim {
-		response.FailWithCode(c, 400, "vector_dim 不允许修改（对应 collection 维度）", gin.H{
+		response.FailWithCode(c, 400, response.Msg(c, "vector_dim 不允许修改（对应 collection 维度）"), gin.H{
 			"current": existing.VectorDim,
 			"got":     req.VectorDim,
 		})
@@ -1704,26 +1704,26 @@ func (h *Handlers) knowledgeNamespaceUpdateHandler(c *gin.Context) {
 		Status:         status,
 	})
 	if err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "更新成功", row)
+	response.Success(c, response.Msg(c, "更新成功"), row)
 }
 
 func (h *Handlers) knowledgeNamespaceDeleteHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	row, err := models.GetKnowledgeNamespace(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识库不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识库不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1731,23 +1731,23 @@ func (h *Handlers) knowledgeNamespaceDeleteHandler(c *gin.Context) {
 	defer cancel()
 	kh, err := knowledgeHandlerForNS(row, nil)
 	if err != nil {
-		response.Fail(c, "向量后端不可用", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "向量后端不可用"), gin.H{"error": err.Error()})
 		return
 	}
 	if err := kh.DeleteNamespace(ctx, strings.TrimSpace(row.Namespace)); err != nil {
-		response.Fail(c, "删除失败（向量后端）", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "删除失败（向量后端）"), gin.H{"error": err.Error()})
 		return
 	}
 
 	if err := models.SoftDeleteKnowledgeNamespace(h.db, orgID, id); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识库不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识库不存在"), nil)
 			return
 		}
-		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "删除失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "删除成功", gin.H{"id": id})
+	response.Success(c, response.Msg(c, "删除成功"), gin.H{"id": id})
 }
 
 func (h *Handlers) knowledgeDocumentsListHandler(c *gin.Context) {
@@ -1762,10 +1762,10 @@ func (h *Handlers) knowledgeDocumentsListHandler(c *gin.Context) {
 	orgID := models.CurrentOrgID(c)
 	out, err := models.ListKnowledgeDocuments(h.db, orgID, namespace, status, page, pageSize)
 	if err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{
+	response.SuccessOK(c, gin.H{
 		"list":      out.List,
 		"total":     out.Total,
 		"page":      out.Page,
@@ -1777,30 +1777,30 @@ func (h *Handlers) knowledgeDocumentsListHandler(c *gin.Context) {
 func (h *Handlers) knowledgeDocumentDetailHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	row, err := models.GetKnowledgeDocument(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识文档不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识文档不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	out := gin.H{"document": row}
 	if nsRow, err := models.GetKnowledgeNamespaceByOrgAndNamespace(h.db, orgID, row.Namespace); err == nil && nsRow != nil {
 		out["vector_provider"] = nsRow.VectorProvider
 	}
-	response.Success(c, "ok", out)
+	response.SuccessOK(c, out)
 }
 
 func (h *Handlers) knowledgeDocumentCreateOrUpsertHandler(c *gin.Context) {
 	var req KnowledgeDocumentUpsertReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	var status string
@@ -1818,50 +1818,50 @@ func (h *Handlers) knowledgeDocumentCreateOrUpsertHandler(c *gin.Context) {
 		Status:    status,
 	})
 	if err != nil {
-		response.Fail(c, "写入失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "写入失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "写入成功", row)
+	response.Success(c, response.Msg(c, "写入成功"), row)
 }
 
 func (h *Handlers) knowledgeDocumentTextGetHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	doc, err := models.GetKnowledgeDocument(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识文档不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识文档不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	if strings.TrimSpace(doc.TextURL) == "" {
-		response.Success(c, "ok", gin.H{"url": "", "markdown": ""})
+		response.SuccessOK(c, gin.H{"url": "", "markdown": ""})
 		return
 	}
 	// Best-effort server-side fetch to avoid CORS/auth issues on frontend.
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, strings.TrimSpace(doc.TextURL), nil)
 	if err != nil {
-		response.Fail(c, "读取失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "读取失败"), gin.H{"error": err.Error()})
 		return
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		response.Fail(c, "读取失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "读取失败"), gin.H{"error": err.Error()})
 		return
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		response.FailWithCode(c, 502, "读取存储失败", gin.H{"status": resp.StatusCode, "body": string(b)})
+		response.FailWithCode(c, 502, response.Msg(c, "读取存储失败"), gin.H{"status": resp.StatusCode, "body": string(b)})
 		return
 	}
-	response.Success(c, "ok", gin.H{"url": doc.TextURL, "markdown": string(b)})
+	response.SuccessOK(c, gin.H{"url": doc.TextURL, "markdown": string(b)})
 }
 
 type knowledgeDocumentTextPutReq struct {
@@ -1871,33 +1871,33 @@ type knowledgeDocumentTextPutReq struct {
 func (h *Handlers) knowledgeDocumentTextPutHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var req knowledgeDocumentTextPutReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	mdText := strings.TrimSpace(req.Markdown)
 	if mdText == "" {
-		response.FailWithCode(c, 400, "markdown 不能为空", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "markdown 不能为空"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	doc, err := models.GetKnowledgeDocument(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识文档不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识文档不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	// namespace meta for dim validation
 	var nsRow models.KnowledgeNamespace
 	if err := h.db.Where("org_id = ? AND namespace = ?", orgID, strings.TrimSpace(doc.Namespace)).First(&nsRow).Error; err != nil {
-		response.Fail(c, "查询知识库失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询知识库失败"), gin.H{"error": err.Error()})
 		return
 	}
 	// Mark as processing and upload markdown immediately (fast path), then vectorize async.
@@ -1950,22 +1950,22 @@ func (h *Handlers) knowledgeDocumentTextPutHandler(c *gin.Context) {
 			zap.Error(submitErr),
 		)
 		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-		response.Fail(c, "后台任务提交失败（队列已满或已关闭）", gin.H{"error": submitErr.Error(), "document": doc, "task_id": task.ID})
+		response.Fail(c, response.Msg(c, "后台任务提交失败（队列已满或已关闭）"), gin.H{"error": submitErr.Error(), "document": doc, "task_id": task.ID})
 		return
 	}
 
-	response.Success(c, "已提交后台处理", gin.H{"document": doc, "task_id": task.ID})
+	response.Success(c, response.Msg(c, "已提交后台处理"), gin.H{"document": doc, "task_id": task.ID})
 }
 
 func (h *Handlers) knowledgeDocumentUpdateHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var req KnowledgeDocumentUpsertReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	var status string
@@ -1983,10 +1983,10 @@ func (h *Handlers) knowledgeDocumentUpdateHandler(c *gin.Context) {
 		Status:    status,
 	})
 	if err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "更新成功", row)
+	response.Success(c, response.Msg(c, "更新成功"), row)
 }
 
 // knowledgeDocumentReuploadHandler reuploads a file and rebuilds vectors for an existing document.
@@ -1994,39 +1994,39 @@ func (h *Handlers) knowledgeDocumentUpdateHandler(c *gin.Context) {
 func (h *Handlers) knowledgeDocumentReuploadHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
 	doc, err := models.GetKnowledgeDocument(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识文档不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识文档不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	// Load namespace meta by (org_id, namespace) so we can validate dim.
 	var nsRow models.KnowledgeNamespace
 	if err := h.db.Where("org_id = ? AND namespace = ?", orgID, strings.TrimSpace(doc.Namespace)).First(&nsRow).Error; err != nil {
-		response.Fail(c, "查询知识库失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询知识库失败"), gin.H{"error": err.Error()})
 		return
 	}
 	fh, err := c.FormFile("file")
 	if err != nil {
-		response.FailWithCode(c, 400, "缺少文件 file", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "缺少文件 file"), gin.H{"error": err.Error()})
 		return
 	}
 	f, err := fh.Open()
 	if err != nil {
-		response.Fail(c, "打开文件失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "打开文件失败"), gin.H{"error": err.Error()})
 		return
 	}
 	defer f.Close()
 	b, err := io.ReadAll(f)
 	if err != nil {
-		response.Fail(c, "读取文件失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "读取文件失败"), gin.H{"error": err.Error()})
 		return
 	}
 	sum := md5.Sum(b)
@@ -2092,17 +2092,17 @@ func (h *Handlers) knowledgeDocumentReuploadHandler(c *gin.Context) {
 			zap.Error(submitErr),
 		)
 		h.knowledgeDocFinalizeFailed(orgID, doc.ID)
-		response.Fail(c, "后台任务提交失败（队列已满或已关闭）", gin.H{"error": submitErr.Error(), "document": doc, "task_id": task.ID})
+		response.Fail(c, response.Msg(c, "后台任务提交失败（队列已满或已关闭）"), gin.H{"error": submitErr.Error(), "document": doc, "task_id": task.ID})
 		return
 	}
 
-	response.Success(c, "已提交后台处理", gin.H{"document": doc, "task_id": task.ID})
+	response.Success(c, response.Msg(c, "已提交后台处理"), gin.H{"document": doc, "task_id": task.ID})
 }
 
 func (h *Handlers) knowledgeDocumentDeleteHandler(c *gin.Context) {
 	id, ok := models.ParseUintParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	orgID := models.CurrentOrgID(c)
@@ -2110,10 +2110,10 @@ func (h *Handlers) knowledgeDocumentDeleteHandler(c *gin.Context) {
 	doc, err := models.GetKnowledgeDocument(h.db, orgID, id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识文档不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识文档不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -2121,18 +2121,18 @@ func (h *Handlers) knowledgeDocumentDeleteHandler(c *gin.Context) {
 	if len(ids) > 0 {
 		var nsRow models.KnowledgeNamespace
 		if err := h.db.Where("org_id = ? AND namespace = ?", orgID, strings.TrimSpace(doc.Namespace)).First(&nsRow).Error; err != nil {
-			response.Fail(c, "查询知识库失败", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "查询知识库失败"), gin.H{"error": err.Error()})
 			return
 		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 		defer cancel()
 		kh, err := knowledgeHandlerForNS(&nsRow, nil)
 		if err != nil {
-			response.Fail(c, "向量后端不可用", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "向量后端不可用"), gin.H{"error": err.Error()})
 			return
 		}
 		if err := kh.Delete(ctx, ids, &knowledge.DeleteOptions{Namespace: strings.TrimSpace(doc.Namespace)}); err != nil {
-			response.Fail(c, "删除失败（向量 points）", gin.H{"error": err.Error()})
+			response.Fail(c, response.Msg(c, "删除失败（向量 points）"), gin.H{"error": err.Error()})
 			return
 		}
 
@@ -2146,11 +2146,11 @@ func (h *Handlers) knowledgeDocumentDeleteHandler(c *gin.Context) {
 
 	if err := models.SoftDeleteKnowledgeDocument(h.db, orgID, id); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "知识文档不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "知识文档不存在"), nil)
 			return
 		}
-		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "删除失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "删除成功", gin.H{"id": id})
+	response.Success(c, response.Msg(c, "删除成功"), gin.H{"id": id})
 }

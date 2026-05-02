@@ -139,7 +139,7 @@ export function SpeechUsagePage() {
       { key: 'channel_id', label: 'channel_id', value: r.channel_id ? String(r.channel_id) : '—' },
       { key: 'group', label: 'group', value: r.group || '—' },
       { key: 'request_type', label: 'request_type', value: r.request_type },
-      { key: 'latency_ms', label: 'latency_ms', value: String(r.latency_ms) },
+      { key: 'latency_ms', label: '总耗时(ms)', value: String(r.latency_ms ?? 0) },
       { key: 'status_code', label: 'status_code', value: String(r.status_code) },
       { key: 'success', label: 'success', value: fmtBool(r.success) },
       { key: 'audio_input_bytes', label: 'audio_input_bytes', value: String(r.audio_input_bytes ?? 0) },
@@ -252,9 +252,9 @@ export function SpeechUsagePage() {
       render: (v: number) => <span className="tabular-nums">{v > 0 ? v : '—'}</span>,
     },
     {
-      title: '延迟(ms)',
+      title: '总耗时(ms)',
       dataIndex: 'latency_ms',
-      width: 88,
+      width: 100,
       render: (v: number) => <span className="tabular-nums">{v ?? 0}</span>,
     },
     {

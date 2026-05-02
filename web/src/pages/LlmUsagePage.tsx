@@ -33,6 +33,11 @@ function fmtBool(v: boolean): string {
   return v ? '是' : '否'
 }
 
+function fmtTps(v: number | undefined): string {
+  if (v == null || Number.isNaN(v)) return '—'
+  return v.toFixed(2)
+}
+
 export type LlmUsagePageProps = {
   /** admin：全量查询（可按 user_id 筛选）；user：仅当前登录用户自己的记录 */
   variant?: 'admin' | 'user'
@@ -140,9 +145,9 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
       { key: 'output_tokens', label: 'output_tokens', value: String(r.output_tokens) },
       { key: 'total_tokens', label: 'total_tokens', value: String(r.total_tokens) },
       { key: 'quota_delta', label: 'quota_delta', value: String(r.quota_delta ?? 0) },
-      { key: 'latency_ms', label: 'latency_ms', value: String(r.latency_ms) },
-      { key: 'ttft_ms', label: 'ttft_ms', value: String(r.ttft_ms) },
-      { key: 'tps', label: 'tps', value: String(r.tps) },
+      { key: 'latency_ms', label: '总耗时(ms)', value: String(r.latency_ms ?? 0) },
+      { key: 'ttft_ms', label: 'TTFT(ms)', value: String(r.ttft_ms ?? 0) },
+      { key: 'tps', label: 'TPS', value: fmtTps(r.tps) },
       { key: 'queue_time_ms', label: 'queue_time_ms', value: String(r.queue_time_ms) },
       { key: 'status_code', label: 'status_code', value: String(r.status_code) },
       { key: 'success', label: 'success', value: fmtBool(r.success) },
@@ -248,10 +253,22 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
       ),
     },
     {
-      title: '延迟(ms)',
+      title: '总耗时(ms)',
       dataIndex: 'latency_ms',
-      width: 96,
+      width: 100,
       render: (v: number) => <span className="tabular-nums">{v ?? 0}</span>,
+    },
+    {
+      title: 'TTFT(ms)',
+      dataIndex: 'ttft_ms',
+      width: 92,
+      render: (v: number) => <span className="tabular-nums">{v ?? 0}</span>,
+    },
+    {
+      title: 'TPS',
+      dataIndex: 'tps',
+      width: 88,
+      render: (v: number) => <span className="tabular-nums">{fmtTps(v)}</span>,
     },
     {
       title: '成功',
@@ -354,7 +371,7 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
             data={list}
             pagination={false}
             borderCell
-            scroll={{ x: variant === 'admin' ? 1320 : 1200 }}
+            scroll={{ x: variant === 'admin' ? 1520 : 1400 }}
           />
         </Spin>
       </div>

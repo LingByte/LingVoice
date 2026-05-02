@@ -113,7 +113,7 @@ func jsonRawIfJSONArray(s string) any {
 func (h *Handlers) credentialsListHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	kindFilter := strings.ToLower(strings.TrimSpace(c.Query("kind")))
@@ -125,40 +125,40 @@ func (h *Handlers) credentialsListHandler(c *gin.Context) {
 	}
 	rows, err := models.ListCredentialsForUser(h.db, int(u.ID), kindFilter, strings.TrimSpace(c.Query("group")))
 	if err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	out := make([]gin.H, 0, len(rows))
 	for i := range rows {
 		out = append(out, credentialToPublic(&rows[i]))
 	}
-	response.Success(c, "ok", gin.H{"list": out})
+	response.SuccessOK(c, gin.H{"list": out})
 }
 
 // credentialGroupsListHandler 返回当前用户凭证中已使用过的分组名（去重、非空），供前端筛选。
 func (h *Handlers) credentialGroupsListHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	groups, err := models.ListDistinctCredentialGroups(h.db, int(u.ID))
 	if err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", gin.H{"groups": groups})
+	response.SuccessOK(c, gin.H{"groups": groups})
 }
 
 func (h *Handlers) credentialCreateHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	var body credentialCreateBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	if msg := models.ValidateCredentialKind(body.Kind); msg != "" {
@@ -191,68 +191,68 @@ func (h *Handlers) credentialCreateHandler(c *gin.Context) {
 	row, err := models.TryCreateCredentialWithUniqueKey(h.db, base, 8)
 	if err != nil {
 		if errors.Is(err, models.ErrCredentialUniqueKeyExhausted) {
-			response.FailWithCode(c, 500, "无法生成唯一密钥，请重试", nil)
+			response.FailWithCode(c, 500, response.Msg(c, "无法生成唯一密钥，请重试"), nil)
 			return
 		}
-		response.Fail(c, "创建失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "创建失败"), gin.H{"error": err.Error()})
 		return
 	}
 	pub := credentialToPublic(row)
 	pub["key"] = row.Key
 	pub["key_hint"] = "请立即保存：密钥仅本次返回，之后仅显示脱敏片段；若遗失请删除后重新创建。"
-	response.Success(c, "创建成功", pub)
+	response.Success(c, response.Msg(c, "创建成功"), pub)
 }
 
 func (h *Handlers) credentialDetailHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	row, err := models.GetCredentialOwnedByUser(h.db, id, int(u.ID))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "凭证不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "凭证不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "ok", credentialToPublic(row))
+	response.SuccessOK(c, credentialToPublic(row))
 }
 
 func (h *Handlers) credentialUpdateHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	var body credentialUpdateBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
+		response.FailWithCode(c, 400, response.Msg(c, "参数错误"), gin.H{"error": err.Error()})
 		return
 	}
 	if body.Status != credentialStatusActive && body.Status != credentialStatusDisabled {
-		response.FailWithCode(c, 400, "status 只能为 0（禁用）或 1（启用）", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "status 只能为 0（禁用）或 1（启用）"), nil)
 		return
 	}
 	row, err := models.GetCredentialOwnedByUser(h.db, id, int(u.ID))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.FailWithCode(c, 404, "凭证不存在", nil)
+			response.FailWithCode(c, 404, response.Msg(c, "凭证不存在"), nil)
 			return
 		}
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	exp := body.ExpiredTime
@@ -272,17 +272,17 @@ func (h *Handlers) credentialUpdateHandler(c *gin.Context) {
 	}
 
 	if err := models.SaveCredential(h.db, row); err != nil {
-		response.Fail(c, "更新失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "更新失败"), gin.H{"error": err.Error()})
 		return
 	}
-	response.Success(c, "更新成功", credentialToPublic(row))
+	response.Success(c, response.Msg(c, "更新成功"), credentialToPublic(row))
 }
 
 // credentialsLLMAvailableModelsHandler GET /api/credentials/llm-available-models?group=
 // 返回当前分组下可用于 OpenAPI 模型目录勾选的模型 id（与 /v1/models 无 catalog 时同源）。
 func (h *Handlers) credentialsLLMAvailableModelsHandler(c *gin.Context) {
 	if models.CurrentUser(c) == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	g := strings.TrimSpace(c.Query("group"))
@@ -292,34 +292,34 @@ func (h *Handlers) credentialsLLMAvailableModelsHandler(c *gin.Context) {
 	}
 	ids, err := models.CollectOpenAILLMModelIDsForGroup(h.db, g)
 	if err != nil {
-		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "查询失败"), gin.H{"error": err.Error()})
 		return
 	}
 	if ids == nil {
 		ids = []string{}
 	}
-	response.Success(c, "ok", gin.H{"group": eff, "models": ids})
+	response.SuccessOK(c, gin.H{"group": eff, "models": ids})
 }
 
 func (h *Handlers) credentialDeleteHandler(c *gin.Context) {
 	u := models.CurrentUser(c)
 	if u == nil {
-		response.FailWithCode(c, 401, "未登录", nil)
+		response.FailWithCode(c, 401, response.Msg(c, "未登录"), nil)
 		return
 	}
 	id, ok := models.ParseIntParam(c, "id")
 	if !ok {
-		response.FailWithCode(c, 400, "无效的 id", nil)
+		response.FailWithCode(c, 400, response.Msg(c, "无效的 id"), nil)
 		return
 	}
 	n, err := models.DeleteCredentialOwnedByUser(h.db, id, int(u.ID))
 	if err != nil {
-		response.Fail(c, "删除失败", gin.H{"error": err.Error()})
+		response.Fail(c, response.Msg(c, "删除失败"), gin.H{"error": err.Error()})
 		return
 	}
 	if n == 0 {
-		response.FailWithCode(c, 404, "凭证不存在", nil)
+		response.FailWithCode(c, 404, response.Msg(c, "凭证不存在"), nil)
 		return
 	}
-	response.Success(c, "已删除", gin.H{"id": id})
+	response.Success(c, response.Msg(c, "已删除"), gin.H{"id": id})
 }
