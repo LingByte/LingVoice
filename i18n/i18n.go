@@ -14,11 +14,10 @@ import (
 )
 
 const (
-	LangZhCN = "zh-CN"
-	LangZhTW = "zh-TW"
-	LangEn   = "en"
-	LangJa   = "ja"
-	// GinContextKeyLanguage is where middleware stores the normalized Accept-Language tag.
+	LangZhCN              = "zh-CN"
+	LangZhTW              = "zh-TW"
+	LangEn                = "en"
+	LangJa                = "ja"
 	GinContextKeyLanguage = "lingvoice.i18n.accept_language"
 	DefaultLang           = LangEn // Fallback when no match (overridable via LINGVOICE_DEFAULT_LANG)
 )
