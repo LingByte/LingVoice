@@ -10,7 +10,6 @@ import {
   Typography,
 } from '@arco-design/web-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { BarChart3 } from 'lucide-react'
 import {
   type LLMUsageRow,
   getLLMUsage,
@@ -48,7 +47,7 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
   const [list, setList] = useState<LLMUsageRow[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(20)
+  const [pageSize, setPageSize] = useState(10)
 
   const [qUser, setQUser] = useState('')
   const [qChannel, setQChannel] = useState('')
@@ -163,22 +162,25 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
     ]
   }, [detailRow])
 
-  const openDetail = (row: LLMUsageRow) => {
-    setDetailOpen(true)
-    setDetailRow(null)
-    setDetailLoading(true)
-    void (async () => {
-      try {
-        const full = variant === 'user' ? await getMyLLMUsage(row.id) : await getLLMUsage(row.id)
-        setDetailRow(full)
-      } catch (e) {
-        Message.error(e instanceof Error ? e.message : '加载详情失败')
-        setDetailOpen(false)
-      } finally {
-        setDetailLoading(false)
-      }
-    })()
-  }
+  const openDetail = useCallback(
+    (row: LLMUsageRow) => {
+      setDetailOpen(true)
+      setDetailRow(null)
+      setDetailLoading(true)
+      void (async () => {
+        try {
+          const full = variant === 'user' ? await getMyLLMUsage(row.id) : await getLLMUsage(row.id)
+          setDetailRow(full)
+        } catch (e) {
+          Message.error(e instanceof Error ? e.message : '加载详情失败')
+          setDetailOpen(false)
+        } finally {
+          setDetailLoading(false)
+        }
+      })()
+    },
+    [variant],
+  )
 
   const columns = useMemo(() => {
     const userCol =
@@ -201,6 +203,12 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
           ]
         : []
     return [
+    {
+      title: 'ID',
+      dataIndex: 'id',
+      width: 90,
+      render: (v: string) => <EllipsisCopyText text={v} maxWidth={70} copiedTip="ID 已复制" />,
+    },
     {
       title: '请求 ID',
       dataIndex: 'request_id',
@@ -284,7 +292,7 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
     },
     {
       title: '操作',
-      width: 88,
+      width: 100,
       fixed: 'right' as const,
       render: (_: unknown, r: LLMUsageRow) => (
         <Button type="text" size="mini" onClick={() => openDetail(r)}>
@@ -293,97 +301,77 @@ export function LlmUsagePage({ variant = 'admin' }: LlmUsagePageProps) {
       ),
     },
   ]
-  }, [variant])
+  }, [variant, openDetail])
 
   return (
     <div className="flex h-full min-h-0 w-full flex-1 flex-col overflow-auto bg-[var(--color-fill-1)] px-5 py-5">
-      <div className="mb-3 flex shrink-0 items-center gap-2">
-        <BarChart3 size={20} strokeWidth={1.85} className="text-[var(--color-text-2)]" />
-        <Title heading={5} className="!mb-0 !mt-0">
-          {variant === 'user' ? '使用日志' : 'LLM 用量'}
-        </Title>
-      </div>
-      <Paragraph type="secondary" className="!mb-4 !mt-0 max-w-3xl text-[13px]">
+      <Title heading={5} className="!mb-1 !mt-0 shrink-0">
+        {variant === 'user' ? '使用日志' : 'LLM 用量'}
+      </Title>
+      <Paragraph type="secondary" className="!mb-4 !mt-0 text-[13px]">
         {variant === 'user'
-          ? '本页展示当前登录账号的 LLM 调用记录，支持按渠道、模型、请求标识与时间范围筛选；详情含请求与响应正文。数据仅供查阅。'
-          : '管理员可分页查询全部用户的 LLM 用量，并按用户、渠道、模型等条件筛选；详情含渠道 id、多渠道路由尝试 channel_attempts、请求与响应正文。不提供编辑与删除。'}
+          ? '本页展示当前登录账号的 LLM 调用记录，支持按渠道、模型、请求标识筛选；详情含请求与响应正文。数据仅供查阅。'
+          : '分页查询全部用户的 LLM 用量记录；可按用户、渠道、模型等筛选，详情含渠道路由尝试与请求/响应正文。不提供编辑与删除。'}
       </Paragraph>
 
-      <div className="mb-4 flex flex-wrap items-end gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         {variant === 'admin' ? (
           <Input
-            addBefore="用户"
+            allowClear
+            placeholder="筛选 user_id"
             style={{ width: 160 }}
             value={qUser}
             onChange={setQUser}
-            placeholder="user_id"
           />
         ) : null}
         <Input
-          addBefore="渠道ID"
-          style={{ width: 120 }}
+          allowClear
+          placeholder="筛选 channel_id"
+          style={{ width: 140 }}
           value={qChannel}
           onChange={setQChannel}
-          placeholder="llm_channels.id"
         />
         <Input
-          addBefore="请求"
+          allowClear
+          placeholder="筛选 request_id"
           style={{ width: 200 }}
           value={qRequest}
           onChange={setQRequest}
-          placeholder="request_id"
         />
-        <Input
-          addBefore="提供商"
+        <Input allowClear placeholder="筛选 provider" style={{ width: 140 }} value={qProvider} onChange={setQProvider} />
+        <Input allowClear placeholder="筛选 model" style={{ width: 140 }} value={qModel} onChange={setQModel} />
+        <Select
           style={{ width: 120 }}
-          value={qProvider}
-          onChange={setQProvider}
-          placeholder="openai"
+          value={qSuccess || undefined}
+          onChange={(v) => setQSuccess(v == null ? '' : String(v))}
+          placeholder="成功：全部"
+          allowClear
+          options={[
+            { label: '是', value: 'true' },
+            { label: '否', value: 'false' },
+          ]}
         />
-        <Input addBefore="模型" style={{ width: 140 }} value={qModel} onChange={setQModel} placeholder="gpt-4o" />
-        <div className="flex items-center gap-1">
-          <Text type="secondary" className="shrink-0 whitespace-nowrap text-[12px]">
-            成功
-          </Text>
-          <Select
-            style={{ width: 100 }}
-            value={qSuccess || undefined}
-            onChange={(v) => setQSuccess(v == null ? '' : String(v))}
-            placeholder="全部"
-            allowClear
-            options={[
-              { label: '是', value: 'true' },
-              { label: '否', value: 'false' },
-            ]}
-          />
-        </div>
         <Button type="primary" onClick={applyFilters}>
           查询
         </Button>
         <Button onClick={resetFilters}>重置</Button>
       </div>
 
-      <div className="min-h-0 flex-1 min-w-0">
-        <Spin loading={loading} className="block w-full">
-          <Table
-            rowKey="id"
-            columns={columns}
-            data={list}
-            pagination={false}
-            borderCell
-            scroll={{ x: variant === 'admin' ? 1520 : 1400 }}
-          />
-        </Spin>
-      </div>
+      <Table
+        loading={loading}
+        rowKey="id"
+        columns={columns}
+        data={list}
+        pagination={false}
+        scroll={{ x: variant === 'admin' ? 1620 : 1500 }}
+      />
 
-      <div className="mt-4 flex shrink-0 justify-end">
+      <div className="mt-4 flex justify-end">
         <Pagination
           current={page}
           pageSize={pageSize}
           total={total}
           showTotal
-          sizeCanChange
-          pageSizeChangeResetCurrent
           onChange={(p, ps) => {
             setPage(p)
             setPageSize(ps)

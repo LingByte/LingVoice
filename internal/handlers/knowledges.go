@@ -153,21 +153,38 @@ func embedderFromEnv() (knowledge.Embedder, error) {
 	}, nil
 }
 
+// chunkerFromEnv returns a type-aware [knowledge.RoutingChunker] (structured / table-kv / optional LLM).
+// LLM is used only for detected unstructured text when LLM_* env is fully configured and the client builds.
 func chunkerFromEnv() (knowledge.Chunker, string, error) {
+	var llmArm knowledge.Chunker
 	provider := strings.TrimSpace(base.GetEnv("LLM_PROVIDER"))
 	apiKey := strings.TrimSpace(base.GetEnv("LLM_API_KEY"))
 	baseURL := strings.TrimSpace(base.GetEnv("LLM_BASEURL"))
 	model := strings.TrimSpace(base.GetEnv("LLM_MODEL"))
-	if provider == "" || apiKey == "" || baseURL == "" || model == "" {
-		return nil, "", nil
+	if provider != "" && apiKey != "" && baseURL != "" && model != "" {
+		systemPrompt := strings.TrimSpace(base.GetEnv("LLM_SYSTEM_PROMPT"))
+		h, err := llm.NewLLMProvider(context.Background(), provider, apiKey, baseURL, systemPrompt)
+		if err == nil {
+			llmArm = &knowledge.LLMChunker{LLM: h, Model: model}
+		}
 	}
+	r := knowledge.DefaultRoutingChunker(llmArm)
+	var msg string
+	if llmArm != nil {
+		msg = fmt.Sprintf("RoutingChunker: structured+table_kv+llm (LLM provider=%s model=%s)", provider, model)
+	} else {
+		msg = "RoutingChunker: structured+table_kv+rules (set LLM_PROVIDER/LLM_API_KEY/LLM_BASEURL/LLM_MODEL for LLM on unstructured)"
+	}
+	return r, msg, nil
+}
 
-	systemPrompt := strings.TrimSpace(base.GetEnv("LLM_SYSTEM_PROMPT"))
-	h, err := llm.NewLLMProvider(context.Background(), provider, apiKey, baseURL, systemPrompt)
-	if err != nil {
-		return nil, "", err
+func knowledgeChunkOpts(docTitle string) *knowledge.ChunkOptions {
+	return &knowledge.ChunkOptions{
+		DocumentTitle: strings.TrimSpace(docTitle),
+		MaxChars:      knowledge.DefaultChunkMaxChars,
+		OverlapChars:  knowledge.DefaultChunkOverlapChars,
+		MinChars:      knowledge.DefaultChunkMinChars,
 	}
-	return &knowledge.LLMChunker{LLM: h, Model: model}, fmt.Sprintf("LLMChunker enabled: provider=%s model=%s", provider, model), nil
 }
 
 func parseRecordIDs(s string) []string {
@@ -495,12 +512,13 @@ func (h *Handlers) runKnowledgeUploadJob(ctx context.Context, orgID uint, ns mod
 		Text string
 	}
 	chunks := make([]chunk, 0, 16)
-	if ch, _, err := chunkerFromEnv(); err == nil && ch != nil {
+	ch, _, _ := chunkerFromEnv()
+	if ch != nil {
 		raw := strings.TrimSpace(parsed.Text)
 		if raw != "" {
-			llmChunks, err := ch.Chunk(ctx, raw, &knowledge.ChunkOptions{DocumentTitle: strings.TrimSpace(fileName)})
-			if err == nil && len(llmChunks) > 0 {
-				for _, it := range llmChunks {
+			routedChunks, err := ch.Chunk(ctx, raw, knowledgeChunkOpts(fileName))
+			if err == nil && len(routedChunks) > 0 {
+				for _, it := range routedChunks {
 					if strings.TrimSpace(it.Text) == "" {
 						continue
 					}
@@ -785,12 +803,13 @@ func (h *Handlers) runKnowledgeReuploadJob(ctx context.Context, orgID uint, ns m
 		Text string
 	}
 	chunks := make([]chunk, 0, 16)
-	if ch, _, err := chunkerFromEnv(); err == nil && ch != nil {
+	ch, _, _ := chunkerFromEnv()
+	if ch != nil {
 		raw := strings.TrimSpace(parsed.Text)
 		if raw != "" {
-			llmChunks, err := ch.Chunk(ctx, raw, &knowledge.ChunkOptions{DocumentTitle: strings.TrimSpace(fileName)})
-			if err == nil && len(llmChunks) > 0 {
-				for _, it := range llmChunks {
+			routedChunks, err := ch.Chunk(ctx, raw, knowledgeChunkOpts(fileName))
+			if err == nil && len(routedChunks) > 0 {
+				for _, it := range routedChunks {
 					if strings.TrimSpace(it.Text) == "" {
 						continue
 					}
@@ -1067,10 +1086,11 @@ func (h *Handlers) runKnowledgeTextPutJob(ctx context.Context, orgID uint, ns mo
 		Text string
 	}
 	chunks := make([]chunk, 0, 16)
-	if ch, _, err := chunkerFromEnv(); err == nil && ch != nil {
-		llmChunks, err := ch.Chunk(ctx, mdText, &knowledge.ChunkOptions{DocumentTitle: strings.TrimSpace(doc.Title)})
-		if err == nil && len(llmChunks) > 0 {
-			for _, it := range llmChunks {
+	ch, _, _ := chunkerFromEnv()
+	if ch != nil {
+		routedChunks, err := ch.Chunk(ctx, mdText, knowledgeChunkOpts(doc.Title))
+		if err == nil && len(routedChunks) > 0 {
+			for _, it := range routedChunks {
 				if strings.TrimSpace(it.Text) == "" {
 					continue
 				}

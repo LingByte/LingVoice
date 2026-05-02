@@ -45,6 +45,10 @@ func (c *RoutingChunker) Chunk(ctx context.Context, text string, opts *ChunkOpti
 		ch = c.TableKV
 	case DocumentTypeUnstructured:
 		ch = c.LLM
+		// Without an LLM client, still chunk noisy/OCR-like text via deterministic rules.
+		if ch == nil {
+			ch = c.Structured
+		}
 	default:
 		ch = c.Structured
 	}
@@ -64,6 +68,18 @@ func (c *RoutingChunker) Chunk(ctx context.Context, text string, opts *ChunkOpti
 		out[i].Text = strings.TrimSpace(out[i].Text)
 	}
 	return out, nil
+}
+
+// DefaultRoutingChunker builds a [RoutingChunker] with [RuleBasedDocumentTypeDetector],
+// [StructuredRuleChunker], [TableKVChunker], and an optional LLM arm for unstructured text.
+// When llm is nil, unstructured documents fall back to structured rule chunking.
+func DefaultRoutingChunker(llm Chunker) *RoutingChunker {
+	return &RoutingChunker{
+		Detector:   &RuleBasedDocumentTypeDetector{},
+		Structured: &StructuredRuleChunker{},
+		TableKV:    &TableKVChunker{},
+		LLM:        llm,
+	}
 }
 
 var _ Chunker = (*RoutingChunker)(nil)
