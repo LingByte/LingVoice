@@ -14,8 +14,8 @@ import (
 	"github.com/LingByte/LingVoice/pkg/constants"
 	"github.com/LingByte/LingVoice/pkg/logger"
 	"github.com/LingByte/LingVoice/pkg/notification/mail"
-	"github.com/LingByte/LingVoice/pkg/task"
 	"github.com/LingByte/LingVoice/pkg/utils/base"
+	"github.com/LingByte/LingVoice/pkg/utils/task"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )

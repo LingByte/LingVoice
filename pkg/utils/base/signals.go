@@ -7,7 +7,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/LingByte/LingVoice/pkg/task"
+	task2 "github.com/LingByte/LingVoice/pkg/utils/task"
 )
 
 // SignalHandler is invoked synchronously for each matching subscription (see Emit),
@@ -40,8 +40,8 @@ type Signals struct {
 	events      []SigHandlerEvent
 
 	asyncMu     sync.Mutex
-	asyncPool   *task.TaskPool[asyncEmitPayload, struct{}]
-	asyncPoolFn func() *task.TaskPool[asyncEmitPayload, struct{}]
+	asyncPool   *task2.TaskPool[asyncEmitPayload, struct{}]
+	asyncPoolFn func() *task2.TaskPool[asyncEmitPayload, struct{}]
 }
 
 type asyncEmitPayload struct {
@@ -75,21 +75,21 @@ func NewSignals() *Signals {
 
 // SetAsyncPool replaces the default lazy pool factory used by EmitAsync.
 // Pass nil to clear and fall back to the built-in default on next EmitAsync.
-func (s *Signals) SetAsyncPoolFactory(fn func() *task.TaskPool[asyncEmitPayload, struct{}]) {
+func (s *Signals) SetAsyncPoolFactory(fn func() *task2.TaskPool[asyncEmitPayload, struct{}]) {
 	s.asyncMu.Lock()
 	defer s.asyncMu.Unlock()
 	s.asyncPoolFn = fn
 	s.asyncPool = nil
 }
 
-func (s *Signals) defaultAsyncPool() *task.TaskPool[asyncEmitPayload, struct{}] {
-	return task.NewTaskPool[asyncEmitPayload, struct{}](&task.PoolOption{
+func (s *Signals) defaultAsyncPool() *task2.TaskPool[asyncEmitPayload, struct{}] {
+	return task2.NewTaskPool[asyncEmitPayload, struct{}](&task2.PoolOption{
 		WorkerCount: 4,
 		QueueSize:   1024,
 	})
 }
 
-func (s *Signals) poolForAsync() *task.TaskPool[asyncEmitPayload, struct{}] {
+func (s *Signals) poolForAsync() *task2.TaskPool[asyncEmitPayload, struct{}] {
 	s.asyncMu.Lock()
 	defer s.asyncMu.Unlock()
 	if s.asyncPool != nil {
@@ -197,7 +197,7 @@ func (s *Signals) Emit(event string, sender any, params ...any) {
 
 // EmitAsync schedules a snapshot of current handlers for event on the async worker pool.
 // Handler order matches Emit; subscriptions added after this call are not included.
-func (s *Signals) EmitAsync(ctx context.Context, event string, sender any, params ...any) (*task.Task[asyncEmitPayload, struct{}], error) {
+func (s *Signals) EmitAsync(ctx context.Context, event string, sender any, params ...any) (*task2.Task[asyncEmitPayload, struct{}], error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

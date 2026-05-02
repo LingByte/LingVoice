@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -26,7 +27,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Relay v1 speech: ASR 走 pkg/recognizer（与渠道 provider 能力一致），TTS 走 pkg/synthesizer。
+// Relay v1 speech: ASR 在应用层用 recognizer.GetGlobalFactory() + NewTranscriberConfigFromMap，TTS 走 pkg/synthesizer。
 
 // openAPIAudioURLProtection 拉取用户音频 URL：黑名单域名模式 + 禁止私网 IP（含解析结果）。
 func openAPIAudioURLProtection() *system.SSRFProtection {
@@ -76,6 +77,7 @@ func bindAndLoadOpenAPIASRAudio(c *gin.Context) (models.SpeechASRTranscribeReq, 
 		}
 		var body models.SpeechASRTranscribeReq
 		body.Group = strings.TrimSpace(c.PostForm("group"))
+		body.Provider = strings.TrimSpace(c.PostForm("provider"))
 		body.Format = strings.TrimSpace(c.PostForm("format"))
 		body.Language = strings.TrimSpace(c.PostForm("language"))
 		if ex := strings.TrimSpace(c.PostForm("extra")); ex != "" {
@@ -190,6 +192,127 @@ func resolveASRAudioInput(body *models.SpeechASRTranscribeReq) (source string, e
 	return "url", nil
 }
 
+const (
+	openAPIASRChunkBytes  = 8192
+	openAPIASRResultWait = 120 * time.Second
+)
+
+// openAPIASRSendPace 按略慢于「16kHz mono PCM 实时」估算发送 n 字节后的等待时间，各类流式 ASR 统一节流。
+func openAPIASRSendPace(n int) time.Duration {
+	if n <= 0 {
+		return 0
+	}
+	const bytesPerSec = 32000.0 // 16kHz * 2 bytes
+	sec := float64(n) / bytesPerSec
+	d := time.Duration(sec * float64(time.Second))
+	if d < 8*time.Millisecond {
+		d = 8 * time.Millisecond
+	}
+	return d
+}
+
+// openAPIASRRecognizeOnce 使用全局 Transcriber 工厂做一次 HTTP 单次识别（与 OpenAPI 渠道配置一致）。
+func openAPIASRRecognizeOnce(ctx context.Context, provider string, merged map[string]interface{}, audio []byte, language string) (text string, err error) {
+	if len(audio) == 0 {
+		return "", fmt.Errorf("audio is empty")
+	}
+	prov := strings.ToLower(strings.TrimSpace(provider))
+	tc, err := recognizer.NewTranscriberConfigFromMap(prov, merged, language)
+	if err != nil {
+		return "", err
+	}
+	svc, err := recognizer.GetGlobalFactory().CreateTranscriber(tc)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = svc.StopConn() }()
+
+	done := make(chan string, 1)
+	errFatal := make(chan error, 1)
+	var lastMu sync.Mutex
+	var lastPartial string
+
+	svc.Init(func(t string, isLast bool, _ time.Duration, _ string) {
+		lastMu.Lock()
+		if strings.TrimSpace(t) != "" {
+			lastPartial = t
+		}
+		lastMu.Unlock()
+		if isLast {
+			select {
+			case done <- strings.TrimSpace(t):
+			default:
+			}
+		}
+	}, func(e error, fatal bool) {
+		if fatal && e != nil {
+			select {
+			case errFatal <- e:
+			default:
+			}
+		}
+	})
+
+	if err := svc.ConnAndReceive("openapi"); err != nil {
+		return "", err
+	}
+
+	for i := 0; i < len(audio); i += openAPIASRChunkBytes {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		end := i + openAPIASRChunkBytes
+		if end > len(audio) {
+			end = len(audio)
+		}
+		sent := end - i
+		if err := svc.SendAudioBytes(audio[i:end]); err != nil {
+			return "", err
+		}
+		if end < len(audio) {
+			delay := openAPIASRSendPace(sent)
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+
+	if err := svc.SendEnd(); err != nil {
+		s := err.Error()
+		if tc.GetVendor() == recognizer.VendorQCloud &&
+			(strings.Contains(s, "recognizer is not running") || strings.Contains(s, "会话未建立")) {
+			return "", fmt.Errorf("腾讯云 ASR 会话未就绪或已关闭（请核对渠道 modelType 与控制台「实时语音识别」是否开通、appId/secret 是否匹配）: %s", s)
+		}
+		return "", err
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, openAPIASRResultWait)
+	defer cancel()
+
+	select {
+	case t := <-done:
+		if t != "" {
+			return t, nil
+		}
+		lastMu.Lock()
+		lp := strings.TrimSpace(lastPartial)
+		lastMu.Unlock()
+		if lp != "" {
+			return lp, nil
+		}
+		return "", nil
+	case e := <-errFatal:
+		if e != nil {
+			return "", e
+		}
+		return "", fmt.Errorf("ASR failed")
+	case <-waitCtx.Done():
+		return "", fmt.Errorf("ASR 等待结果超时或已取消: %w", waitCtx.Err())
+	}
+}
+
 // openAPIASRTranscribeHandler POST /v1/speech/asr/transcribe
 func (h *Handlers) openAPIASRTranscribeHandler(c *gin.Context) {
 	cred, ok := middleware.OpenAPISpeechCredentialFromContext(c)
@@ -218,8 +341,13 @@ func (h *Handlers) openAPIASRTranscribeHandler(c *gin.Context) {
 		response.FailWithCode(c, 503, "无可用 ASR 渠道", gin.H{"error": errDetail})
 		return
 	}
+	effectiveProvider := strings.TrimSpace(ch.Provider)
+	if p := strings.TrimSpace(body.Provider); p != "" {
+		effectiveProvider = p
+	}
+	provKey := strings.ToLower(strings.TrimSpace(effectiveProvider))
 	merged := map[string]interface{}{
-		"provider": strings.ToLower(strings.TrimSpace(ch.Provider)),
+		"provider": provKey,
 	}
 	if strings.TrimSpace(ch.ConfigJSON) != "" {
 		var extra map[string]interface{}
@@ -233,9 +361,10 @@ func (h *Handlers) openAPIASRTranscribeHandler(c *gin.Context) {
 		}
 	}
 	models.MergeASRTranscribeOptions(merged, &body)
+	merged["provider"] = provKey
 
 	lang := strings.TrimSpace(body.Language)
-	text, recErr := recognizer.RecognizeOpenAPIOnce(c.Request.Context(), ch.Provider, merged, audio, lang)
+	text, recErr := openAPIASRRecognizeOnce(c.Request.Context(), provKey, merged, audio, lang)
 	if recErr != nil {
 		errMsg := recErr.Error()
 		h.recordOpenAPIASRUsage(c, started, cred, ch, 502, false, errMsg, &body, gin.H{"error": errMsg}, int64(audioLen), src)
@@ -250,7 +379,7 @@ func (h *Handlers) openAPIASRTranscribeHandler(c *gin.Context) {
 	out := gin.H{
 		"text":         text,
 		"segments":     []any{},
-		"provider":     ch.Provider,
+		"provider":     effectiveProvider,
 		"channel_id":   ch.ID,
 		"group":        ch.Group,
 		"audio_source": src,
@@ -266,7 +395,7 @@ func (h *Handlers) openAPIASRTranscribeHandler(c *gin.Context) {
 }
 
 func nilIfASRBodyEmpty(body models.SpeechASRTranscribeReq) *models.SpeechASRTranscribeReq {
-	if strings.TrimSpace(body.Group) == "" && strings.TrimSpace(body.Format) == "" && strings.TrimSpace(body.Language) == "" &&
+	if strings.TrimSpace(body.Group) == "" && strings.TrimSpace(body.Provider) == "" && strings.TrimSpace(body.Format) == "" && strings.TrimSpace(body.Language) == "" &&
 		strings.TrimSpace(body.AudioURL) == "" && strings.TrimSpace(body.AudioBase64) == "" && body.Extra == nil {
 		return nil
 	}
@@ -354,7 +483,7 @@ func (h *Handlers) openAPITTSSynthesizeHandler(c *gin.Context) {
 	}
 	synthesizer.MergeRelayTTSRequestOptions(merged, strings.ToLower(strings.TrimSpace(ch.Provider)), body.AudioFormat, body.SampleRate, body.TTSOptions)
 
-	svc, err := synthesizer.NewSynthesisServiceFromCredential(synthesizer.TTSCredentialConfig(merged))
+	svc, err := synthesizer.NewSynthesisServiceFromCredential(merged)
 	if err != nil {
 		h.recordOpenAPITTSUsage(c, started, cred, ch, 400, false, err.Error(), &body, merged, gin.H{"error": err.Error()}, 0, textChars)
 		response.FailWithCode(c, 400, "TTS 配置无法构建服务", gin.H{"error": err.Error()})
@@ -388,7 +517,6 @@ func (h *Handlers) openAPITTSSynthesizeHandler(c *gin.Context) {
 			base[k] = v
 		}
 	}
-
 	if outMode == "url" {
 		if config.GlobalStore == nil {
 			h.recordOpenAPITTSUsage(c, started, cred, ch, 503, false, "对象存储未初始化", &body, merged, gin.H{"response_type": outMode}, audioOut, textChars)
@@ -447,7 +575,6 @@ func (h *Handlers) openAPITTSSynthesizeHandler(c *gin.Context) {
 		response.Success(c, "ok", base)
 		return
 	}
-
 	b64 := base64.StdEncoding.EncodeToString(handler.buf)
 	base["audio_base64"] = b64
 	respSnap := gin.H{

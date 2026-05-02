@@ -313,38 +313,13 @@ func (h *Handlers) llmChannelDeleteHandler(c *gin.Context) {
 	response.Success(c, "删除成功", gin.H{"id": id})
 }
 
-// ---------- ASR / TTS（结构相同，分表） ----------
-
-type speechChannelWrite struct {
+type SpeechChannelWrite struct {
 	Provider   string `json:"provider" binding:"required"`
 	Name       string `json:"name" binding:"required"`
 	Enabled    *bool  `json:"enabled"`
 	Group      string `json:"group"`
 	SortOrder  *int   `json:"sortOrder"`
 	ConfigJSON string `json:"configJson"`
-}
-
-func normalizeASRProviderLocal(raw string) string {
-	orig := strings.TrimSpace(raw)
-	p := strings.ToLower(orig)
-	switch p {
-	case "tencent":
-		return "qcloud"
-	case "aliyun_funasr", "aliyun-funasr", "aliyun":
-		return "funasr"
-	case "volcengine_llm":
-		return "volcllmasr"
-	default:
-		return orig
-	}
-}
-
-func normalizeTTSProviderLocal(raw string) string {
-	orig := strings.TrimSpace(raw)
-	if strings.EqualFold(orig, "tencent") {
-		return "qcloud"
-	}
-	return orig
 }
 
 func validateConfigJSON(s string) error {
@@ -358,8 +333,8 @@ func validateConfigJSON(s string) error {
 	return nil
 }
 
-func speechWriteToASR(w *speechChannelWrite, row *models.ASRChannel) {
-	row.Provider = normalizeASRProviderLocal(strings.TrimSpace(w.Provider))
+func speechWriteToASR(w *SpeechChannelWrite, row *models.ASRChannel) {
+	row.Provider = strings.TrimSpace(w.Provider)
 	row.Name = strings.TrimSpace(w.Name)
 	row.Group = strings.TrimSpace(w.Group)
 	if w.Enabled != nil {
@@ -373,8 +348,8 @@ func speechWriteToASR(w *speechChannelWrite, row *models.ASRChannel) {
 	row.ConfigJSON = strings.TrimSpace(w.ConfigJSON)
 }
 
-func speechWriteToTTS(w *speechChannelWrite, row *models.TTSChannel) {
-	row.Provider = normalizeTTSProviderLocal(strings.TrimSpace(w.Provider))
+func speechWriteToTTS(w *SpeechChannelWrite, row *models.TTSChannel) {
+	row.Provider = strings.TrimSpace(w.Provider)
 	row.Name = strings.TrimSpace(w.Name)
 	row.Group = strings.TrimSpace(w.Group)
 	if w.Enabled != nil {
@@ -389,14 +364,6 @@ func speechWriteToTTS(w *speechChannelWrite, row *models.TTSChannel) {
 }
 
 func (h *Handlers) asrChannelsListHandler(c *gin.Context) {
-	h.listSpeechLike(c, "asr")
-}
-
-func (h *Handlers) ttsChannelsListHandler(c *gin.Context) {
-	h.listSpeechLike(c, "tts")
-}
-
-func (h *Handlers) listSpeechLike(c *gin.Context, kind string) {
 	page := models.ParseQueryInt(c, "page", 1)
 	if page < 1 {
 		page = 1
@@ -404,70 +371,74 @@ func (h *Handlers) listSpeechLike(c *gin.Context, kind string) {
 	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
 	offset := (page - 1) * pageSize
 
-	switch kind {
-	case "asr":
-		q := h.db.Model(&models.ASRChannel{})
-		if g := strings.TrimSpace(c.Query("group")); g != "" {
-			q = q.Where("`group` = ?", g)
-		}
-		if p := strings.TrimSpace(c.Query("provider")); p != "" {
-			q = q.Where("provider = ?", p)
-		}
-		var total int64
-		if err := q.Count(&total).Error; err != nil {
-			response.Fail(c, "查询失败", gin.H{"error": err.Error()})
-			return
-		}
-		var list []models.ASRChannel
-		listQ := h.db.Model(&models.ASRChannel{})
-		if g := strings.TrimSpace(c.Query("group")); g != "" {
-			listQ = listQ.Where("`group` = ?", g)
-		}
-		if p := strings.TrimSpace(c.Query("provider")); p != "" {
-			listQ = listQ.Where("provider = ?", p)
-		}
-		if err := listQ.Order("sort_order ASC, id ASC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
-			response.Fail(c, "查询失败", gin.H{"error": err.Error()})
-			return
-		}
-		totalPage := int(total) / pageSize
-		if int(total)%pageSize != 0 {
-			totalPage++
-		}
-		response.Success(c, "ok", gin.H{"list": list, "total": total, "page": page, "pageSize": pageSize, "totalPage": totalPage})
-	case "tts":
-		q := h.db.Model(&models.TTSChannel{})
-		if g := strings.TrimSpace(c.Query("group")); g != "" {
-			q = q.Where("`group` = ?", g)
-		}
-		if p := strings.TrimSpace(c.Query("provider")); p != "" {
-			q = q.Where("provider = ?", p)
-		}
-		var total int64
-		if err := q.Count(&total).Error; err != nil {
-			response.Fail(c, "查询失败", gin.H{"error": err.Error()})
-			return
-		}
-		var list []models.TTSChannel
-		listQ := h.db.Model(&models.TTSChannel{})
-		if g := strings.TrimSpace(c.Query("group")); g != "" {
-			listQ = listQ.Where("`group` = ?", g)
-		}
-		if p := strings.TrimSpace(c.Query("provider")); p != "" {
-			listQ = listQ.Where("provider = ?", p)
-		}
-		if err := listQ.Order("sort_order ASC, id ASC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
-			response.Fail(c, "查询失败", gin.H{"error": err.Error()})
-			return
-		}
-		totalPage := int(total) / pageSize
-		if int(total)%pageSize != 0 {
-			totalPage++
-		}
-		response.Success(c, "ok", gin.H{"list": list, "total": total, "page": page, "pageSize": pageSize, "totalPage": totalPage})
-	default:
-		response.FailWithCode(c, 500, "内部错误", nil)
+	q := h.db.Model(&models.ASRChannel{})
+	if g := strings.TrimSpace(c.Query("group")); g != "" {
+		q = q.Where("`group` = ?", g)
 	}
+	if p := strings.TrimSpace(c.Query("provider")); p != "" {
+		q = q.Where("provider = ?", p)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+	var list []models.ASRChannel
+	listQ := h.db.Model(&models.ASRChannel{})
+	if g := strings.TrimSpace(c.Query("group")); g != "" {
+		listQ = listQ.Where("`group` = ?", g)
+	}
+	if p := strings.TrimSpace(c.Query("provider")); p != "" {
+		listQ = listQ.Where("provider = ?", p)
+	}
+	if err := listQ.Order("sort_order ASC, id ASC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+	totalPage := int(total) / pageSize
+	if int(total)%pageSize != 0 {
+		totalPage++
+	}
+	response.Success(c, "ok", gin.H{"list": list, "total": total, "page": page, "pageSize": pageSize, "totalPage": totalPage})
+}
+
+func (h *Handlers) ttsChannelsListHandler(c *gin.Context) {
+	page := models.ParseQueryInt(c, "page", 1)
+	if page < 1 {
+		page = 1
+	}
+	pageSize := models.ClampPageSize(models.ParseQueryInt(c, "pageSize", 20))
+	offset := (page - 1) * pageSize
+
+	q := h.db.Model(&models.TTSChannel{})
+	if g := strings.TrimSpace(c.Query("group")); g != "" {
+		q = q.Where("`group` = ?", g)
+	}
+	if p := strings.TrimSpace(c.Query("provider")); p != "" {
+		q = q.Where("provider = ?", p)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+	var list []models.TTSChannel
+	listQ := h.db.Model(&models.TTSChannel{})
+	if g := strings.TrimSpace(c.Query("group")); g != "" {
+		listQ = listQ.Where("`group` = ?", g)
+	}
+	if p := strings.TrimSpace(c.Query("provider")); p != "" {
+		listQ = listQ.Where("provider = ?", p)
+	}
+	if err := listQ.Order("sort_order ASC, id ASC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
+		response.Fail(c, "查询失败", gin.H{"error": err.Error()})
+		return
+	}
+	totalPage := int(total) / pageSize
+	if int(total)%pageSize != 0 {
+		totalPage++
+	}
+	response.Success(c, "ok", gin.H{"list": list, "total": total, "page": page, "pageSize": pageSize, "totalPage": totalPage})
 }
 
 func (h *Handlers) asrChannelDetailHandler(c *gin.Context) {
@@ -507,7 +478,7 @@ func (h *Handlers) ttsChannelDetailHandler(c *gin.Context) {
 }
 
 func (h *Handlers) asrChannelCreateHandler(c *gin.Context) {
-	var body speechChannelWrite
+	var body SpeechChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
 		return
@@ -528,7 +499,7 @@ func (h *Handlers) asrChannelCreateHandler(c *gin.Context) {
 }
 
 func (h *Handlers) ttsChannelCreateHandler(c *gin.Context) {
-	var body speechChannelWrite
+	var body SpeechChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
 		return
@@ -554,7 +525,7 @@ func (h *Handlers) asrChannelUpdateHandler(c *gin.Context) {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
 	}
-	var body speechChannelWrite
+	var body SpeechChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
 		return
@@ -587,7 +558,7 @@ func (h *Handlers) ttsChannelUpdateHandler(c *gin.Context) {
 		response.FailWithCode(c, 400, "无效的 id", nil)
 		return
 	}
-	var body speechChannelWrite
+	var body SpeechChannelWrite
 	if err := c.ShouldBindJSON(&body); err != nil {
 		response.FailWithCode(c, 400, "参数错误", gin.H{"error": err.Error()})
 		return

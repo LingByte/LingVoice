@@ -85,9 +85,10 @@ func summarizeASRRequestForUsage(body *models.SpeechASRTranscribeReq) gin.H {
 		return gin.H{}
 	}
 	out := gin.H{
-		"group":    strings.TrimSpace(body.Group),
-		"format":   strings.TrimSpace(body.Format),
-		"language": strings.TrimSpace(body.Language),
+		"group":     strings.TrimSpace(body.Group),
+		"provider":  strings.TrimSpace(body.Provider),
+		"format":    strings.TrimSpace(body.Format),
+		"language":  strings.TrimSpace(body.Language),
 	}
 	if raw := strings.TrimSpace(body.AudioURL); raw != "" {
 		out["has_audio_url"] = true

@@ -17,6 +17,7 @@ const MaxRelayAudioFetchBytes = 32 << 20 // 32 MiB
 // SpeechASRTranscribeReq is the JSON / form body for POST /v1/speech/asr/transcribe.
 type SpeechASRTranscribeReq struct {
 	Group       string `json:"group"`
+	Provider    string `json:"provider"`
 	AudioBase64 string `json:"audio_base64"`
 	AudioURL    string `json:"audio_url"`
 	Format      string `json:"format"`
