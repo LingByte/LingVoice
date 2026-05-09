@@ -281,7 +281,6 @@ export function KnowledgeBasesPage() {
               rules={[
                 {
                   validator(value, callback) {
-                    const vp = nsForm.getFieldValue('vector_provider') as string | undefined
                     if (!String(value || '').trim()) {
                       callback('请输入 namespace')
                       return

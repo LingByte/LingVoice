@@ -114,7 +114,7 @@ export function LoginPage() {
       <div className="absolute inset-0 bg-gradient-to-br from-purple-500/15 via-pink-400/10 to-blue-500/15 backdrop-blur-sm" />
 
       <div className="absolute right-6 top-6 z-10">
-        <Select<AppLocale>
+        <Select
           size="small"
           value={uiLocale}
           onChange={(v) => setUiLocale(v as AppLocale)}

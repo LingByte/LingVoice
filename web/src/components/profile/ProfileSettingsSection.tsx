@@ -23,7 +23,7 @@ export function ProfileSettingsSection() {
               {t('profilePrefs.languageHint')}
             </Text>
           </div>
-          <Select<AppLocale>
+          <Select
             value={uiLocale}
             onChange={(v) => setUiLocale(v as AppLocale)}
             className="w-44 shrink-0"

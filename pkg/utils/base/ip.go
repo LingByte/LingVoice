@@ -220,7 +220,7 @@ func getIPLocationFromIPAPI(ip string) (string, string, string, error) {
 	}
 
 	if geo.Status == "fail" {
-		return UNKNOWN, UNKNOWN, UNKNOWN, fmt.Errorf(geo.Message)
+		return UNKNOWN, UNKNOWN, UNKNOWN, fmt.Errorf("%s", geo.Message)
 	}
 
 	country := geo.Country

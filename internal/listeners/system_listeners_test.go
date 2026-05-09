@@ -42,7 +42,7 @@ func TestResetSSLGlobals(t *testing.T) {
 
 	// Verify the globals are reset
 	assert.Equal(t, tls.Certificate{}, sslCert)
-	assert.NotNil(t, sslCertOnce)
+	assert.NotNil(t, &sslCertOnce)
 	assert.Nil(t, sslCertErr)
 }
 

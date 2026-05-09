@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -261,5 +260,4 @@ func TestEnvironmentNoise(t *testing.T) {
 	Info(msg)
 	Warn(msg)
 	Error(msg)
-	fmt.Sprintf("")
 }

@@ -34,14 +34,20 @@ type MyMemoryResponse struct {
 	ResponseStatus  int    `json:"responseStatus"`
 }
 
-// NewMyMemoryTranslator creates a new MyMemory translator
-func NewMyMemoryTranslator() *MyMemoryTranslator {
+// NewMyMemoryTranslator creates a new MyMemory translator.
+// An optional email may be provided to raise MyMemory rate limits; an empty
+// string keeps the default contact address.
+func NewMyMemoryTranslator(emailOverride ...string) *MyMemoryTranslator {
+	email := "support@lingecho.com"
+	if len(emailOverride) > 0 && strings.TrimSpace(emailOverride[0]) != "" {
+		email = strings.TrimSpace(emailOverride[0])
+	}
 	return &MyMemoryTranslator{
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 		baseURL:   "https://api.mymemory.translated.net/get",
-		email:     "support@lingecho.com",
+		email:     email,
 		userAgent: "LingFramework/1.0",
 	}
 }
