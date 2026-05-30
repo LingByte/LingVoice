@@ -63,3 +63,7 @@ dist-ssr
 *.sw?
 keys/
 data/
+agents-main/
+eino-main/
+LingEchoX/
+sip-main/
