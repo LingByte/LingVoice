@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"cloud.google.com/go/speech/apiv1/speechpb"
-	"github.com/LingByte/LingVoice/pkg/utils"
 )
 
 // ConfigReader 配置读取器 - 简化配置读取逻辑
@@ -134,23 +133,9 @@ func NewTranscriberConfigFromMap(
 // buildQCloudConfig 构建腾讯云ASR配置
 func buildQCloudConfig(config map[string]interface{}) (*QCloudASROption, error) {
 	cfg := NewConfigReader(config)
-
-	// 优先使用配置中的值，如果没有则使用环境变量
 	appID := cfg.String("app_id", "appId")
-	if appID == "" {
-		appID = utils.GetEnv("QCLOUD_APP_ID")
-	}
-
 	secretID := cfg.String("secret_id", "secretId")
-	if secretID == "" {
-		secretID = utils.GetEnv("QCLOUD_SECRET_ID")
-	}
-
 	secretKey := cfg.String("secret_key", "secretKey", "secret")
-	if secretKey == "" {
-		secretKey = utils.GetEnv("QCLOUD_SECRET")
-	}
-
 	if appID == "" || secretID == "" || secretKey == "" {
 		return nil, fmt.Errorf("腾讯云ASR配置不完整：缺少appId、secretId或secretKey (配置: appId=%s, secretId=%s, secretKey=%s)",
 			appID, secretID, secretKey)
@@ -265,9 +250,6 @@ func buildGladiaConfig(config map[string]interface{}) (*GladiaASROption, error) 
 func buildDeepgramConfig(config map[string]interface{}, language string) (*DeepgramASROption, error) {
 	cfg := NewConfigReader(config)
 	apiKey := cfg.String("apiKey", "api_key")
-	if apiKey == "" {
-		apiKey = utils.GetEnv("DEEPGRAM_API_KEY")
-	}
 	if apiKey == "" {
 		return nil, fmt.Errorf("Deepgram ASR配置不完整：缺少apiKey")
 	}

@@ -1,7 +1,7 @@
 package media
 
-// Copyright (c) 2026 LingByte
-// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 LingByte. All rights reserved.
+// SPDX-License-Identifier: AGPL-3.0
 
 import (
 	"fmt"

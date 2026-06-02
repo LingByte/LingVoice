@@ -34,7 +34,7 @@ func TestNewCoquiTTS(t *testing.T) {
 	opt := NewCoquiTTSOption(url)
 	server := NewCoquiService(opt)
 	ctx := context.Background()
-	h := &testSynthesisHandler{}
+	h := &testAudioSynthesisHandler{}
 
 	err := server.Synthesize(ctx, h, "hello world")
 	assert.Nil(t, err)

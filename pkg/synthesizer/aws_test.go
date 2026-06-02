@@ -19,7 +19,7 @@ func TestAws(t *testing.T) {
 	amazonTTSOption := NewAmazonTTSOption(region, "json", "111")
 
 	ctx := context.Background()
-	h := &testSynthesisHandler{}
+	h := &testAudioSynthesisHandler{}
 
 	amazonService := NewAmazonService(amazonTTSOption)
 	err := amazonService.Synthesize(ctx, h, "hello world")

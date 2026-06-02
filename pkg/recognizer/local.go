@@ -61,8 +61,8 @@ type LocalASRService struct {
 	bufferSize  int
 
 	// 回调函数
-	resultCallback TranscribeResult
-	errorCallback  ProcessError
+	resultCallback SpeechRecognitionResult
+	errorCallback  RecognitionError
 
 	logger *logrus.Logger
 }
@@ -91,7 +91,7 @@ func NewLocalASRService(config *LocalASRConfig) (*LocalASRService, error) {
 }
 
 // Init 初始化服务
-func (s *LocalASRService) Init(tr TranscribeResult, er ProcessError) {
+func (s *LocalASRService) Init(tr SpeechRecognitionResult, er RecognitionError) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

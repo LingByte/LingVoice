@@ -27,8 +27,8 @@ type QCloudASR struct {
 
 	opt              QCloudASROption
 	recognizer       *asr.SpeechRecognizer
-	transcribeResult TranscribeResult
-	processError     ProcessError
+	transcribeResult SpeechRecognitionResult
+	processError     RecognitionError
 	dialogID         string
 }
 
@@ -248,7 +248,7 @@ func NewQcloudASR(opt QCloudASROption) *QCloudASR {
 	return asq
 }
 
-func (asq *QCloudASR) Init(tr TranscribeResult, er ProcessError) {
+func (asq *QCloudASR) Init(tr SpeechRecognitionResult, er RecognitionError) {
 	asq.transcribeResult = tr
 	asq.processError = er
 }

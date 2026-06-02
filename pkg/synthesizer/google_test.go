@@ -21,7 +21,7 @@ func TestWithGoogleTTS(t *testing.T) {
 	svc := NewGoogleService(opt)
 
 	ctx := context.Background()
-	h := &testSynthesisHandler{}
+	h := &testAudioSynthesisHandler{}
 	err := svc.Synthesize(ctx, h, "hello lingecho")
 	assert.Nil(t, err)
 }

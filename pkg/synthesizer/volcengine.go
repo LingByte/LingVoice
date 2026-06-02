@@ -16,7 +16,6 @@ import (
 	"sync"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/carlmjohnson/requests"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
@@ -117,7 +116,7 @@ func (v *VolcengineService) Format() media.StreamFormat {
 		SampleRate:    v.opt.Rate,
 		BitDepth:      v.opt.BitDepth,
 		Channels:      v.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(v.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(v.opt.FrameDuration),
 	}
 }
 
@@ -129,7 +128,7 @@ func (v *VolcengineService) CacheKey(text string) string {
 	return fmt.Sprintf("volcengine.tts-%s-%s-%d-%d-%s.pcm", v.opt.VoiceType, v.opt.Encoding, v.opt.Rate, speedRatio, digest)
 }
 
-func (v *VolcengineService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (v *VolcengineService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	v.mu.Lock()
 	opt := v.opt
 	v.mu.Unlock()
@@ -174,7 +173,7 @@ func (v *VolcengineService) Close() error {
 }
 
 type volcengineSpeechSynthesisListener struct {
-	handler SynthesisHandler
+	handler AudioSynthesisHandler
 }
 
 func (v *volcengineSpeechSynthesisListener) sendRequest(ctx context.Context, opt VolcengineTTSOption, text string) ([]byte, SentenceTimestamp, error) {

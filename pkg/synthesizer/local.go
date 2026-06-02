@@ -12,7 +12,6 @@ import (
 	"sync"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -78,7 +77,7 @@ func (ls *LocalService) Format() media.StreamFormat {
 		SampleRate:    ls.opt.SampleRate,
 		BitDepth:      ls.opt.BitDepth,
 		Channels:      ls.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(ls.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(ls.opt.FrameDuration),
 	}
 }
 
@@ -89,7 +88,7 @@ func (ls *LocalService) CacheKey(text string) string {
 	return fmt.Sprintf("local.tts-%s-%d-%s.%s", ls.opt.Command, ls.opt.SampleRate, digest, ls.opt.Codec)
 }
 
-func (ls *LocalService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (ls *LocalService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	ls.mu.Lock()
 	opt := ls.opt
 	ls.mu.Unlock()

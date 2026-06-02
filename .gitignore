@@ -61,3 +61,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+keys/
+data/
+agents-main/
+eino-main/
+LingEchoX/
+sip-main/

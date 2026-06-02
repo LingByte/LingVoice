@@ -1,7 +1,7 @@
 package media
 
-// Copyright (c) 2026 LingByte
-// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 LingByte. All rights reserved.
+// SPDX-License-Identifier: AGPL-3.0
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/logger"
+	logger "github.com/LingByte/LingVoice/pkg/media/medialog"
 	"go.uber.org/zap"
 )
 
@@ -36,11 +36,11 @@ func (tl *TransportManager) String() string {
 }
 
 func (tl *TransportManager) processIncoming() {
-	logger.Lg.Info("input transport processing started", zap.String("sessionID", tl.session.GetSession().ID), zap.Any("transport", tl.transport))
+	logger.Info("input transport processing started", zap.String("sessionID", tl.session.GetSession().ID), zap.Any("transport", tl.transport))
 	tl.incomingClosedChan = make(chan struct{}, 1)
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Lg.Error("input transport processing panic", zap.String("sessionID", tl.session.GetSession().ID), zap.Any("transport", tl.transport), zap.Any("error", r), zap.String("stacktrace", string(debug.Stack())))
+			logger.Error("input transport processing panic", zap.String("sessionID", tl.session.GetSession().ID), zap.Any("transport", tl.transport), zap.Any("error", r), zap.String("stacktrace", string(debug.Stack())))
 		}
 		// Always signal termination to unblock cleanup.
 		select {
@@ -98,7 +98,7 @@ inputLoop:
 			}
 		}
 	}
-	logger.Lg.Warn("input transport processing ended", zap.String("sessionID", tl.session.ID), zap.Any("transport", transport))
+	logger.Warn("input transport processing ended", zap.String("sessionID", tl.session.ID), zap.Any("transport", transport))
 }
 
 func (tl *TransportManager) processOutgoing() {
@@ -108,7 +108,7 @@ func (tl *TransportManager) processOutgoing() {
 	tl.outcomingClosedChan = make(chan struct{}, 1)
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Lg.Error("output transport processing panic", zap.String("sessionID", tl.session.ID), zap.Any("transport", tl.transport), zap.Any("error", r), zap.String("stacktrace", string(debug.Stack())))
+			logger.Error("output transport processing panic", zap.String("sessionID", tl.session.ID), zap.Any("transport", tl.transport), zap.Any("error", r), zap.String("stacktrace", string(debug.Stack())))
 		}
 		// Always signal termination to unblock cleanup.
 		select {
@@ -117,7 +117,7 @@ func (tl *TransportManager) processOutgoing() {
 		}
 	}()
 
-	logger.Lg.Info("output transport processing started", zap.String("sessionID", tl.session.ID), zap.Any("transport", tl.transport))
+	logger.Info("output transport processing started", zap.String("sessionID", tl.session.ID), zap.Any("transport", tl.transport))
 outputLoop:
 	for {
 		var packet MediaPacket
@@ -126,11 +126,11 @@ outputLoop:
 		var shouldSkip = false
 		select {
 		case <-tl.session.ctx.Done():
-			logger.Lg.Info("output transport processing canceled", zap.String("sessionID", tl.session.ID), zap.Any("transport", tl.transport))
+			logger.Info("output transport processing canceled", zap.String("sessionID", tl.session.ID), zap.Any("transport", tl.transport))
 			break outputLoop
 		case packet, ok = <-tl.txqueue:
 			if !ok || packet == nil {
-				logger.Lg.Info("output transport queue closed", zap.String("sessionID", tl.session.ID), zap.Any("transport", tl.transport))
+				logger.Info("output transport queue closed", zap.String("sessionID", tl.session.ID), zap.Any("transport", tl.transport))
 				break outputLoop
 			}
 		}
@@ -168,7 +168,7 @@ outputLoop:
 			tl.transport.Send(tl.session.ctx, encodedPacket)
 		}
 	}
-	logger.Lg.Warn("output transport processing ended", zap.String("sessionID", tl.session.ID))
+	logger.Warn("output transport processing ended", zap.String("sessionID", tl.session.ID))
 }
 
 func (tl *TransportManager) waitForIncomingLoopStop() {
@@ -212,7 +212,7 @@ func (tl *TransportManager) cleanup() {
 		_, _ = f(&ClosePacket{Reason: "transport cleanup"})
 	}
 
-	logger.Lg.Info("transport layer cleaned up", zap.String("sessionID", tl.session.ID), zap.Any("transport", tl.transport))
+	logger.Info("transport layer cleaned up", zap.String("sessionID", tl.session.ID), zap.Any("transport", tl.transport))
 }
 
 func (tl *TransportManager) trySendPacket(packet MediaPacket) {
@@ -222,10 +222,19 @@ func (tl *TransportManager) trySendPacket(packet MediaPacket) {
 	if tl.txqueue == nil || tl.transport == nil {
 		return
 	}
+	// TTS / synthesized downlink must not be dropped when the queue is briefly full
+	// (long prompts fill faster than realtime playout); blocking avoids choppy audio.
+	if ap, ok := packet.(*AudioPacket); ok && ap != nil && ap.IsSynthesized {
+		select {
+		case tl.txqueue <- packet:
+		case <-tl.session.GetContext().Done():
+		}
+		return
+	}
 	select {
 	case tl.txqueue <- packet:
 	default:
-		logger.Lg.Info("packet dropped", zap.String("sessionID", tl.session.ID), zap.Any("packet", packet))
+		logger.Info("packet dropped", zap.String("sessionID", tl.session.ID), zap.Any("packet", packet))
 	}
 }
 
@@ -294,7 +303,7 @@ func NewDefaultSession() *MediaSession {
 		SampleRate:   16000,
 
 		Running:            false,
-		QueueSize:          128,
+		QueueSize:          256,
 		MaxSessionDuration: 10 * 60,
 		shutdownCh:         make(chan struct{}),
 	}
@@ -317,7 +326,7 @@ func (s *MediaSession) setupEventHandlers() {
 		processors := s.processorRegistry.GetProcessors(ctx, event)
 		for _, processor := range processors {
 			if err := processor.Process(ctx, s, event); err != nil {
-				logger.Lg.Error("processor error",
+				logger.Error("processor error",
 					zap.String("processor", processor.Name()),
 					zap.String("sessionID", s.ID),
 					zap.Error(err))
@@ -480,7 +489,7 @@ func (s *MediaSession) AddOutputTransport(tx MediaTransport, filterFuncs ...Pack
 		transport: tx,
 		filters:   filterFuncs,
 	}
-	logger.Lg.Info("output transport registered", zap.String("sessionID", s.ID), zap.Any("transport", tx), zap.Int("queueSize", queueSize))
+	logger.Info("output transport registered", zap.String("sessionID", s.ID), zap.Any("transport", tx), zap.Int("queueSize", queueSize))
 	tx.Attach(s)
 	s.outputs = append(s.outputs, tl)
 
@@ -709,7 +718,7 @@ func (s *MediaSession) Serve() error {
 
 	if s.MaxSessionDuration > 0 {
 		time.AfterFunc(time.Duration(s.MaxSessionDuration)*time.Second, func() {
-			logger.Lg.Info("session stopped timeout", zap.String("sessionID", s.ID), zap.Int("timeout", s.MaxSessionDuration))
+			logger.Info("session stopped timeout", zap.String("sessionID", s.ID), zap.Int("timeout", s.MaxSessionDuration))
 			s.EmitState(s, Hangup, []string{"timeout"})
 			_ = s.Close()
 		})
@@ -726,7 +735,7 @@ func (s *MediaSession) Serve() error {
 
 	}
 	s.EmitState(s, Begin)
-	logger.Lg.Info("session started", zap.String("sessionID", s.ID))
+	logger.Info("session started", zap.String("sessionID", s.ID))
 
 	// Main event loop is now handled by event bus workers
 	// Just wait for context cancellation
@@ -797,9 +806,9 @@ func (s *MediaSession) CauseError(sender any, err error) {
 	if err != nil {
 		msg := strings.ToLower(strings.TrimSpace(err.Error()))
 		if strings.Contains(msg, "use of closed network connection") || strings.Contains(msg, "connection is closed") {
-			logger.Lg.Debug("cause error ignored (normal close)", zap.String("sessionID", s.ID), zap.Any("sender", sender), zap.Error(err))
+			logger.Debug("cause error ignored (normal close)", zap.String("sessionID", s.ID), zap.Any("sender", sender), zap.Error(err))
 		} else {
-			logger.Lg.Error("cause error", zap.String("sessionID", s.ID), zap.Any("sender", sender), zap.Error(err))
+			logger.Error("cause error", zap.String("sessionID", s.ID), zap.Any("sender", sender), zap.Error(err))
 		}
 	}
 
@@ -821,7 +830,7 @@ func (s *MediaSession) EmitState(sender any, state string, params ...any) {
 		Params: params,
 	}
 
-	logger.Lg.Info("emitstate", zap.Any("sender", sender), zap.String("state", state), zap.Any("params", params), zap.String("sessionID", s.ID))
+	logger.Info("emitstate", zap.Any("sender", sender), zap.String("state", state), zap.Any("params", params), zap.String("sessionID", s.ID))
 
 	if s.eventBus != nil {
 		s.eventBus.PublishState(s.ID, event, sender)
@@ -863,7 +872,7 @@ func (s *MediaSession) processData(data *MediaData) {
 func callHandleWithState(s *MediaSession, handle StateChangeHandler, state StateChange) {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Lg.Error("state panic", zap.String("sessionID", s.ID), zap.Any("state", state), zap.Any("error", r), zap.Any("handle", handle), zap.String("stacktrace", string(debug.Stack())))
+			logger.Error("state panic", zap.String("sessionID", s.ID), zap.Any("state", state), zap.Any("error", r), zap.Any("handle", handle), zap.String("stacktrace", string(debug.Stack())))
 		}
 	}()
 	handle(state)
@@ -872,7 +881,7 @@ func callHandleWithState(s *MediaSession, handle StateChangeHandler, state State
 func callHandleWithMediaData(s *MediaSession, h MediaHandler, handle MediaHandlerFunc, data MediaData) {
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Lg.Error("handle panic", zap.String("sessionID", s.ID), zap.Any("data", data), zap.Any("error", r), zap.Any("handle", handle), zap.String("stacktrace", string(debug.Stack())))
+			logger.Error("handle panic", zap.String("sessionID", s.ID), zap.Any("data", data), zap.Any("error", r), zap.Any("handle", handle), zap.String("stacktrace", string(debug.Stack())))
 		}
 	}()
 	handle(h, data)
@@ -889,7 +898,7 @@ func CastOption[T any](options map[string]any) (val T) {
 	}
 	err = json.Unmarshal(data, &val)
 	if err != nil {
-		logger.Lg.Error("cast option error", zap.Any("options", options), zap.String("target", reflect.TypeOf(val).Name()), zap.Error(err))
+		logger.Error("cast option error", zap.Any("options", options), zap.String("target", reflect.TypeOf(val).Name()), zap.Error(err))
 	}
 	return
 }

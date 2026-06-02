@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
@@ -102,18 +101,6 @@ func NewXunfeiTTSConfig(appID, apiKey, apiSecret string) XunfeiTTSConfig {
 		FrameDuration: "20ms",
 		Timeout:       30,
 	}
-
-	// 从环境变量获取默认值
-	if opt.AppID == "" {
-		opt.AppID = utils.GetEnv("XUNFEI_APP_ID")
-	}
-	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("XUNFEI_API_KEY")
-	}
-	if opt.APISecret == "" {
-		opt.APISecret = utils.GetEnv("XUNFEI_API_SECRET")
-	}
-
 	return opt
 }
 
@@ -135,7 +122,7 @@ func (xs *XunfeiService) Format() media.StreamFormat {
 		SampleRate:    xs.opt.SampleRate,
 		BitDepth:      xs.opt.BitDepth,
 		Channels:      xs.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(xs.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(xs.opt.FrameDuration),
 	}
 }
 
@@ -146,7 +133,7 @@ func (xs *XunfeiService) CacheKey(text string) string {
 	return fmt.Sprintf("xunfei.tts-%s-%d-%s.%s", "xunfei_default", xs.opt.SampleRate, digest, xs.opt.Codec)
 }
 
-func (xs *XunfeiService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (xs *XunfeiService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	xs.mu.Lock()
 	opt := xs.opt
 	xs.mu.Unlock()

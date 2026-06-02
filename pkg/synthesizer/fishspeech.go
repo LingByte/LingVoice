@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
@@ -70,15 +69,6 @@ func NewFishSpeechConfig(apiKey, referenceID string) FishSpeechConfig {
 		Latency:       "normal",
 		Version:       "s1",
 	}
-
-	// 从环境变量获取默认值
-	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("FISHSPEECH_API_KEY")
-	}
-	if opt.ReferenceID == "" {
-		opt.ReferenceID = "default"
-	}
-
 	return opt
 }
 
@@ -100,7 +90,7 @@ func (fs *FishSpeechService) Format() media.StreamFormat {
 		SampleRate:    fs.opt.SampleRate,
 		BitDepth:      fs.opt.BitDepth,
 		Channels:      fs.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(fs.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(fs.opt.FrameDuration),
 	}
 }
 
@@ -111,7 +101,7 @@ func (fs *FishSpeechService) CacheKey(text string) string {
 	return fmt.Sprintf("fishspeech.tts-%s-%d-%s.%s", fs.opt.ReferenceID, fs.opt.SampleRate, digest, fs.opt.Codec)
 }
 
-func (fs *FishSpeechService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (fs *FishSpeechService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	fs.mu.Lock()
 	opt := fs.opt
 	fs.mu.Unlock()
@@ -129,7 +119,7 @@ func (fs *FishSpeechService) Synthesize(ctx context.Context, handler SynthesisHa
 }
 
 // synthesizeV2 使用 WebSocket v2 API 进行合成
-func (fs *FishSpeechService) synthesizeV2(ctx context.Context, handler SynthesisHandler, text string, opt FishSpeechConfig) error {
+func (fs *FishSpeechService) synthesizeV2(ctx context.Context, handler AudioSynthesisHandler, text string, opt FishSpeechConfig) error {
 	// 构建 WebSocket URL
 	wsURL := fmt.Sprintf("wss://api.fishspeech.com/v1/tts/ws?token=%s", url.QueryEscape(opt.APIKey))
 

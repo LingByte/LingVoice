@@ -10,7 +10,6 @@ import (
 	"io/ioutil"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/polly"
 	"github.com/aws/aws-sdk-go-v2/service/polly/types"
@@ -52,7 +51,7 @@ func (as *AmazonService) Close() error {
 }
 
 type amazonSpeechSynthesisListener struct {
-	handler SynthesisHandler
+	handler AudioSynthesisHandler
 }
 
 func NewAmazonService(opt AmazonTTSConfig) *AmazonService {
@@ -74,11 +73,11 @@ func (as *AmazonService) Format() media.StreamFormat {
 		SampleRate:    as.opt.SampleRate,
 		BitDepth:      as.opt.BitDepth,
 		Channels:      as.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(as.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(as.opt.FrameDuration),
 	}
 }
 
-func (as *AmazonService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (as *AmazonService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	ttsReq := amazonSpeechSynthesisListener{
 		handler: handler,
 	}

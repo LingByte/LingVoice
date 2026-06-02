@@ -27,7 +27,7 @@ const (
 	// VendorVolcengineLLM 火山引擎LLM
 	VendorVolcengineLLM Vendor = "volcllmasr"
 	// VendorXfyunMul 科大讯飞多语言
-	// 注意：Xfyun (非Mul版本) 未实现 TranscribeService 接口，只有 WithXfyunASR 函数
+	// 注意：Xfyun (非Mul版本) 未实现 SpeechRecognitionEngine 接口，只有 WithXfyunASR 函数
 	VendorXfyunMul Vendor = "xfyun_mul"
 	// VendorGladia Gladia
 	VendorGladia Vendor = "gladia"
@@ -54,8 +54,8 @@ type TranscriberConfig interface {
 
 // TranscriberFactory 工厂接口
 type TranscriberFactory interface {
-	// CreateTranscriber 根据配置创建 TranscribeService
-	CreateTranscriber(config TranscriberConfig) (TranscribeService, error)
+	// CreateTranscriber 根据配置创建 SpeechRecognitionEngine
+	CreateTranscriber(config TranscriberConfig) (SpeechRecognitionEngine, error)
 	// GetSupportedVendors 获取支持的供应商列表
 	GetSupportedVendors() []Vendor
 	// IsVendorSupported 检查供应商是否支持
@@ -64,28 +64,28 @@ type TranscriberFactory interface {
 
 // DefaultTranscriberFactory 默认工厂实现
 type DefaultTranscriberFactory struct {
-	creators map[Vendor]func(TranscriberConfig) (TranscribeService, error)
+	creators map[Vendor]func(TranscriberConfig) (SpeechRecognitionEngine, error)
 	mu       sync.RWMutex
 }
 
 // NewTranscriberFactory 创建新的工厂实例
 func NewTranscriberFactory() *DefaultTranscriberFactory {
 	factory := &DefaultTranscriberFactory{
-		creators: make(map[Vendor]func(TranscriberConfig) (TranscribeService, error)),
+		creators: make(map[Vendor]func(TranscriberConfig) (SpeechRecognitionEngine, error)),
 	}
 	factory.registerDefaultCreators()
 	return factory
 }
 
 // RegisterCreator 注册创建函数
-func (f *DefaultTranscriberFactory) RegisterCreator(vendor Vendor, creator func(TranscriberConfig) (TranscribeService, error)) {
+func (f *DefaultTranscriberFactory) RegisterCreator(vendor Vendor, creator func(TranscriberConfig) (SpeechRecognitionEngine, error)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.creators[vendor] = creator
 }
 
-// CreateTranscriber 创建 TranscribeService
-func (f *DefaultTranscriberFactory) CreateTranscriber(config TranscriberConfig) (TranscribeService, error) {
+// CreateTranscriber 创建 SpeechRecognitionEngine
+func (f *DefaultTranscriberFactory) CreateTranscriber(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -125,7 +125,7 @@ func (f *DefaultTranscriberFactory) IsVendorSupported(vendor Vendor) bool {
 // registerDefaultCreators 注册默认创建函数
 func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	// 注册腾讯云
-	f.RegisterCreator(VendorQCloud, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorQCloud, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		qcloudConfig, ok := config.(*QCloudASROption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for qcloud")
@@ -134,7 +134,7 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册Google
-	f.RegisterCreator(VendorGoogle, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorGoogle, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		googleConfig, ok := config.(*GoogleASROption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for google")
@@ -144,7 +144,7 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册FunASR
-	f.RegisterCreator(VendorFunASR, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorFunASR, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		funasrConfig, ok := config.(*FunASROption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for funasr")
@@ -154,7 +154,7 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册火山引擎LLM
-	f.RegisterCreator(VendorVolcengineLLM, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorVolcengineLLM, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		volcengineLLMConfig, ok := config.(*VolcengineLLMOption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for volcengine_llm")
@@ -164,12 +164,12 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册科大讯飞多语言
-	f.RegisterCreator(VendorXfyunMul, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorXfyunMul, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		return nil, fmt.Errorf("xfyun_mul requires pipeline.SessionHandler, use NewXfyunMul directly")
 	})
 
 	// 注册Gladia
-	f.RegisterCreator(VendorGladia, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorGladia, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		gladiaConfig, ok := config.(*GladiaASROption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for gladia")
@@ -179,7 +179,7 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册FunASR实时
-	f.RegisterCreator(VendorFunASRRealtime, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorFunASRRealtime, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		funasrRealtimeConfig, ok := config.(*FunAsrRealtimeOption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for funasr_realtime")
@@ -189,7 +189,7 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册本地ASR
-	f.RegisterCreator(VendorLocal, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorLocal, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		localConfig, ok := config.(*LocalASRConfig)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for local")
@@ -198,7 +198,7 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册火山引擎标准ASR
-	f.RegisterCreator(VendorVolcengine, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorVolcengine, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		_, ok := config.(*VolcengineOption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for volcengine")
@@ -207,7 +207,7 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册Deepgram
-	f.RegisterCreator(VendorDeepgram, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorDeepgram, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		_, ok := config.(*DeepgramASROption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for deepgram")
@@ -216,7 +216,7 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册AWS
-	f.RegisterCreator(VendorAWS, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorAWS, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		_, ok := config.(*AwsASROption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for aws")
@@ -225,7 +225,7 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册百度
-	f.RegisterCreator(VendorBaidu, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorBaidu, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		_, ok := config.(*BaiduASROption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for baidu")
@@ -234,7 +234,7 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册VoiceAPI
-	f.RegisterCreator(VendorVoiceAPI, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorVoiceAPI, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		_, ok := config.(*VoiceapiASROption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for voiceapi")
@@ -243,7 +243,7 @@ func (f *DefaultTranscriberFactory) registerDefaultCreators() {
 	})
 
 	// 注册Whisper
-	f.RegisterCreator(VendorWhisper, func(config TranscriberConfig) (TranscribeService, error) {
+	f.RegisterCreator(VendorWhisper, func(config TranscriberConfig) (SpeechRecognitionEngine, error) {
 		_, ok := config.(*WhisperASROption)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for whisper")

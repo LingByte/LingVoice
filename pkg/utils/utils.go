@@ -4,289 +4,162 @@ package utils
 // SPDX-License-Identifier: AGPL-3.0
 
 import (
-	"encoding/base64"
-	"errors"
-	"fmt"
-	"math/rand"
 	"os"
-	"path/filepath"
-	"reflect"
-	"regexp"
 	"strconv"
-	"sync"
+	"strings"
 	"time"
-
-	"github.com/LingByte/LingVoice/pkg/logger"
-	"go.uber.org/zap"
 )
 
-var SnowflakeUtil *Snowflake
-var letterRunes = []rune("0123456789abcdefghijklmnopqrstuvwxyz")
-var numberRunes = []rune("0123456789")
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-	SnowflakeUtil, _ = NewSnowflake()
-}
-
-func randRunes(n int, source []rune) string {
-	b := make([]rune, n)
-	for i := range b {
-		b[i] = source[rand.Intn(len(source))]
+// GetEnv retrieves an environment variable with a default value
+func GetEnv(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
 	}
-	return string(b)
+	return defaultValue
 }
 
-func RandText(n int) string {
-	return randRunes(n, letterRunes)
-}
-
-func RandNumberText(n int) string {
-	return randRunes(n, numberRunes)
-}
-
-func RandString(n int) string {
-	return randRunes(n, letterRunes)
-}
-
-// RandCredentialAPIKey 生成用户凭证密钥，形如 sk- 前缀 + 随机段，总长 48（与 credential.key char(48) 一致）。
-func RandCredentialAPIKey() string {
-	const prefix = "sk-"
-	const totalLen = 48
-	return prefix + RandString(totalLen-len(prefix))
-}
-
-func GetTimestamp() int64 {
-	return time.Now().Unix()
-}
-
-func GetTimeString() string {
-	now := time.Now().UTC()
-	return fmt.Sprintf("%s%d", now.Format("20060102150405"), now.UnixNano()%1e9)
-}
-
-func SafeCall(f func() error, failHandle func(error)) error {
-	defer func() {
-		if err := recover(); err != nil {
-			if failHandle != nil {
-				eo, ok := err.(error)
-				if !ok {
-					es, ok := err.(string)
-					if ok {
-						eo = errors.New(es)
-					} else {
-						eo = errors.New("unknown error type")
-					}
-				}
-				failHandle(eo)
-			} else {
-				logger.Error("panic", zap.Any("error", err))
-			}
-		}
-	}()
-	return f()
-}
-
-func StructAsMap(form any, fields []string) (vals map[string]any) {
-	vals = make(map[string]any)
-	v := reflect.ValueOf(form)
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
-	}
-	if v.Kind() != reflect.Struct {
-		return vals
-	}
-	for i := 0; i < len(fields); i++ {
-		k := v.FieldByName(fields[i])
-		if !k.IsValid() || k.IsZero() {
-			continue
-		}
-		if k.Kind() == reflect.Ptr {
-			if !k.IsNil() {
-				vals[fields[i]] = k.Elem().Interface()
-			}
-		} else {
-			vals[fields[i]] = k.Interface()
+// GetEnvInt retrieves an environment variable as integer with a default value
+func GetEnvInt(key string, defaultValue int) int {
+	if value, exists := os.LookupEnv(key); exists {
+		if intVal, err := strconv.Atoi(value); err == nil {
+			return intVal
 		}
 	}
-	return vals
+	return defaultValue
 }
 
-// GenerateSecureToken generate a fixed-length secure token
-func GenerateSecureToken(length int) (string, error) {
-	token := make([]byte, length)
-	if _, err := rand.Read(token); err != nil {
-		return "", err
-	}
-	return base64.URLEncoding.EncodeToString(token), nil
-}
-
-const (
-	machineIDBits = 10
-	sequenceBits  = 12
-
-	maxMachineID = 1<<machineIDBits - 1
-	maxSequence  = 1<<sequenceBits - 1
-
-	timestampShift = machineIDBits + sequenceBits
-	machineIDShift = sequenceBits
-
-	epoch int64 = 1609459200000 // 2021-01-01 毫秒级
-)
-
-type Snowflake struct {
-	mu        sync.Mutex
-	lastStamp int64
-	sequence  int64
-	machineID int64
-}
-
-func NewSnowflake() (*Snowflake, error) {
-	mid := getMachineID()
-	if mid < 0 || mid > maxMachineID {
-		return nil, errors.New("machine id out of range")
-	}
-	return &Snowflake{
-		machineID: mid,
-		sequence:  0,
-		lastStamp: time.Now().UnixMilli(),
-	}, nil
-}
-
-// NextID 生成 唯一 正数 int64
-func (sf *Snowflake) NextID() int64 {
-	sf.mu.Lock()
-	defer sf.mu.Unlock()
-
-	now := time.Now().UnixMilli()
-
-	if now < sf.lastStamp {
-		for now < sf.lastStamp {
-			now = time.Now().UnixMilli()
+// GetEnvBool retrieves an environment variable as boolean with a default value
+func GetEnvBool(key string, defaultValue bool) bool {
+	if value, exists := os.LookupEnv(key); exists {
+		switch strings.ToLower(value) {
+		case "true", "1", "yes", "on":
+			return true
+		case "false", "0", "no", "off":
+			return false
 		}
 	}
+	return defaultValue
+}
 
-	if now == sf.lastStamp {
-		sf.sequence = (sf.sequence + 1) & maxSequence
-		if sf.sequence == 0 {
-			for now <= sf.lastStamp {
-				now = time.Now().UnixMilli()
-			}
-		}
-	} else {
-		sf.sequence = 0
+// ComputeSampleByteCount calculates the byte count for audio samples
+// sampleCount: number of audio samples
+// sampleRate: sample rate in Hz
+// channels: number of audio channels
+// bitDepth: bits per sample (8, 16, 24, 32)
+func ComputeSampleByteCount(sampleCount int, sampleRate int, channels int, bitDepth int) int {
+	if sampleCount <= 0 || sampleRate <= 0 || channels <= 0 || bitDepth <= 0 {
+		return 0
 	}
 
-	sf.lastStamp = now
+	// Calculate bytes per sample
+	bytesPerSample := bitDepth / 8
 
-	// 标准格式：0 | 41位时间 | 10位机器 | 12位序列
-	return ((now - epoch) << timestampShift) |
-		(sf.machineID << machineIDShift) |
-		sf.sequence
+	// Calculate total bytes
+	totalBytes := sampleCount * channels * bytesPerSample
+
+	return totalBytes
 }
 
-// GenID 字符串格式（正数）
-func (sf *Snowflake) GenID() string {
-	return strconv.FormatInt(sf.NextID(), 10)
-}
-
-func getMachineID() int64 {
-	midStr := os.Getenv("MACHINE_ID")
-	if midStr == "" {
-		return 1
-	}
-	mid, err := strconv.ParseInt(midStr, 10, 64)
-	if err != nil {
-		return 1
-	}
-	return mid
-}
-
-func currentMicro() int64 {
-	return time.Now().UnixNano() / 1e3
-}
-
-// WriteFile write file
-func WriteFile(filename string, data []byte) error {
-	// Ensure directory exists
-	dir := filepath.Dir(filename)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
+// ComputeSampleCount calculates the number of audio samples
+// duration: duration in milliseconds
+// sampleRate: sample rate in Hz
+func ComputeSampleCount(duration int, sampleRate int) int {
+	if duration <= 0 || sampleRate <= 0 {
+		return 0
 	}
 
-	// Write file
-	if err := os.WriteFile(filename, data, 0644); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+	// Calculate samples: (duration in ms) * (sample rate in Hz) / 1000
+	samples := (duration * sampleRate) / 1000
+
+	return samples
+}
+
+// ComputeAudioDuration calculates the duration of audio data
+// byteCount: number of bytes
+// sampleRate: sample rate in Hz
+// channels: number of audio channels
+// bitDepth: bits per sample (8, 16, 24, 32)
+// Returns duration in milliseconds
+func ComputeAudioDuration(byteCount int, sampleRate int, channels int, bitDepth int) int {
+	if byteCount <= 0 || sampleRate <= 0 || channels <= 0 || bitDepth <= 0 {
+		return 0
 	}
 
-	return nil
+	// Calculate bytes per sample
+	bytesPerSample := bitDepth / 8
+
+	// Calculate number of samples
+	samples := byteCount / (channels * bytesPerSample)
+
+	// Calculate duration in milliseconds
+	duration := (samples * 1000) / sampleRate
+
+	return duration
 }
 
-// ReadFile read file
-func ReadFile(filename string) ([]byte, error) {
-	return os.ReadFile(filename)
-}
-
-// removeEmoji 移除字符串中的 emoji 字符，避免数据库字符集不兼容问题
-func RemoveEmoji(text string) string {
-	var result []rune
-	for _, r := range text {
-		// 检查是否是 emoji 字符（常见的 emoji Unicode 范围）
-		if (r >= 0x1F300 && r <= 0x1F9FF) || // 杂项符号和象形文字
-			(r >= 0x1F600 && r <= 0x1F64F) || // 表情符号
-			(r >= 0x1F680 && r <= 0x1F6FF) || // 交通和地图符号
-			(r >= 0x2600 && r <= 0x26FF) || // 杂项符号
-			(r >= 0x2700 && r <= 0x27BF) || // 装饰符号
-			(r >= 0xFE00 && r <= 0xFE0F) || // 变体选择器
-			(r >= 0x1F900 && r <= 0x1F9FF) || // 补充符号和象形文字
-			(r >= 0x1F1E0 && r <= 0x1F1FF) { // 区域指示符号
-			continue // 跳过 emoji
-		}
-		result = append(result, r)
-	}
-	return string(result)
-}
-
-// removeEmojiFromJSON 从 JSON 字符串中移除 emoji（仅从字符串值中移除，保持 JSON 结构）
-func RemoveEmojiFromJSON(jsonStr string) string {
-	// 使用正则表达式匹配 JSON 字符串值中的 emoji
-	// 匹配 "key": "value" 中的 value 部分
-	re := regexp.MustCompile(`("(?:[^"\\]|\\.)*")`)
-	result := re.ReplaceAllStringFunc(jsonStr, func(match string) string {
-		// 移除引号，清理 emoji，然后重新添加引号
-		if len(match) > 2 {
-			content := match[1 : len(match)-1]
-			cleaned := RemoveEmoji(content)
-			return `"` + cleaned + `"`
-		}
-		return match
-	})
-	return result
-}
-
-// ComputeSampleByteCount calculates bytes per millisecond for given audio parameters
-func ComputeSampleByteCount(rate, depth, chans int) int {
-	// Optimized: rate * depth / 8 / 1000 * chans
-	// Reordered for better precision: (rate * depth * chans) / 8000
-	return (rate * depth * chans) / 8000
-}
-
-// ValidateAndNormalizeDuration uses different validation logic with explicit bounds checking
+// NormalizeFramePeriod normalizes a frame period duration string to time.Duration
+// Accepts formats like "20ms", "0.02s", "20", etc.
+// Returns normalized duration, defaults to 20ms if invalid
 func NormalizeFramePeriod(d string) time.Duration {
-	parsed, err := time.ParseDuration(d)
-	if err != nil {
-		return 20 * time.Millisecond
-	}
-	if parsed == 0 {
+	if d == "" {
 		return 20 * time.Millisecond
 	}
 
-	// Use explicit range checks instead of compound condition
-	if parsed < 10*time.Millisecond {
-		return 20 * time.Millisecond
+	// Try to parse as duration string
+	parsed, err := time.ParseDuration(d)
+	if err == nil && parsed > 0 {
+		// Validate range: 10ms to 300ms
+		if parsed < 10*time.Millisecond {
+			return 20 * time.Millisecond
+		}
+		if parsed > 300*time.Millisecond {
+			return 20 * time.Millisecond
+		}
+		return parsed
 	}
-	if parsed > 300*time.Millisecond {
-		return 20 * time.Millisecond
+
+	// Try to parse as milliseconds (numeric string)
+	if ms, err := strconv.Atoi(strings.TrimSpace(d)); err == nil && ms > 0 {
+		duration := time.Duration(ms) * time.Millisecond
+		if duration < 10*time.Millisecond {
+			return 20 * time.Millisecond
+		}
+		if duration > 300*time.Millisecond {
+			return 20 * time.Millisecond
+		}
+		return duration
 	}
-	return parsed
+
+	// Default to 20ms
+	return 20 * time.Millisecond
+}
+
+// FramePeriodToMilliseconds converts a frame period to milliseconds
+func FramePeriodToMilliseconds(d time.Duration) int {
+	return int(d.Milliseconds())
+}
+
+// MillisecondsToFramePeriod converts milliseconds to time.Duration
+func MillisecondsToFramePeriod(ms int) time.Duration {
+	return time.Duration(ms) * time.Millisecond
+}
+
+// CalculateFrameRate calculates frame rate from frame period
+// framePeriod: duration of one frame
+// Returns frames per second
+func CalculateFrameRate(framePeriod time.Duration) float64 {
+	if framePeriod <= 0 {
+		return 0
+	}
+	return 1.0 / framePeriod.Seconds()
+}
+
+// CalculateFramePeriod calculates frame period from frame rate
+// frameRate: frames per second
+// Returns duration of one frame
+func CalculateFramePeriod(frameRate float64) time.Duration {
+	if frameRate <= 0 {
+		return 0
+	}
+	return time.Duration(float64(time.Second) / frameRate)
 }

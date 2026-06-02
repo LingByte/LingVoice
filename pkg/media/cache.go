@@ -1,7 +1,7 @@
 package media
 
-// Copyright (c) 2026 LingByte
-// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 LingByte. All rights reserved.
+// SPDX-License-Identifier: AGPL-3.0
 
 import (
 	"crypto/md5"
@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/LingByte/LingVoice/pkg/logger"
+	logger "github.com/LingByte/LingVoice/pkg/media/medialog"
 	"go.uber.org/zap"
 )
 
@@ -40,7 +40,7 @@ func MediaCache() *LocalMediaCache {
 			if _, err := os.Stat(rootVal); err != nil {
 				os.MkdirAll(rootVal, 0755)
 			}
-			logger.Lg.Info("mediacache: initialized", zap.String("root", rootVal))
+			logger.Info("mediacache: initialized", zap.String("root", rootVal))
 		}
 	}
 	return _defaultMediaCache
@@ -67,10 +67,10 @@ func (c *LocalMediaCache) Store(key string, data []byte) error {
 	}
 	err := os.WriteFile(filename, data, 0644)
 	if err != nil {
-		logger.Lg.Error("mediacache: failed to write file", zap.String("filename", filename), zap.Error(err))
+		logger.Error("mediacache: failed to write file", zap.String("filename", filename), zap.Error(err))
 		return err
 	}
-	logger.Lg.Info("mediacache: stored", zap.String("filename", filename), zap.Int("datasize", len(data)))
+	logger.Info("mediacache: stored", zap.String("filename", filename), zap.Int("datasize", len(data)))
 	return nil
 }
 
@@ -88,7 +88,7 @@ func (c *LocalMediaCache) Get(key string) ([]byte, error) {
 	}
 	data, err := os.ReadFile(filename)
 	if err != nil {
-		logger.Lg.Error("mediacache: failed to read file", zap.String("filename", filename), zap.Error(err))
+		logger.Error("mediacache: failed to read file", zap.String("filename", filename), zap.Error(err))
 		return nil, err
 	}
 	return data, nil

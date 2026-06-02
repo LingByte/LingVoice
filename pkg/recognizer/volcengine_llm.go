@@ -24,8 +24,8 @@ type VolcengineLLMASR struct {
 	ttfbDone     bool
 	audioDataLen int
 	recognizer   *Recognizer
-	tr           TranscribeResult
-	er           ProcessError
+	tr           SpeechRecognitionResult
+	er           RecognitionError
 }
 
 type VolcengineLLMOption struct {
@@ -61,7 +61,7 @@ func NewVolcengineLLM(opt VolcengineLLMOption) VolcengineLLMASR {
 	return VolcengineLLMASR{opt: opt}
 }
 
-func (v *VolcengineLLMASR) Init(tr TranscribeResult, er ProcessError) {
+func (v *VolcengineLLMASR) Init(tr SpeechRecognitionResult, er RecognitionError) {
 	v.tr = tr
 	v.er = er
 }

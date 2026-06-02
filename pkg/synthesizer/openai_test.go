@@ -31,7 +31,7 @@ func TestOpenAIService(t *testing.T) {
 
 	ctx := context.Background()
 
-	h := &testSynthesisHandler{}
+	h := &testAudioSynthesisHandler{}
 	err := svc.Synthesize(ctx, h, "Hello, this is a test from OpenAI TTS")
 
 	if err != nil {

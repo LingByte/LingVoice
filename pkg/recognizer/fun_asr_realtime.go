@@ -20,8 +20,8 @@ import (
 type FunAsrRealtime struct {
 	Handler  media.MediaHandler
 	opt      FunAsrRealtimeOption
-	tr       TranscribeResult
-	er       ProcessError
+	tr       SpeechRecognitionResult
+	er       RecognitionError
 	client   *FunAsrRealtimeClient
 	dialogID string
 }
@@ -128,7 +128,7 @@ func NewFunAsrRealtime(opt FunAsrRealtimeOption) FunAsrRealtime {
 	}
 }
 
-func (fun *FunAsrRealtime) Init(tr TranscribeResult, er ProcessError) {
+func (fun *FunAsrRealtime) Init(tr SpeechRecognitionResult, er RecognitionError) {
 	fun.tr = tr
 	fun.er = er
 }

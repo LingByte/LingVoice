@@ -1,14 +1,14 @@
 package media
 
-// Copyright (c) 2026 LingByte
-// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 LingByte. All rights reserved.
+// SPDX-License-Identifier: AGPL-3.0
 
 import (
 	"context"
 	"sync"
 	"time"
 
-	"github.com/LingByte/LingVoice/pkg/logger"
+	logger "github.com/LingByte/LingVoice/pkg/media/medialog"
 	"go.uber.org/zap"
 )
 
@@ -135,7 +135,7 @@ func (tr *AsyncTaskRunner[T]) HandlePacket(h MediaHandler, packet MediaPacket) {
 		if tr.taskQueue != nil {
 			tr.taskQueue <- req
 		} else {
-			logger.Lg.Warn("taskQueue is nil", zap.Any("packet", packet), zap.Any("runner", tr))
+			logger.Warn("taskQueue is nil", zap.Any("packet", packet), zap.Any("runner", tr))
 		}
 	} else {
 		tr.executeTask(h.GetContext(), *req)
@@ -203,7 +203,7 @@ func (tr *AsyncTaskRunner[T]) executeTask(ctx context.Context, req PacketRequest
 
 	err := tr.TaskExecutor(taskCtx, req.H, req)
 	if err != nil {
-		logger.Lg.Error("Task execution error", zap.Any("handler", req.H), zap.Error(err))
+		logger.Error("Task execution error", zap.Any("handler", req.H), zap.Error(err))
 		req.H.CauseError(tr, err)
 	}
 }

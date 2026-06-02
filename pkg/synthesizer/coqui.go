@@ -10,7 +10,6 @@ import (
 	"net/url"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/carlmjohnson/requests"
 	"github.com/sirupsen/logrus"
 )
@@ -68,7 +67,7 @@ func (c *CoquiService) Format() media.StreamFormat {
 		SampleRate:    c.opt.SampleRate,
 		BitDepth:      c.opt.BitDepth,
 		Channels:      c.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(c.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(c.opt.FrameDuration),
 	}
 }
 
@@ -78,10 +77,10 @@ func (c *CoquiService) CacheKey(text string) string {
 }
 
 type coquiSpeechSynthesisListener struct {
-	handler SynthesisHandler
+	handler AudioSynthesisHandler
 }
 
-func (c *CoquiService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (c *CoquiService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	ttsReq := coquiSpeechSynthesisListener{
 		handler: handler,
 	}

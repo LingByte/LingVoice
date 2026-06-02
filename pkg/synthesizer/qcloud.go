@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/sirupsen/logrus"
 	"github.com/tencentcloud/tencentcloud-speech-sdk-go/common"
 	"github.com/tencentcloud/tencentcloud-speech-sdk-go/tts"
@@ -83,7 +82,7 @@ func (qs *QCloudService) Format() media.StreamFormat {
 		SampleRate:    qs.opt.SampleRate,
 		BitDepth:      qs.opt.BitDepth,
 		Channels:      qs.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(qs.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(qs.opt.FrameDuration),
 	}
 }
 
@@ -98,7 +97,7 @@ func (qs *QCloudService) CacheKey(text string) string {
 	return fmt.Sprintf("qcloud.tts-%d-%d-%d-%d-%s.pcm", qs.opt.VoiceType, qs.opt.ModelType, qs.opt.SampleRate, qs.opt.Speed, digest)
 }
 
-func (qs *QCloudService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (qs *QCloudService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	qs.mu.Lock()
 	opt := qs.opt
 	qs.mu.Unlock()
@@ -162,7 +161,7 @@ func applyQCloudTTSSpeed(synth *tts.SpeechSynthesizer, speed int64) {
 }
 
 type qcloudSpeechSynthesisListener struct {
-	handler SynthesisHandler
+	handler AudioSynthesisHandler
 	err     error
 	mu      sync.Mutex
 }

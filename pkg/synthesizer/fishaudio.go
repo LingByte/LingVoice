@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -78,12 +77,6 @@ func NewFishAudioConfig(apiKey, referenceID string) FishAudioConfig {
 		MPEGBitrate: 128,
 		Timeout:     30,
 	}
-
-	// 从环境变量获取默认值
-	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("FISHAUDIO_API_KEY")
-	}
-
 	return opt
 }
 
@@ -122,7 +115,7 @@ func (fa *FishAudioService) CacheKey(text string) string {
 	return fmt.Sprintf("fishaudio.tts-%s-%s-%d-%s.%s", fa.opt.Model, fa.opt.ReferenceID, fa.opt.SampleRate, digest, fa.opt.Format)
 }
 
-func (fa *FishAudioService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (fa *FishAudioService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	fa.mu.Lock()
 	opt := fa.opt
 	fa.mu.Unlock()
@@ -137,7 +130,7 @@ func (fa *FishAudioService) Synthesize(ctx context.Context, handler SynthesisHan
 }
 
 // synthesizeWithAPI 使用 Fish Audio REST API 进行合成
-func (fa *FishAudioService) synthesizeWithAPI(ctx context.Context, handler SynthesisHandler, text string, opt FishAudioConfig) error {
+func (fa *FishAudioService) synthesizeWithAPI(ctx context.Context, handler AudioSynthesisHandler, text string, opt FishAudioConfig) error {
 	// 构建请求
 	sampleRate := opt.SampleRate
 	if opt.Format == "opus" {

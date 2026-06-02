@@ -36,7 +36,7 @@ func TestElevenLabsService(t *testing.T) {
 
 	ctx := context.Background()
 
-	h := &testSynthesisHandler{}
+	h := &testAudioSynthesisHandler{}
 	err := svc.Synthesize(ctx, h, "Hello, this is a test from ElevenLabs TTS")
 
 	if err != nil {

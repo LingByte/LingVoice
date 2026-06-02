@@ -1,10 +1,10 @@
 package encoder
 
-// Copyright (c) 2026 LingByte
-// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 LingByte. All rights reserved.
+// SPDX-License-Identifier: AGPL-3.0
 
 import (
-	media2 "github.com/LingByte/LingVoice/pkg/media"
+	"github.com/LingByte/LingVoice/pkg/media"
 )
 
 // G.722 constants
@@ -57,19 +57,19 @@ type G722Decoder struct {
 	rate  int
 }
 
-func createG722Decode(src, pcm media2.CodecConfig) media2.EncoderFunc {
+func createG722Decode(src, pcm media.CodecConfig) media.EncoderFunc {
 	// Use configured sample rate, if not set use G.722 standard sample rate 16000Hz
 	sourceSampleRate := src.SampleRate
 	if sourceSampleRate == 0 {
 		sourceSampleRate = 16000 // G.722 standard sample rate
 	}
-	res := media2.DefaultResampler(sourceSampleRate, pcm.SampleRate)
+	res := media.DefaultResampler(sourceSampleRate, pcm.SampleRate)
 	dec := NewG722Decoder(G722_RATE_DEFAULT, G722_DEFAULT)
 
-	return func(packet media2.MediaPacket) ([]media2.MediaPacket, error) {
-		audioPacket, ok := packet.(*media2.AudioPacket)
+	return func(packet media.MediaPacket) ([]media.MediaPacket, error) {
+		audioPacket, ok := packet.(*media.AudioPacket)
 		if !ok {
-			return []media2.MediaPacket{packet}, nil
+			return []media.MediaPacket{packet}, nil
 		}
 		decodedData := dec.Decode(audioPacket.Payload)
 
@@ -81,22 +81,22 @@ func createG722Decode(src, pcm media2.CodecConfig) media2.EncoderFunc {
 			return nil, nil
 		}
 		audioPacket.Payload = data
-		return []media2.MediaPacket{audioPacket}, nil
+		return []media.MediaPacket{audioPacket}, nil
 	}
 }
 
-func createG722Encode(src, pcm media2.CodecConfig) media2.EncoderFunc {
+func createG722Encode(src, pcm media.CodecConfig) media.EncoderFunc {
 	// Use configured target sample rate, if not set use G.722 standard sample rate 16000Hz
 	targetSampleRate := src.SampleRate
 	if targetSampleRate == 0 {
 		targetSampleRate = 16000 // G.722 standard sample rate
 	}
-	res := media2.DefaultResampler(pcm.SampleRate, targetSampleRate)
+	res := media.DefaultResampler(pcm.SampleRate, targetSampleRate)
 	enc := NewG722Encoder(G722_RATE_DEFAULT, G722_DEFAULT)
-	return func(packet media2.MediaPacket) ([]media2.MediaPacket, error) {
-		audioPacket, ok := packet.(*media2.AudioPacket)
+	return func(packet media.MediaPacket) ([]media.MediaPacket, error) {
+		audioPacket, ok := packet.(*media.AudioPacket)
 		if !ok {
-			return []media2.MediaPacket{packet}, nil
+			return []media.MediaPacket{packet}, nil
 		}
 		if _, err := res.Write(audioPacket.Payload); err != nil {
 			return nil, err
@@ -107,7 +107,7 @@ func createG722Encode(src, pcm media2.CodecConfig) media2.EncoderFunc {
 		}
 		encodedData := enc.Encode(data)
 		audioPacket.Payload = encodedData
-		return []media2.MediaPacket{packet}, nil
+		return []media.MediaPacket{packet}, nil
 	}
 }
 

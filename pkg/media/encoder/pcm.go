@@ -1,18 +1,18 @@
 package encoder
 
-// Copyright (c) 2026 LingByte
-// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 LingByte. All rights reserved.
+// SPDX-License-Identifier: AGPL-3.0
 
 import (
-	media2 "github.com/LingByte/LingVoice/pkg/media"
+	"github.com/LingByte/LingVoice/pkg/media"
 )
 
-func PcmToPcm(src, pcm media2.CodecConfig) media2.EncoderFunc {
-	res := media2.DefaultResampler(src.SampleRate, pcm.SampleRate)
-	return func(packet media2.MediaPacket) ([]media2.MediaPacket, error) {
-		audioPacket, ok := packet.(*media2.AudioPacket)
+func PcmToPcm(src, pcm media.CodecConfig) media.EncoderFunc {
+	res := media.DefaultResampler(src.SampleRate, pcm.SampleRate)
+	return func(packet media.MediaPacket) ([]media.MediaPacket, error) {
+		audioPacket, ok := packet.(*media.AudioPacket)
 		if !ok {
-			return []media2.MediaPacket{packet}, nil
+			return []media.MediaPacket{packet}, nil
 		}
 		if _, err := res.Write(audioPacket.Payload); err != nil {
 			return nil, err
@@ -22,6 +22,6 @@ func PcmToPcm(src, pcm media2.CodecConfig) media2.EncoderFunc {
 			return nil, nil
 		}
 		audioPacket.Payload = data
-		return []media2.MediaPacket{audioPacket}, nil
+		return []media.MediaPacket{audioPacket}, nil
 	}
 }

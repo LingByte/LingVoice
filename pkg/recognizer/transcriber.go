@@ -16,8 +16,9 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type TranscribeService interface {
-	Init(tr TranscribeResult, er ProcessError)
+// SpeechRecognitionEngine is the core interface for ASR (Automatic Speech Recognition).
+type SpeechRecognitionEngine interface {
+	Init(resultCallback SpeechRecognitionResult, errorCallback RecognitionError)
 	Vendor() string
 	ConnAndReceive(dialogId string) error
 	Activity() bool
@@ -27,9 +28,11 @@ type TranscribeService interface {
 	StopConn() error
 }
 
-type TranscribeResult func(text string, isLast bool, duration time.Duration, uuid string)
+// SpeechRecognitionResult is the callback for successful speech recognition results.
+type SpeechRecognitionResult func(text string, isLast bool, duration time.Duration, uuid string)
 
-type ProcessError func(err error, isFatal bool)
+// RecognitionError is the callback for recognition errors.
+type RecognitionError func(err error, isFatal bool)
 
 type HotWord struct {
 	Word   string `json:"word"`
@@ -65,7 +68,7 @@ type TranscribeOption struct {
 	FuzzyOptions AsrCorrectorOption `json:"fuzzyOptions,omitempty"`
 }
 
-func WithTranscribeFilter(asr TranscribeService, h media.MediaHandler, opt TranscribeOption) media.PacketFilter {
+func WithTranscribeFilter(asr SpeechRecognitionEngine, h media.MediaHandler, opt TranscribeOption) media.PacketFilter {
 	senderName := "asr." + asr.Vendor()
 
 	err := asr.ConnAndReceive("")
@@ -150,7 +153,7 @@ func WithTranscribeFilter(asr TranscribeService, h media.MediaHandler, opt Trans
 	}
 }
 
-func WithTranscribeFilterState(asr TranscribeService, h media.MediaHandler, opt TranscribeOption) media.PacketFilter {
+func WithTranscribeFilterState(asr SpeechRecognitionEngine, h media.MediaHandler, opt TranscribeOption) media.PacketFilter {
 	senderName := "asr." + asr.Vendor()
 
 	bytePerMillSecond := utils.ComputeSampleByteCount(16000, 16, 1)
@@ -364,7 +367,7 @@ func handleAsrResult(senderName string, opt TranscribeOption, h media.MediaHandl
 }
 
 // 错误处理函数
-func handleAsrError(senderName string, h media.MediaHandler, asr TranscribeService) func(err error, isFatal bool) {
+func handleAsrError(senderName string, h media.MediaHandler, asr SpeechRecognitionEngine) func(err error, isFatal bool) {
 	return func(err error, isFatal bool) {
 		if isFatal {
 			h.CauseError(senderName, err)
@@ -375,7 +378,7 @@ func handleAsrError(senderName string, h media.MediaHandler, asr TranscribeServi
 	}
 }
 
-func WithTranscribeFilterStateV2(asr TranscribeService, h media.MediaHandler, opt TranscribeOption) media.PacketFilter {
+func WithTranscribeFilterStateV2(asr SpeechRecognitionEngine, h media.MediaHandler, opt TranscribeOption) media.PacketFilter {
 	senderName := "asr." + asr.Vendor()
 	bytePerMillSecond := utils.ComputeSampleByteCount(16000, 16, 1)
 	vadSpeaking := false

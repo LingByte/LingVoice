@@ -21,8 +21,8 @@ var endSpeaking = []byte(`{"is_speaking":false}`)
 type FunASRCallback struct {
 	handler media.MediaHandler
 	opt     FunASROption
-	tr      TranscribeResult
-	er      ProcessError
+	tr      SpeechRecognitionResult
+	er      RecognitionError
 	client  *FunASRClient
 }
 
@@ -111,7 +111,7 @@ func NewFunASR(opt FunASROption) FunASRCallback {
 	}
 }
 
-func (fun *FunASRCallback) Init(tr TranscribeResult, er ProcessError) {
+func (fun *FunASRCallback) Init(tr SpeechRecognitionResult, er RecognitionError) {
 	fun.tr = tr
 	fun.er = er
 }

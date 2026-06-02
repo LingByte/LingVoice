@@ -13,7 +13,6 @@ import (
 	"sync"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -80,11 +79,6 @@ func NewElevenLabsConfig(apiKey, voiceID string) ElevenLabsConfig {
 		Style:           0.0,
 		UseSpeakerBoost: true,
 	}
-
-	// 从环境变量获取默认值
-	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("ELEVENLABS_API_KEY")
-	}
 	if opt.VoiceID == "" {
 		opt.VoiceID = "21m00Tcm4TlvDq8ikWAM" // 默认 Rachel 音色
 	}
@@ -111,7 +105,7 @@ func (es *ElevenLabsService) Format() media.StreamFormat {
 		SampleRate:    es.opt.SampleRate,
 		BitDepth:      es.opt.BitDepth,
 		Channels:      es.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(es.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(es.opt.FrameDuration),
 	}
 }
 
@@ -122,7 +116,7 @@ func (es *ElevenLabsService) CacheKey(text string) string {
 	return fmt.Sprintf("elevenlabs.tts-%s-%s-%d-%s.%s", es.opt.VoiceID, es.opt.ModelID, es.opt.SampleRate, digest, es.opt.Codec)
 }
 
-func (es *ElevenLabsService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (es *ElevenLabsService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	es.mu.Lock()
 	opt := es.opt
 	es.mu.Unlock()

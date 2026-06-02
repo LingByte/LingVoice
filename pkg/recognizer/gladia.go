@@ -23,8 +23,8 @@ type GladiaASR struct {
 	sendReqTime *time.Time
 	ttfbDone    bool
 	opt         GladiaASROption
-	tr          TranscribeResult
-	er          ProcessError
+	tr          SpeechRecognitionResult
+	er          RecognitionError
 }
 
 type GladiaASROption struct {
@@ -145,7 +145,7 @@ func (gla *GladiaASR) recvFrames() {
 	}
 }
 
-func (gla *GladiaASR) Init(tr TranscribeResult, er ProcessError) {
+func (gla *GladiaASR) Init(tr SpeechRecognitionResult, er RecognitionError) {
 	gla.tr = tr
 	gla.er = er
 }

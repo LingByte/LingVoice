@@ -1,16 +1,15 @@
 package media
 
-// Copyright (c) 2026 LingByte
-// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 LingByte. All rights reserved.
+// SPDX-License-Identifier: AGPL-3.0
 
 import (
 	"context"
 	"fmt"
+	logger "github.com/LingByte/LingVoice/pkg/media/medialog"
+	"go.uber.org/zap"
 	"sync"
 	"time"
-
-	"github.com/LingByte/LingVoice/pkg/logger"
-	"go.uber.org/zap"
 )
 
 // EventType represents the type of event
@@ -99,7 +98,7 @@ func (eb *EventBus) Publish(event *MediaEvent) {
 	select {
 	case eb.eventQueue <- event:
 	default:
-		logger.Lg.Warn("event bus queue full, dropping event",
+		logger.Warn("event bus queue full, dropping event",
 			zap.String("type", string(event.Type)),
 			zap.String("sessionID", event.SessionID))
 	}
@@ -135,14 +134,14 @@ func (eb *EventBus) dispatch(event *MediaEvent) {
 		func(h EventHandler) {
 			defer func() {
 				if r := recover(); r != nil {
-					logger.Lg.Error("event handler panic",
+					logger.Error("event handler panic",
 						zap.String("type", string(event.Type)),
 						zap.String("sessionID", event.SessionID),
 						zap.Any("error", r))
 				}
 			}()
 			if err := h(eb.ctx, event); err != nil {
-				logger.Lg.Error("event handler error",
+				logger.Error("event handler error",
 					zap.String("type", string(event.Type)),
 					zap.String("sessionID", event.SessionID),
 					zap.Error(err))

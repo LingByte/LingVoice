@@ -36,7 +36,7 @@ func TestVolcengineService(t *testing.T) {
 
 	ctx := context.Background()
 
-	h := &testSynthesisHandler{}
+	h := &testAudioSynthesisHandler{}
 	err := svc.Synthesize(ctx, h, "你好，这是火山引擎TTS测试")
 
 	if err != nil {
@@ -69,7 +69,7 @@ func TestVolcengineServiceWithFromCredential(t *testing.T) {
 		"speedRatio":  1.0,
 	}
 
-	svc, err := NewSynthesisServiceFromCredential(config)
+	svc, err := NewAudioSynthesisEngineFromCredential(config)
 	if err != nil {
 		t.Fatalf("Failed to create service from credential: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestVolcengineServiceWithFromCredential(t *testing.T) {
 	assert.Equal(t, svc.Provider(), ProviderVolcengine)
 
 	ctx := context.Background()
-	h := &testSynthesisHandler{}
+	h := &testAudioSynthesisHandler{}
 	err = svc.Synthesize(ctx, h, "测试从配置创建服务")
 
 	if err != nil {

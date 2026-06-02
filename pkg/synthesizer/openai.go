@@ -13,7 +13,6 @@ import (
 	"sync"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -66,12 +65,6 @@ func NewOpenAIConfig(apiKey string) OpenAIConfig {
 		Timeout:       30,
 		BaseURL:       "https://api.openai.com",
 	}
-
-	// 从环境变量获取默认值
-	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("OPENAI_API_KEY")
-	}
-
 	return opt
 }
 
@@ -94,7 +87,7 @@ func (os *OpenAIService) Format() media.StreamFormat {
 		SampleRate:    os.opt.SampleRate,
 		BitDepth:      os.opt.BitDepth,
 		Channels:      os.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(os.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(os.opt.FrameDuration),
 	}
 }
 
@@ -105,7 +98,7 @@ func (os *OpenAIService) CacheKey(text string) string {
 	return fmt.Sprintf("openai.tts-%s-%s-%d-%s.%s", os.opt.Model, os.opt.Voice, os.opt.SampleRate, digest, os.opt.Codec)
 }
 
-func (os *OpenAIService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (os *OpenAIService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	os.mu.Lock()
 	opt := os.opt
 	os.mu.Unlock()

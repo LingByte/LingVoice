@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -54,28 +53,6 @@ func NewQiniuTTSConfig(apiKey, baseURL string) QiniuTTSConfig {
 		Timeout:       30,
 		Retries:       0,
 	}
-
-	// 从环境变量获取默认值
-	if opt.APIKey == "" {
-		opt.APIKey = utils.GetEnv("QINIU_TTS_API_KEY")
-	}
-	if opt.BaseURL == "" {
-		opt.BaseURL = utils.GetEnv("QINIU_TTS_BASE_URL")
-	}
-	if opt.BaseURL == "" {
-		opt.BaseURL = "https://openai.qiniu.com/v1"
-	}
-
-	// 解析超时时间
-	if timeout := utils.GetIntEnv("QINIU_TTS_TIMEOUT"); timeout > 0 {
-		opt.Timeout = int(timeout)
-	}
-
-	// 解析重试次数
-	if retries := utils.GetIntEnv("QINIU_TTS_RETRIES"); retries > 0 {
-		opt.Retries = int(retries)
-	}
-
 	return opt
 }
 
@@ -97,7 +74,7 @@ func (qs *QiniuService) Format() media.StreamFormat {
 		SampleRate:    qs.opt.SampleRate,
 		BitDepth:      qs.opt.BitDepth,
 		Channels:      qs.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(qs.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(qs.opt.FrameDuration),
 	}
 }
 
@@ -108,7 +85,7 @@ func (qs *QiniuService) CacheKey(text string) string {
 	return fmt.Sprintf("qiniu.tts-%s-%d-%s.%s", qs.opt.VoiceType, qs.opt.SampleRate, digest, qs.opt.Codec)
 }
 
-func (qs *QiniuService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (qs *QiniuService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	qs.mu.Lock()
 	// 创建临时配置以避免在合成过程中被修改
 	opt := qs.opt

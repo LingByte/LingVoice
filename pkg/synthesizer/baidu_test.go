@@ -21,7 +21,7 @@ func TestNewBaiduTTS(t *testing.T) {
 	svc := NewBaiduService(opt)
 
 	ctx := context.Background()
-	h := &testSynthesisHandler{}
+	h := &testAudioSynthesisHandler{}
 	err := svc.Synthesize(ctx, h, "hello lingecho")
 	assert.Nil(t, err)
 }

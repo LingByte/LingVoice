@@ -1,7 +1,7 @@
 package media
 
-// Copyright (c) 2026 LingByte
-// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 LingByte. All rights reserved.
+// SPDX-License-Identifier: AGPL-3.0
 
 import (
 	"context"
@@ -46,6 +46,9 @@ type AudioPacket struct {
 	PlayID        string `json:"id,omitempty"`
 	Sequence      int    `json:"sequence"`
 	Payload       []byte `json:"payload"`
+	// RTPSamples, when > 0, is the RTP clock increment for this frame (RFC 3550 timestamp delta).
+	// Encoders with variable frame sizes (e.g. OPUS) should set this so the RTP layer does not guess from duration.
+	RTPSamples uint32 `json:"rtpSamples,omitempty"`
 	IsFirstPacket bool   `json:"isFirstPacket,omitempty"`
 	IsEndPacket   bool   `json:"isEndPacket,omitempty"`
 	IsSynthesized bool   `json:"isSynthesized,omitempty"`

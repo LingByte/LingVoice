@@ -32,45 +32,47 @@ type SentenceTimestamp struct {
 	Words []Word `json:"words"`
 }
 
-type SynthesisHandler interface {
+// AudioSynthesisHandler is the callback interface for TTS synthesis events.
+type AudioSynthesisHandler interface {
 	OnMessage([]byte)
 	OnTimestamp(timestamp SentenceTimestamp)
 }
 
-type SynthesisService interface {
+// AudioSynthesisEngine is the core interface for TTS (Text-to-Speech) synthesis.
+type AudioSynthesisEngine interface {
 	Provider() TTSProvider
 	Format() media.StreamFormat
 	CacheKey(text string) string
-	Synthesize(ctx context.Context, handler SynthesisHandler, text string) error
+	Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error
 	Close() error
 }
 
-type SynthesisRequest struct {
+type AudioSynthesisRequest struct {
 	handler       media.MediaHandler
-	player        *SynthesisPlayer
+	player        *AudioSynthesisPlayer
 	result        []byte
 	waitTTFB      bool
 	startTime     time.Time
 	packet        *media.TextPacket
-	svc           SynthesisService
+	svc           AudioSynthesisEngine
 	sequence      int
 	PlayID        string
 	dialogStartAt time.Time
 }
 
-func (req *SynthesisRequest) OnTimestamp(timestamp SentenceTimestamp) {
+func (req *AudioSynthesisRequest) OnTimestamp(timestamp SentenceTimestamp) {
 }
 
-type SynthesisPlayer struct {
+type AudioSynthesisPlayer struct {
 	SenderName  string
 	Format      media.StreamFormat
-	reqChan     chan *SynthesisPlayerRequest
-	txqueue     []*SynthesisPlayerRequest
+	reqChan     chan *AudioAudioSynthesisPlayerRequest
+	txqueue     []*AudioAudioSynthesisPlayerRequest
 	playRecords map[string]*PlayRecord
 	lock        sync.RWMutex
 }
 
-type SynthesisPlayerRequest struct {
+type AudioAudioSynthesisPlayerRequest struct {
 	h             media.MediaHandler
 	packet        *media.AudioPacket
 	sent          int
@@ -82,7 +84,7 @@ type PlayRecord struct {
 	sequences       map[int]string
 }
 
-func (req *SynthesisRequest) OnMessage(data []byte) {
+func (req *AudioSynthesisRequest) OnMessage(data []byte) {
 	firstFrame := false
 	if req.waitTTFB {
 		req.waitTTFB = false
@@ -121,7 +123,7 @@ func (req *SynthesisRequest) OnMessage(data []byte) {
 	req.player.Emit(req.handler, packet, req.svc.Format().SampleRate)
 }
 
-func (player *SynthesisPlayer) Emit(h media.MediaHandler, audioPacket *media.AudioPacket, inputRate int) {
+func (player *AudioSynthesisPlayer) Emit(h media.MediaHandler, audioPacket *media.AudioPacket, inputRate int) {
 	if audioPacket != nil && audioPacket.Payload != nil {
 		var err error
 		audioPacket.Payload, err = media.ResamplePCM(audioPacket.Payload, inputRate, player.Format.SampleRate)
@@ -138,7 +140,7 @@ func (player *SynthesisPlayer) Emit(h media.MediaHandler, audioPacket *media.Aud
 		h.EmitPacket(player, audioPacket)
 		return
 	}
-	player.reqChan <- &SynthesisPlayerRequest{
+	player.reqChan <- &AudioAudioSynthesisPlayerRequest{
 		h:      h,
 		packet: audioPacket,
 	}
@@ -148,19 +150,19 @@ func StripEmoji(text string) string {
 	return emojiRegex.ReplaceAllString(text, "")
 }
 
-func WithSynthesis(svc SynthesisService) media.MediaHandlerFunc {
-	executor := media.NewAsyncTaskRunner[*SynthesisRequest](1)
+func WithSynthesis(svc AudioSynthesisEngine) media.MediaHandlerFunc {
+	executor := media.NewAsyncTaskRunner[*AudioSynthesisRequest](1)
 	executor.ConcurrentMode = true
 
-	player := NewSynthesisPlayer("tts."+svc.Provider().ToString(), svc.Format())
+	player := NewAudioSynthesisPlayer("tts."+svc.Provider().ToString(), svc.Format())
 
-	executor.RequestBuilder = func(h media.MediaHandler, packet media.MediaPacket) (*media.PacketRequest[*SynthesisRequest], error) {
+	executor.RequestBuilder = func(h media.MediaHandler, packet media.MediaPacket) (*media.PacketRequest[*AudioSynthesisRequest], error) {
 		textPacket, ok := packet.(*media.TextPacket)
 		if !ok {
 			h.EmitPacket(h, packet)
 			return nil, nil
 		}
-		req := &SynthesisRequest{
+		req := &AudioSynthesisRequest{
 			handler:       h,
 			player:        player,
 			packet:        textPacket,
@@ -171,13 +173,13 @@ func WithSynthesis(svc SynthesisService) media.MediaHandlerFunc {
 			PlayID:        textPacket.PlayID,
 			dialogStartAt: textPacket.StartAt,
 		}
-		return &media.PacketRequest[*SynthesisRequest]{
+		return &media.PacketRequest[*AudioSynthesisRequest]{
 			Req:       req,
 			Interrupt: true,
 		}, nil
 	}
 
-	executor.TaskExecutor = func(ctx context.Context, h media.MediaHandler, req media.PacketRequest[*SynthesisRequest]) error {
+	executor.TaskExecutor = func(ctx context.Context, h media.MediaHandler, req media.PacketRequest[*AudioSynthesisRequest]) error {
 		if req.Req.sequence == 0 {
 			logrus.WithFields(logrus.Fields{
 				"handler":  h,
@@ -276,28 +278,28 @@ func WithSynthesis(svc SynthesisService) media.MediaHandlerFunc {
 	return executor.HandleMediaData
 }
 
-func NewSynthesisPlayer(vendor string, format media.StreamFormat) *SynthesisPlayer {
-	return &SynthesisPlayer{
+func NewAudioSynthesisPlayer(vendor string, format media.StreamFormat) *AudioSynthesisPlayer {
+	return &AudioSynthesisPlayer{
 		SenderName:  vendor,
 		Format:      format,
-		reqChan:     make(chan *SynthesisPlayerRequest, 1),
+		reqChan:     make(chan *AudioAudioSynthesisPlayerRequest, 1),
 		playRecords: make(map[string]*PlayRecord),
 	}
 }
 
-func (player *SynthesisPlayer) Close() {
+func (player *AudioSynthesisPlayer) Close() {
 	logrus.WithFields(logrus.Fields{
 		"vendor": player.SenderName,
 	}).Info("synthesis: closed")
 }
 
-func (player *SynthesisPlayer) Interrupt(h media.MediaHandler, reason string) {
-	player.reqChan <- &SynthesisPlayerRequest{
+func (player *AudioSynthesisPlayer) Interrupt(h media.MediaHandler, reason string) {
+	player.reqChan <- &AudioAudioSynthesisPlayerRequest{
 		interruptPlay: reason,
 	}
 }
 
-func (player *SynthesisPlayer) Run(handler media.MediaHandler, ctx context.Context) {
+func (player *AudioSynthesisPlayer) Run(handler media.MediaHandler, ctx context.Context) {
 	if player.Format.FrameDuration <= 0 {
 		return
 	}
@@ -324,7 +326,7 @@ func (player *SynthesisPlayer) Run(handler media.MediaHandler, ctx context.Conte
 	}
 }
 
-func (player *SynthesisPlayer) streamFrame(st *time.Time, frameSize int) *media.AudioPacket {
+func (player *AudioSynthesisPlayer) streamFrame(st *time.Time, frameSize int) *media.AudioPacket {
 	if len(player.txqueue) <= 0 {
 		return nil
 	}
@@ -395,7 +397,7 @@ func (player *SynthesisPlayer) streamFrame(st *time.Time, frameSize int) *media.
 	}
 }
 
-func (player *SynthesisPlayer) handleRequest(st time.Time, req *SynthesisPlayerRequest) {
+func (player *AudioSynthesisPlayer) handleRequest(st time.Time, req *AudioAudioSynthesisPlayerRequest) {
 	if req.interruptPlay == "" {
 		if player.isInterrupted(req.packet.PlayID) {
 			player.EmitStopPlayState(req.h, time.Since(st).String(), req.packet.PlayID, req.packet.Sequence,
@@ -423,7 +425,7 @@ func (player *SynthesisPlayer) handleRequest(st time.Time, req *SynthesisPlayerR
 	player.txqueue = nil
 }
 
-func (player *SynthesisPlayer) isPlayStop(playId string, sequence int) bool {
+func (player *AudioSynthesisPlayer) isPlayStop(playId string, sequence int) bool {
 	player.lock.RLock()
 	defer player.lock.RUnlock()
 	val, ok := player.playRecords[playId]
@@ -438,7 +440,7 @@ func (player *SynthesisPlayer) isPlayStop(playId string, sequence int) bool {
 	return true
 }
 
-func (player *SynthesisPlayer) isInterrupted(playId string) bool {
+func (player *AudioSynthesisPlayer) isInterrupted(playId string) bool {
 	player.lock.RLock()
 	defer player.lock.RUnlock()
 	val, ok := player.playRecords[playId]
@@ -448,7 +450,7 @@ func (player *SynthesisPlayer) isInterrupted(playId string) bool {
 	return val.interruptReason == "interrupt"
 }
 
-func (player *SynthesisPlayer) playStop(playId string, sequence int, reason string) {
+func (player *AudioSynthesisPlayer) playStop(playId string, sequence int, reason string) {
 	player.lock.Lock()
 	defer player.lock.Unlock()
 
@@ -463,7 +465,7 @@ func (player *SynthesisPlayer) playStop(playId string, sequence int, reason stri
 	val.sequences[sequence] = reason
 }
 
-func (player *SynthesisPlayer) EmitStopPlayState(h media.MediaHandler, duration string, playId string, sequence int, reason string, sourceText string) {
+func (player *AudioSynthesisPlayer) EmitStopPlayState(h media.MediaHandler, duration string, playId string, sequence int, reason string, sourceText string) {
 	if player.isPlayStop(playId, sequence) {
 		return
 	}
@@ -485,7 +487,7 @@ func (s *SynthesisBuffer) OnTimestamp(timestamp SentenceTimestamp) {
 	s.Timestamp = timestamp
 }
 
-func NewSynthesisService(name string, options map[string]any) (SynthesisService, error) {
+func NewAudioSynthesisEngine(name string, options map[string]any) (AudioSynthesisEngine, error) {
 	switch name {
 	case TTS_QCLOUD:
 		opt := media.CastOption[QCloudTTSConfig](options)
@@ -574,8 +576,8 @@ func (c TTSCredentialConfig) getInt64(key string) int64 {
 	return 0
 }
 
-// NewSynthesisServiceFromCredential 根据凭证配置创建TTS服务
-func NewSynthesisServiceFromCredential(config TTSCredentialConfig) (SynthesisService, error) {
+// NewAudioSynthesisEngineFromCredential 根据凭证配置创建TTS服务
+func NewAudioSynthesisEngineFromCredential(config TTSCredentialConfig) (AudioSynthesisEngine, error) {
 	if config == nil || len(config) == 0 {
 		return nil, fmt.Errorf("TTS配置为空")
 	}
@@ -1464,5 +1466,5 @@ func NewSynthesisServiceFromCredential(config TTSCredentialConfig) (SynthesisSer
 	}
 
 	// 使用工厂方法创建服务
-	return NewSynthesisService(providerName, options)
+	return NewAudioSynthesisEngine(providerName, options)
 }

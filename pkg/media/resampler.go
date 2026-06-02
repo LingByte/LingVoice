@@ -1,7 +1,7 @@
 package media
 
-// Copyright (c) 2026 LingByte
-// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 LingByte. All rights reserved.
+// SPDX-License-Identifier: AGPL-3.0
 
 import (
 	"io"
@@ -16,9 +16,9 @@ type SampleRateConverter interface {
 // ConverterFactory creates a sample rate converter
 type ConverterFactory func(inputRate, outputRate int) SampleRateConverter
 
-var defaultConverterFactory ConverterFactory = NewInterpolatingConverter
+var defaultConverterFactory ConverterFactory = NewCubicInterpolatingConverter
 
-// DefaultResampler creates a default sample rate converter
+// DefaultResampler creates the standard PCM16 rate converter (cubic interpolation).
 func DefaultResampler(inputRate, outputRate int) SampleRateConverter {
 	return defaultConverterFactory(inputRate, outputRate)
 }

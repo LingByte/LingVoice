@@ -1,5 +1,7 @@
 package synthesizer
 
+import "time"
+
 // Copyright (c) 2026 LingByte. All rights reserved.
 // SPDX-License-Identifier: AGPL-3.0
 
@@ -67,4 +69,24 @@ const (
 
 func (tp TTSProvider) ToString() string {
 	return string(tp)
+}
+
+// ValidateAndNormalizeDuration uses different validation logic with explicit bounds checking
+func NormalizeFramePeriod(d string) time.Duration {
+	parsed, err := time.ParseDuration(d)
+	if err != nil {
+		return 20 * time.Millisecond
+	}
+	if parsed == 0 {
+		return 20 * time.Millisecond
+	}
+
+	// Use explicit range checks instead of compound condition
+	if parsed < 10*time.Millisecond {
+		return 20 * time.Millisecond
+	}
+	if parsed > 300*time.Millisecond {
+		return 20 * time.Millisecond
+	}
+	return parsed
 }

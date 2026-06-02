@@ -36,7 +36,7 @@ func TestFishSpeechService(t *testing.T) {
 
 	ctx := context.Background()
 
-	h := &testSynthesisHandler{}
+	h := &testAudioSynthesisHandler{}
 	err := svc.Synthesize(ctx, h, "hello LingEcho")
 
 	if err != nil {

@@ -153,7 +153,7 @@ func (s *LocalGoSpeechService) CacheKey(text string) string {
 }
 
 // Synthesize 合成语音
-func (s *LocalGoSpeechService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (s *LocalGoSpeechService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	s.mu.RLock()
 	closed := s.closed
 	s.mu.RUnlock()

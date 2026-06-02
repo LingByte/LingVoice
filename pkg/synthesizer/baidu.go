@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/carlmjohnson/requests"
 	"github.com/sirupsen/logrus"
 )
@@ -70,7 +69,7 @@ func (bs *BaiduTTSService) Provider() TTSProvider {
 
 func (bs *BaiduTTSService) Format() media.StreamFormat {
 	return media.StreamFormat{
-		FrameDuration: utils.NormalizeFramePeriod(bs.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(bs.opt.FrameDuration),
 		Channels:      bs.opt.Channels,
 		SampleRate:    bs.opt.SampleRate,
 		BitDepth:      bs.opt.BitDepth,
@@ -82,10 +81,10 @@ func (bs *BaiduTTSService) CacheKey(text string) string {
 }
 
 type baiduSpeechSynthesisListener struct {
-	handler SynthesisHandler
+	handler AudioSynthesisHandler
 }
 
-func (bs *BaiduTTSService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (bs *BaiduTTSService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	ttsReq := baiduSpeechSynthesisListener{
 		handler: handler,
 	}

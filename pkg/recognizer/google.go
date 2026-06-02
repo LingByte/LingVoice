@@ -24,8 +24,8 @@ type GoogleASR struct {
 	Sentence    string
 	words       []byte
 
-	tr TranscribeResult
-	er ProcessError
+	tr SpeechRecognitionResult
+	er RecognitionError
 }
 
 type GoogleASROption struct {
@@ -100,7 +100,7 @@ func (google *GoogleASR) receiveFrames() {
 	}
 }
 
-func (google *GoogleASR) Init(tr TranscribeResult, er ProcessError) {
+func (google *GoogleASR) Init(tr SpeechRecognitionResult, er RecognitionError) {
 	google.tr = tr
 	google.er = er
 }

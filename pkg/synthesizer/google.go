@@ -10,7 +10,6 @@ import (
 	texttospeech "cloud.google.com/go/texttospeech/apiv1"
 	"cloud.google.com/go/texttospeech/apiv1/texttospeechpb"
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -59,7 +58,7 @@ func (gs *GoogleService) Format() media.StreamFormat {
 		Channels:      gs.opt.Channels,
 		SampleRate:    gs.opt.SampleRate,
 		BitDepth:      gs.opt.BitDepth,
-		FrameDuration: utils.NormalizeFramePeriod(gs.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(gs.opt.FrameDuration),
 	}
 }
 
@@ -68,7 +67,7 @@ func (gs *GoogleService) Provider() TTSProvider {
 }
 
 type googleSpeechSynthesisListener struct {
-	handler SynthesisHandler
+	handler AudioSynthesisHandler
 }
 
 func (gs *GoogleService) CacheKey(text string) string {
@@ -76,7 +75,7 @@ func (gs *GoogleService) CacheKey(text string) string {
 	return fmt.Sprintf("google.tts-%s-%d-%s.pcm", gs.opt.LanguageCode, gs.opt.AudioEncoding, digest)
 }
 
-func (gs *GoogleService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (gs *GoogleService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	ttsReq := googleSpeechSynthesisListener{
 		handler: handler,
 	}

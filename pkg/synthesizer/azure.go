@@ -13,7 +13,6 @@ import (
 	"sync"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -61,14 +60,6 @@ func NewAzureConfig(subscriptionKey, region string) AzureConfig {
 		Timeout:         30,
 	}
 
-	// 从环境变量获取默认值
-	if opt.SubscriptionKey == "" {
-		opt.SubscriptionKey = utils.GetEnv("AZURE_SUBSCRIPTION_KEY")
-	}
-	if opt.Region == "" {
-		opt.Region = utils.GetEnv("AZURE_REGION")
-	}
-
 	return opt
 }
 
@@ -91,7 +82,7 @@ func (as *AzureService) Format() media.StreamFormat {
 		SampleRate:    as.opt.SampleRate,
 		BitDepth:      as.opt.BitDepth,
 		Channels:      as.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(as.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(as.opt.FrameDuration),
 	}
 }
 
@@ -102,7 +93,7 @@ func (as *AzureService) CacheKey(text string) string {
 	return fmt.Sprintf("azure.tts-%s-%s-%d-%s.%s", as.opt.Voice, as.opt.Region, as.opt.SampleRate, digest, "mp3")
 }
 
-func (as *AzureService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (as *AzureService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	as.mu.Lock()
 	opt := as.opt
 	as.mu.Unlock()

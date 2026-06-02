@@ -32,7 +32,7 @@ func TestAzureService(t *testing.T) {
 
 	ctx := context.Background()
 
-	h := &testSynthesisHandler{}
+	h := &testAudioSynthesisHandler{}
 	err := svc.Synthesize(ctx, h, "你好，这是 Azure TTS 测试。")
 	if err != nil {
 		t.Logf("Synthesis error: %v", err)

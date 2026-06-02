@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/media"
-	"github.com/LingByte/LingVoice/pkg/utils"
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
@@ -161,7 +160,7 @@ func (ms *MinimaxService) Format() media.StreamFormat {
 		SampleRate:    ms.opt.SampleRate,
 		BitDepth:      16,
 		Channels:      ms.opt.Channels,
-		FrameDuration: utils.NormalizeFramePeriod(ms.opt.FrameDuration),
+		FrameDuration: NormalizeFramePeriod(ms.opt.FrameDuration),
 	}
 }
 
@@ -179,7 +178,7 @@ func (ms *MinimaxService) GetTraceID() string {
 	return ms.TraceID
 }
 
-func (ms *MinimaxService) Synthesize(ctx context.Context, handler SynthesisHandler, text string) error {
+func (ms *MinimaxService) Synthesize(ctx context.Context, handler AudioSynthesisHandler, text string) error {
 	ms.startAt = time.Now()
 
 	ws, err := ms.establishConnection()
@@ -317,7 +316,7 @@ func (ms *MinimaxService) startTask(ws *websocket.Conn) error {
 	return nil
 }
 
-func (ms *MinimaxService) continueTask(ws *websocket.Conn, text string, handler SynthesisHandler) error {
+func (ms *MinimaxService) continueTask(ws *websocket.Conn, text string, handler AudioSynthesisHandler) error {
 	continueMsg := map[string]interface{}{
 		"event": "task_continue",
 		"text":  text,
