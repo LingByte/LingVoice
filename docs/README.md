@@ -24,12 +24,14 @@ LingVoice 是一个**通用语音中台**：以插件化架构支持 WebRTC / We
 | [06-transport-unification.md](./06-transport-unification.md) | 传输协议归一化：WS/RTP/RTMP 统一到 MediaFrame、时钟域 |
 | [07-media-pipeline.md](./07-media-pipeline.md) | 媒体管线：ptime 节奏器 + 多订阅者出口（混合模型） |
 | [08-rustpbx-research.md](./08-rustpbx-research.md) | RustPBX 调研、架构对比、钢人论证、底座选型决策 |
+| [09-protocol-layer.md](./09-protocol-layer.md) | 协议层设计：SIP/WebRTC/WS 拆分边界、Go 协议应用层、统一事件抽象 |
 
 ## 阅读顺序
 
-第一次阅读建议按 `00 → 01 → 08 → 07 → 04 → 06 → 02 → 03 → 05`。
+第一次阅读建议按 `00 → 01 → 08 → 07 → 09 → 04 → 06 → 02 → 03 → 05`。
 
 - `08` 是架构选型的决策记录，包含 RustPBX 调研、钢人论证、混合模型结论——先看它理解为什么选这条路。
 - `07` 是混合媒体管线的详细设计，是 `08` 结论的技术落地。
+- `09` 是协议层拆分边界，纠正之前"SIP 全在 Rust"的误解，明确协议传输在 Rust、协议应用在 Go。
 - `04` 是双语言分离的命门，先看它再回头看分层会更清楚。
 - `06` 是传输协议归一化，WS 与 RTP 怎么混合。
