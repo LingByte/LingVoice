@@ -3,15 +3,16 @@ package sip
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
+	"github.com/LingByte/ling-base/common/logger"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+	"go.uber.org/zap"
 
 	"github.com/google/uuid"
 )
@@ -42,7 +43,7 @@ type Server struct {
 	handler  common.EventHandler
 	sessions sync.Map // map[string]*Session
 	server   *sipgo.Server
-	logger   *slog.Logger
+	log      *zap.Logger
 }
 
 // Session SIP 会话
@@ -56,18 +57,24 @@ type Session struct {
 	createdAt time.Time
 	mu        sync.Mutex
 	closed    bool
+
+	// INVITE 事务上下文（用于异步 Answer/Reject）
+	inviteReq *sip.Request
+	inviteTx  sip.ServerTransaction
+	answered  bool
+	audio     *common.AudioMedia
 }
 
 // NewServer 创建 SIP 服务
-func NewServer(config Config, handler common.EventHandler, logger *slog.Logger) (*Server, error) {
-	if logger == nil {
-		logger = slog.Default()
+func NewServer(config Config, handler common.EventHandler, log *zap.Logger) (*Server, error) {
+	if log == nil {
+		log = logger.Lg
 	}
 
 	s := &Server{
 		config:  config,
 		handler: handler,
-		logger:  logger.With("component", "sip-server"),
+		log:     log.With(zap.String("component", "sip-server")),
 	}
 
 	// 创建 sipgo UserAgent + Server
@@ -100,13 +107,13 @@ func (s *Server) Start() error {
 	}
 	port, _ := strconv.Atoi(portStr)
 
-	s.logger.Info("sip server starting", "addr", s.config.Addr, "realm", s.config.Realm)
+	s.log.Info("sip server starting", zap.String("addr", s.config.Addr), zap.String("realm", s.config.Realm))
 	return s.server.ListenAndServe(context.Background(), "udp", fmt.Sprintf("%s:%d", host, port))
 }
 
 // StartTCP 启动 SIP 服务（TCP）
 func (s *Server) StartTCP() error {
-	s.logger.Info("sip server starting (TCP)", "addr", s.config.Addr)
+	s.log.Info("sip server starting (TCP)", zap.String("addr", s.config.Addr))
 	return s.server.ListenAndServe(context.Background(), "tcp", s.config.Addr)
 }
 
@@ -131,7 +138,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	from := req.From().Address.String()
 	to := req.To().Address.String()
 
-	s.logger.Info("sip INVITE", "callID", callID, "from", from, "to", to)
+	s.log.Info("sip INVITE", zap.String("callID", callID), zap.String("from", from), zap.String("to", to))
 
 	// 鉴权
 	if s.config.AuthFunc != nil {
@@ -159,6 +166,15 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	// 创建会话
 	sessionID := callID
+	audio := s.parseSDP(req.Body())
+	if audio == nil {
+		audio = &common.AudioMedia{
+			Codec:           common.CodecPCMU,
+			SampleRate:      8000,
+			Channels:        1,
+			FrameDurationMs: 20,
+		}
+	}
 	session := &Session{
 		id:        sessionID,
 		callID:    callID,
@@ -167,6 +183,9 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		server:    s.server,
 		handler:   s.handler,
 		createdAt: time.Now(),
+		inviteReq: req,
+		inviteTx:  tx,
+		audio:     audio,
 	}
 	s.sessions.Store(sessionID, session)
 
@@ -177,71 +196,18 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		SessionID: sessionID,
 		From:      from,
 		To:        to,
-		Timestamp: time.Now(),
-	})
-
-	// 发 180 Ringing
-	resp := sip.NewResponseFromRequest(req, 180, "Ringing", nil)
-	_ = tx.Respond(resp)
-
-	// 等待上层决策（Answer/Reject）
-	// 上层通过 SendCommand 下发决策
-	// 这里先发 200 OK（简化：自动接听）
-	// 实际应由上层调用 session.SendCommand(CmdAnswer) 触发
-	go s.autoAnswer(req, tx, sessionID)
-}
-
-// autoAnswer 自动接听（简化版，后续改为等上层决策）
-func (s *Server) autoAnswer(req *sip.Request, tx sip.ServerTransaction, sessionID string) {
-	// 给上层一点时间决策
-	time.Sleep(100 * time.Millisecond)
-
-	session, ok := s.GetSession(sessionID)
-	if !ok {
-		return
-	}
-
-	session.mu.Lock()
-	defer session.mu.Unlock()
-
-	// 从 SDP 提取音频信息
-	audio := s.parseSDP(req.Body())
-	if audio == nil {
-		audio = &common.AudioMedia{
-			Codec:           common.CodecPCMU,
-			SampleRate:      8000,
-			Channels:        1,
-			FrameDurationMs: 20,
-		}
-	}
-
-	// 发 200 OK
-	resp := sip.NewResponseFromRequest(req, 200, "OK", nil)
-	// 添加 Contact header
-	resp.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:%s>", s.config.Addr)))
-	_ = tx.Respond(resp)
-
-	// 通知上层：接听 + 媒体就绪
-	s.handler.OnEvent(common.ProtocolEvent{
-		Type:      common.EventAnswered,
-		Protocol:  common.ProtocolSIP,
-		SessionID: sessionID,
-		From:      session.from,
-		To:        session.to,
-		Timestamp: time.Now(),
-	})
-	s.handler.OnEvent(common.ProtocolEvent{
-		Type:      common.EventMediaReady,
-		Protocol:  common.ProtocolSIP,
-		SessionID: sessionID,
 		Media:     &common.MediaDescription{Audio: audio},
 		Timestamp: time.Now(),
 	})
+
+	// 发 180 Ringing，等待上层通过 SendCommand(CmdAnswer) 决策
+	resp := sip.NewResponseFromRequest(req, 180, "Ringing", nil)
+	_ = tx.Respond(resp)
 }
 
 func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	callID := string(*req.CallID())
-	s.logger.Info("sip BYE", "callID", callID)
+	s.log.Info("sip BYE", zap.String("callID", callID))
 
 	s.sessions.Delete(callID)
 
@@ -260,7 +226,7 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 
 func (s *Server) onRegister(req *sip.Request, tx sip.ServerTransaction) {
 	from := req.From().Address.String()
-	s.logger.Info("sip REGISTER", "from", from, "contact", getContact(req))
+	s.log.Info("sip REGISTER", zap.String("from", from), zap.String("contact", getContact(req)))
 
 	// 鉴权
 	if s.config.AuthFunc != nil {
@@ -290,7 +256,7 @@ func (s *Server) onAck(req *sip.Request, tx sip.ServerTransaction) {
 
 func (s *Server) onCancel(req *sip.Request, tx sip.ServerTransaction) {
 	callID := string(*req.CallID())
-	s.logger.Info("sip CANCEL", "callID", callID)
+	s.log.Info("sip CANCEL", zap.String("callID", callID))
 	s.sessions.Delete(callID)
 
 	resp := sip.NewResponseFromRequest(req, 200, "OK", nil)
@@ -311,13 +277,48 @@ func (sess *Session) Protocol() common.ProtocolType { return common.ProtocolSIP 
 
 func (sess *Session) SendCommand(cmd common.ProtocolCommand) error {
 	switch cmd.Type {
-	case common.CmdHangup:
-		return sess.hangup()
+	case common.CmdAnswer:
+		return sess.answer()
 	case common.CmdReject:
 		return sess.reject(cmd.Reason)
+	case common.CmdHangup:
+		return sess.hangup()
 	default:
 		return nil
 	}
+}
+
+// answer 接听：发 200 OK + 通知上层
+func (sess *Session) answer() error {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.answered || sess.closed || sess.inviteTx == nil {
+		return fmt.Errorf("cannot answer: state invalid")
+	}
+	sess.answered = true
+
+	// 发 200 OK
+	resp := sip.NewResponseFromRequest(sess.inviteReq, 200, "OK", nil)
+	resp.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:lingvoice@%s>", sess.to)))
+	_ = sess.inviteTx.Respond(resp)
+
+	// 通知上层：接听 + 媒体就绪
+	sess.handler.OnEvent(common.ProtocolEvent{
+		Type:      common.EventAnswered,
+		Protocol:  common.ProtocolSIP,
+		SessionID: sess.id,
+		From:      sess.from,
+		To:        sess.to,
+		Timestamp: time.Now(),
+	})
+	sess.handler.OnEvent(common.ProtocolEvent{
+		Type:      common.EventMediaReady,
+		Protocol:  common.ProtocolSIP,
+		SessionID: sess.id,
+		Media:     &common.MediaDescription{Audio: sess.audio},
+		Timestamp: time.Now(),
+	})
+	return nil
 }
 
 // SendMediaFrame SIP 不通过此接口发媒体帧，RTP 媒体由 Rust/媒体面处理
@@ -337,13 +338,29 @@ func (sess *Session) hangup() error {
 	}
 	sess.closed = true
 	// BYE 由 sipgo dialog 管理，这里简化处理
+	// 如果还没接听就挂断，发 CANCEL 响应
+	if !sess.answered && sess.inviteTx != nil {
+		resp := sip.NewResponseFromRequest(sess.inviteReq, 487, "Request Terminated", nil)
+		_ = sess.inviteTx.Respond(resp)
+	}
 	return nil
 }
 
 func (sess *Session) reject(reason string) error {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	if sess.closed {
+		return nil
+	}
 	sess.closed = true
+	if sess.inviteTx != nil {
+		code := 486 // Busy Here
+		if reason == "declined" {
+			code = 603
+		}
+		resp := sip.NewResponseFromRequest(sess.inviteReq, code, reason, nil)
+		_ = sess.inviteTx.Respond(resp)
+	}
 	return nil
 }
 

@@ -3,6 +3,8 @@ module github.com/LingByte/LingVoice
 go 1.26.6
 
 require (
+	github.com/bluenviron/gortmplib v1.0.1
+	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/emiago/sipgo v1.5.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
@@ -10,10 +12,16 @@ require (
 )
 
 require (
+	github.com/LingByte/ling-base/common/constants v0.1.0 // indirect
+	github.com/LingByte/ling-base/common/logger v0.1.1 // indirect
+	github.com/abema/go-mp4 v1.7.1 // indirect
+	github.com/bluenviron/mediacommon/v2 v2.9.3 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.3.2 // indirect
+	github.com/hraban/opus v0.0.0-20260708213942-bde8e4304501 // indirect
 	github.com/icholy/digest v1.1.0 // indirect
+	github.com/natefinch/lumberjack v2.0.0+incompatible // indirect
 	github.com/pion/datachannel v1.6.2 // indirect
 	github.com/pion/dtls/v3 v3.1.5 // indirect
 	github.com/pion/ice/v4 v4.4.0 // indirect
@@ -30,9 +38,15 @@ require (
 	github.com/pion/transport/v4 v4.0.2 // indirect
 	github.com/pion/turn/v5 v5.0.12 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
+	go.uber.org/multierr v1.11.0 // indirect
+	go.uber.org/zap v1.28.0 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/net v0.50.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
+	golang.org/x/sync v0.17.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
+
+replace github.com/LingByte/ling-base/common/logger => /Users/chenting/Desktop/ling-base/common/logger
+
+replace github.com/LingByte/ling-base/common/constants => /Users/chenting/Desktop/ling-base/common/constants

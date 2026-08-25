@@ -134,8 +134,6 @@ type ErrorMessage struct {
 	Message string `json:"message"`
 }
 
-// --- 二进制帧编解码 ---
-
 // EncodeFrame 将 MediaFrame 编码为二进制帧（8字节头 + payload）
 func EncodeFrame(frame common.MediaFrame) []byte {
 	buf := make([]byte, FrameHeaderLen+len(frame.Payload))

@@ -2,14 +2,15 @@ package ws
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/LingByte/ling-base/common/logger"
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 )
 
 var upgrader = websocket.Upgrader{
@@ -44,18 +45,18 @@ type Server struct {
 	config   Config
 	handler  common.EventHandler
 	sessions sync.Map // map[string]*Session
-	logger   *slog.Logger
+	log      *zap.Logger
 }
 
 // NewServer 创建 WebSocket 语音服务
-func NewServer(config Config, handler common.EventHandler, logger *slog.Logger) *Server {
-	if logger == nil {
-		logger = slog.Default()
+func NewServer(config Config, handler common.EventHandler, log *zap.Logger) *Server {
+	if log == nil {
+		log = logger.Lg
 	}
 	return &Server{
 		config:  config,
 		handler: handler,
-		logger:  logger.With("component", "ws-server"),
+		log:     log.With(zap.String("component", "ws-server")),
 	}
 }
 
@@ -68,7 +69,7 @@ func (s *Server) Handler() http.Handler {
 
 // Start 启动独立 HTTP 服务
 func (s *Server) Start() error {
-	s.logger.Info("ws server starting", "addr", s.config.Addr, "path", s.config.Path)
+	s.log.Info("ws server starting", zap.String("addr", s.config.Addr), zap.String("path", s.config.Path))
 	return http.ListenAndServe(s.config.Addr, s.Handler())
 }
 
@@ -91,7 +92,7 @@ func (s *Server) CloseSession(id string) {
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		s.logger.Error("ws upgrade failed", "error", err)
+		s.log.Error("ws upgrade failed", zap.Error(err))
 		return
 	}
 	defer conn.Close()
@@ -101,7 +102,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	s.sessions.Store(sessionID, session)
 	defer s.sessions.Delete(sessionID)
 
-	s.logger.Info("ws session connected", "session", sessionID, "remote", conn.RemoteAddr())
+	s.log.Info("ws session connected", zap.String("session", sessionID), zap.Stringer("remote", conn.RemoteAddr()))
 
 	// 通知上层：有新连接（相当于来电）
 	s.handler.OnEvent(common.ProtocolEvent{
@@ -123,7 +124,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		SessionID: sessionID,
 		Timestamp: time.Now(),
 	})
-	s.logger.Info("ws session closed", "session", sessionID)
+	s.log.Info("ws session closed", zap.String("session", sessionID))
 }
 
 func (s *Server) readLoop(session *Session) {
@@ -131,7 +132,7 @@ func (s *Server) readLoop(session *Session) {
 		msgType, data, err := session.conn.ReadMessage()
 		if err != nil {
 			if !session.closed.Load() {
-				s.logger.Debug("ws read error", "session", session.id, "error", err)
+				s.log.Debug("ws read error", zap.String("session", session.id), zap.Error(err))
 			}
 			return
 		}
@@ -139,11 +140,11 @@ func (s *Server) readLoop(session *Session) {
 		switch msgType {
 		case websocket.TextMessage:
 			if err := s.handleTextMessage(session, data); err != nil {
-				s.logger.Error("ws handle text message", "session", session.id, "error", err)
+				s.log.Error("ws handle text message", zap.String("session", session.id), zap.Error(err))
 			}
 		case websocket.BinaryMessage:
 			if err := s.handleBinaryMessage(session, data); err != nil {
-				s.logger.Error("ws handle binary message", "session", session.id, "error", err)
+				s.log.Error("ws handle binary message", zap.String("session", session.id), zap.Error(err))
 			}
 		}
 	}
@@ -176,14 +177,14 @@ func (s *Server) handleTextMessage(session *Session, data []byte) error {
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return err
 		}
-		s.logger.Debug("ws dtmf", "session", session.id, "digit", msg.Digit)
+		s.log.Debug("ws dtmf", zap.String("session", session.id), zap.String("digit", msg.Digit))
 		return nil
 	case MsgTypeEvent:
 		var msg EventMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return err
 		}
-		s.logger.Debug("ws event", "session", session.id, "event", msg.Event)
+		s.log.Debug("ws event", zap.String("session", session.id), zap.String("event", msg.Event))
 		return nil
 	default:
 		return s.sendError(session, "unknown-type", "unknown message type: "+base.Type)
@@ -245,10 +246,10 @@ func (s *Server) handleOffer(session *Session, data []byte) error {
 		return err
 	}
 
-	s.logger.Info("ws negotiated",
-		"session", session.id,
-		"audioCodec", audio.Codec.String(),
-		"sampleRate", audio.SampleRate,
+	s.log.Info("ws negotiated",
+		zap.String("session", session.id),
+		zap.String("audioCodec", audio.Codec.String()),
+		zap.Uint32("sampleRate", audio.SampleRate),
 	)
 	return nil
 }

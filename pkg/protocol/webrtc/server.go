@@ -4,15 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
+	"github.com/LingByte/ling-base/common/logger"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
+	"go.uber.org/zap"
 )
 
 // Config WebRTC 服务配置
@@ -42,7 +43,7 @@ type Server struct {
 	config   Config
 	handler  common.EventHandler
 	sessions sync.Map // map[string]*Session
-	logger   *slog.Logger
+	log      *zap.Logger
 }
 
 // Session WebRTC 会话
@@ -58,14 +59,14 @@ type Session struct {
 }
 
 // NewServer 创建 WebRTC 信令服务
-func NewServer(config Config, handler common.EventHandler, logger *slog.Logger) *Server {
-	if logger == nil {
-		logger = slog.Default()
+func NewServer(config Config, handler common.EventHandler, log *zap.Logger) *Server {
+	if log == nil {
+		log = logger.Lg
 	}
 	return &Server{
 		config:  config,
 		handler: handler,
-		logger:  logger.With("component", "webrtc-server"),
+		log:     log.With(zap.String("component", "webrtc-server")),
 	}
 }
 
@@ -78,7 +79,7 @@ func (s *Server) Handler() http.Handler {
 
 // Start 启动信令服务
 func (s *Server) Start() error {
-	s.logger.Info("webrtc signaling server starting", "addr", s.config.Addr, "path", s.config.Path)
+	s.log.Info("webrtc signaling server starting", zap.String("addr", s.config.Addr), zap.String("path", s.config.Path))
 	return http.ListenAndServe(s.config.Addr, s.Handler())
 }
 
@@ -95,20 +96,20 @@ func (s *Server) GetSession(id string) (*Session, bool) {
 func (s *Server) handleSignal(w http.ResponseWriter, r *http.Request) {
 	conn, err := signalUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		s.logger.Error("webrtc signal upgrade failed", "error", err)
+		s.log.Error("webrtc signal upgrade failed", zap.Error(err))
 		return
 	}
 	defer conn.Close()
 
 	sessionID := uuid.NewString()
-	s.logger.Info("webrtc signal connected", "session", sessionID, "remote", conn.RemoteAddr())
+	s.log.Info("webrtc signal connected", zap.String("session", sessionID), zap.String("remote", conn.RemoteAddr().String()))
 
 	// 创建 PeerConnection
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
 		ICEServers: s.config.ICEServers,
 	})
 	if err != nil {
-		s.logger.Error("webrtc create PC failed", "error", err)
+		s.log.Error("webrtc create PC failed", zap.Error(err))
 		return
 	}
 
@@ -152,10 +153,10 @@ func (s *Server) setupPeerConnection(session *Session, conn *websocket.Conn) {
 
 	// 收到远端 Track
 	pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
-		s.logger.Info("webrtc track received",
-			"session", session.id,
-			"kind", track.Kind().String(),
-			"codec", track.Codec().MimeType,
+		s.log.Info("webrtc track received",
+			zap.String("session", session.id),
+			zap.String("kind", track.Kind().String()),
+			zap.String("codec", track.Codec().MimeType),
 		)
 
 		// 通知上层：媒体就绪
@@ -181,7 +182,7 @@ func (s *Server) setupPeerConnection(session *Session, conn *websocket.Conn) {
 			rtp, _, err := track.ReadRTP()
 			if err != nil {
 				if err != io.EOF {
-					s.logger.Debug("webrtc track read end", "session", session.id, "error", err)
+					s.log.Debug("webrtc track read end", zap.String("session", session.id), zap.Error(err))
 				}
 				return
 			}
@@ -210,7 +211,7 @@ func (s *Server) setupPeerConnection(session *Session, conn *websocket.Conn) {
 
 	// 连接状态变化
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		s.logger.Info("webrtc connection state", "session", session.id, "state", state.String())
+		s.log.Info("webrtc connection state", zap.String("session", session.id), zap.String("state", state.String()))
 		switch state {
 		case webrtc.PeerConnectionStateConnected:
 			s.handler.OnEvent(common.ProtocolEvent{
@@ -238,13 +239,13 @@ func (s *Server) signalLoop(session *Session, conn *websocket.Conn) {
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
-			s.logger.Debug("webrtc signal read end", "session", session.id, "error", err)
+			s.log.Debug("webrtc signal read end", zap.String("session", session.id), zap.Error(err))
 			return
 		}
 
 		var msg signalMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
-			s.logger.Error("webrtc signal parse", "session", session.id, "error", err)
+			s.log.Error("webrtc signal parse", zap.String("session", session.id), zap.Error(err))
 			continue
 		}
 
@@ -253,10 +254,10 @@ func (s *Server) signalLoop(session *Session, conn *websocket.Conn) {
 			s.handleOffer(session, conn, msg)
 		case "candidate":
 			if err := session.pc.AddICECandidate(msg.Candidate); err != nil {
-				s.logger.Error("webrtc add ICE candidate", "session", session.id, "error", err)
+				s.log.Error("webrtc add ICE candidate", zap.String("session", session.id), zap.Error(err))
 			}
 		default:
-			s.logger.Warn("webrtc unknown signal type", "session", session.id, "type", msg.Type)
+			s.log.Warn("webrtc unknown signal type", zap.String("session", session.id), zap.String("type", msg.Type))
 		}
 	}
 }
@@ -265,7 +266,7 @@ func (s *Server) handleOffer(session *Session, conn *websocket.Conn, msg signalM
 	// 设置远端 SDP
 	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: msg.SDP}
 	if err := session.pc.SetRemoteDescription(offer); err != nil {
-		s.logger.Error("webrtc set remote description", "session", session.id, "error", err)
+		s.log.Error("webrtc set remote description", zap.String("session", session.id), zap.Error(err))
 		return
 	}
 
@@ -275,11 +276,11 @@ func (s *Server) handleOffer(session *Session, conn *websocket.Conn, msg signalM
 		"audio", "lingvoice",
 	)
 	if err != nil {
-		s.logger.Error("webrtc create audio track", "session", session.id, "error", err)
+		s.log.Error("webrtc create audio track", zap.String("session", session.id), zap.Error(err))
 		return
 	}
 	if _, err := session.pc.AddTrack(audioTrack); err != nil {
-		s.logger.Error("webrtc add track", "session", session.id, "error", err)
+		s.log.Error("webrtc add track", zap.String("session", session.id), zap.Error(err))
 		return
 	}
 	session.audioTrack = audioTrack
@@ -287,18 +288,18 @@ func (s *Server) handleOffer(session *Session, conn *websocket.Conn, msg signalM
 	// 创建 Answer
 	answer, err := session.pc.CreateAnswer(nil)
 	if err != nil {
-		s.logger.Error("webrtc create answer", "session", session.id, "error", err)
+		s.log.Error("webrtc create answer", zap.String("session", session.id), zap.Error(err))
 		return
 	}
 	if err := session.pc.SetLocalDescription(answer); err != nil {
-		s.logger.Error("webrtc set local description", "session", session.id, "error", err)
+		s.log.Error("webrtc set local description", zap.String("session", session.id), zap.Error(err))
 		return
 	}
 
 	// 发送 Answer 给客户端
 	resp := signalMessage{Type: "answer", SDP: answer.SDP}
 	if err := conn.WriteJSON(resp); err != nil {
-		s.logger.Error("webrtc send answer", "session", session.id, "error", err)
+		s.log.Error("webrtc send answer", zap.String("session", session.id), zap.Error(err))
 	}
 }
 

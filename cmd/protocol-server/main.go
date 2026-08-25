@@ -2,66 +2,79 @@ package main
 
 import (
 	"flag"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/protocol"
+	"github.com/LingByte/LingVoice/pkg/protocol/api"
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
+	"github.com/LingByte/LingVoice/pkg/protocol/mqtt"
+	"github.com/LingByte/LingVoice/pkg/protocol/rtmp"
 	"github.com/LingByte/LingVoice/pkg/protocol/sip"
 	"github.com/LingByte/LingVoice/pkg/protocol/webrtc"
+	"github.com/LingByte/LingVoice/pkg/protocol/whep"
+	"github.com/LingByte/LingVoice/pkg/protocol/whip"
 	"github.com/LingByte/LingVoice/pkg/protocol/ws"
+	"github.com/LingByte/ling-base/common/logger"
+	"go.uber.org/zap"
 )
 
 // DemoEventHandler 是一个简单的事件处理器，打印所有事件和媒体帧统计
 type DemoEventHandler struct {
-	logger *slog.Logger
+	log *zap.Logger
 }
 
 func (h *DemoEventHandler) OnEvent(event common.ProtocolEvent) error {
 	switch event.Type {
 	case common.EventIncomingCall:
-		h.logger.Info(">> 来电",
-			"protocol", event.Protocol,
-			"session", event.SessionID,
-			"from", event.From,
-			"to", event.To,
+		h.log.Info(">> 来电",
+			zap.String("protocol", string(event.Protocol)),
+			zap.String("session", event.SessionID),
+			zap.String("from", event.From),
+			zap.String("to", event.To),
 		)
 	case common.EventRinging:
-		h.logger.Info(">> 振铃", "session", event.SessionID)
+		h.log.Info(">> 振铃", zap.String("session", event.SessionID))
 	case common.EventAnswered:
-		h.logger.Info(">> 接听", "session", event.SessionID)
+		h.log.Info(">> 接听", zap.String("session", event.SessionID))
 	case common.EventHangup:
-		h.logger.Info(">> 挂断", "session", event.SessionID)
+		h.log.Info(">> 挂断", zap.String("session", event.SessionID))
 	case common.EventMediaReady:
 		if event.Media != nil && event.Media.Audio != nil {
-			h.logger.Info(">> 媒体就绪",
-				"session", event.SessionID,
-				"codec", event.Media.Audio.Codec.String(),
-				"sampleRate", event.Media.Audio.SampleRate,
-				"channels", event.Media.Audio.Channels,
-				"frameMs", event.Media.Audio.FrameDurationMs,
+			h.log.Info(">> 媒体就绪",
+				zap.String("session", event.SessionID),
+				zap.String("codec", event.Media.Audio.Codec.String()),
+				zap.Uint32("sampleRate", event.Media.Audio.SampleRate),
+				zap.Uint16("channels", event.Media.Audio.Channels),
+				zap.Uint16("frameMs", event.Media.Audio.FrameDurationMs),
+			)
+		} else if event.Media != nil && event.Media.Video != nil {
+			h.log.Info(">> 媒体就绪 (video)",
+				zap.String("session", event.SessionID),
+				zap.String("codec", event.Media.Video.Codec.String()),
+				zap.Uint16("width", event.Media.Video.Width),
+				zap.Uint16("height", event.Media.Video.Height),
 			)
 		} else {
-			h.logger.Info(">> 媒体就绪", "session", event.SessionID)
+			h.log.Info(">> 媒体就绪", zap.String("session", event.SessionID))
 		}
 	case common.EventError:
-		h.logger.Error(">> 错误", "session", event.SessionID, "error", event.Err)
+		h.log.Error(">> 错误", zap.String("session", event.SessionID), zap.Error(event.Err))
 	}
 	return nil
 }
 
 func (h *DemoEventHandler) OnMediaFrame(sessionID string, frame common.MediaFrame) error {
 	// 只打印前几帧和统计，避免日志爆炸
-	h.logger.Debug("<< 媒体帧",
-		"session", sessionID,
-		"type", frame.Type,
-		"codec", frame.Codec.String(),
-		"seq", frame.Sequence,
-		"ts", frame.Timestamp,
-		"payloadLen", len(frame.Payload),
+	h.log.Debug("<< 媒体帧",
+		zap.String("session", sessionID),
+		zap.Uint8("type", uint8(frame.Type)),
+		zap.String("codec", frame.Codec.String()),
+		zap.Uint16("seq", frame.Sequence),
+		zap.Uint32("ts", frame.Timestamp),
+		zap.Int("payloadLen", len(frame.Payload)),
 	)
 	return nil
 }
@@ -72,20 +85,38 @@ func main() {
 		wsPath      = flag.String("ws-path", "/ws/voice", "WebSocket 路径")
 		sipAddr     = flag.String("sip-addr", "0.0.0.0:5060", "SIP 监听地址")
 		webrtcAddr  = flag.String("webrtc-addr", ":8081", "WebRTC 信令监听地址")
+		rtmpAddr    = flag.String("rtmp-addr", ":1935", "RTMP 监听地址")
+		whipAddr    = flag.String("whip-addr", ":8082", "WHIP 监听地址")
+		whepAddr    = flag.String("whep-addr", ":8083", "WHEP 监听地址")
+		apiAddr     = flag.String("api-addr", ":8090", "REST API 监听地址")
+		mqttBroker  = flag.String("mqtt-broker", "tcp://localhost:1883", "MQTT broker 地址")
 		enableWS    = flag.Bool("ws", true, "启用 WebSocket 协议")
 		enableSIP   = flag.Bool("sip", true, "启用 SIP 协议")
 		enableRTC   = flag.Bool("webrtc", true, "启用 WebRTC 协议")
+		enableRTMP  = flag.Bool("rtmp", true, "启用 RTMP 协议")
+		enableWHIP  = flag.Bool("whip", true, "启用 WHIP 协议")
+		enableWHEP  = flag.Bool("whep", true, "启用 WHEP 协议")
+		enableMQTT  = flag.Bool("mqtt", false, "启用 MQTT 协议（需先启动 broker）")
+		enableAPI   = flag.Bool("api", true, "启用 REST API 控制面")
 	)
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
+	// 初始化 ling-base logger
+	_ = logger.Init(&logger.LogConfig{
+		Level:    "debug",
+		Filename: "logs/protocol-server.log",
+		MaxSize:  100,
+		MaxAge:   30,
+		Daily:    true,
+	}, "dev")
+	defer logger.Sync()
 
-	handler := &DemoEventHandler{logger: logger}
+	log := logger.Lg
+
+	handler := &DemoEventHandler{log: log}
 
 	// 创建协议管理器
-	mgr := protocol.NewManager(handler, logger)
+	mgr := protocol.NewManager(handler, log)
 
 	// 配置各协议
 	if *enableWS {
@@ -93,7 +124,7 @@ func main() {
 		wsConfig.Addr = *wsAddr
 		wsConfig.Path = *wsPath
 		mgr.WithWebSocket(wsConfig)
-		logger.Info("WebSocket 协议已启用", "addr", *wsAddr, "path", *wsPath)
+		log.Info("WebSocket 协议已启用", zap.String("addr", *wsAddr), zap.String("path", *wsPath))
 	}
 
 	if *enableSIP {
@@ -101,13 +132,13 @@ func main() {
 		sipConfig.Addr = *sipAddr
 		sipConfig.AuthFunc = nil // 开发模式：不鉴权
 		sipConfig.RouteFunc = func(to string) (string, bool) {
-			logger.Info("SIP 路由查询", "to", to)
+			log.Info("SIP 路由查询", zap.String("to", to))
 			return to, true // 默认接受所有
 		}
 		if _, err := mgr.WithSIP(sipConfig); err != nil {
-			logger.Error("SIP 初始化失败", "error", err)
+			log.Error("SIP 初始化失败", zap.Error(err))
 		} else {
-			logger.Info("SIP 协议已启用", "addr", *sipAddr)
+			log.Info("SIP 协议已启用", zap.String("addr", *sipAddr))
 		}
 	}
 
@@ -115,38 +146,88 @@ func main() {
 		rtcConfig := webrtc.DefaultConfig()
 		rtcConfig.Addr = *webrtcAddr
 		mgr.WithWebRTC(rtcConfig)
-		logger.Info("WebRTC 协议已启用", "addr", *webrtcAddr)
+		log.Info("WebRTC 协议已启用", zap.String("addr", *webrtcAddr))
+	}
+
+	if *enableRTMP {
+		rtmpConfig := rtmp.DefaultConfig()
+		rtmpConfig.Addr = *rtmpAddr
+		mgr.WithRTMP(rtmpConfig)
+		log.Info("RTMP 协议已启用", zap.String("addr", *rtmpAddr))
+	}
+
+	if *enableWHIP {
+		whipConfig := whip.DefaultConfig()
+		whipConfig.Addr = *whipAddr
+		mgr.WithWHIP(whipConfig)
+		log.Info("WHIP 协议已启用", zap.String("addr", *whipAddr))
+	}
+
+	if *enableWHEP {
+		whepConfig := whep.DefaultConfig()
+		whepConfig.Addr = *whepAddr
+		mgr.WithWHEP(whepConfig)
+		log.Info("WHEP 协议已启用", zap.String("addr", *whepAddr))
+	}
+
+	if *enableAPI {
+		apiConfig := api.DefaultConfig()
+		apiConfig.Addr = *apiAddr
+		mgr.WithAPI(apiConfig)
+		log.Info("REST API 已启用", zap.String("addr", *apiAddr))
+	}
+
+	if *enableMQTT {
+		mqttConfig := mqtt.DefaultConfig()
+		mqttConfig.Broker = *mqttBroker
+		mgr.WithMQTT(mqttConfig)
+		log.Info("MQTT 协议已启用", zap.String("broker", *mqttBroker))
 	}
 
 	// 启动
-	logger.Info("LingVoice 协议层启动中...")
+	log.Info("LingVoice 协议层启动中...")
 	if err := mgr.Start(); err != nil {
-		logger.Error("启动失败", "error", err)
+		log.Error("启动失败", zap.Error(err))
 		os.Exit(1)
 	}
 
-	logger.Info("========================================")
-	logger.Info("LingVoice 协议层已启动")
-	logger.Info("========================================")
+	log.Info("========================================")
+	log.Info("LingVoice 协议层已启动")
+	log.Info("========================================")
 	if *enableWS {
-		logger.Info("WebSocket:  ws://localhost"+*wsAddr+*wsPath)
+		log.Info("WebSocket:  ws://localhost" + *wsAddr + *wsPath)
 	}
 	if *enableSIP {
-		logger.Info("SIP:        udp://"+*sipAddr)
+		log.Info("SIP:        udp://" + *sipAddr)
 	}
 	if *enableRTC {
-		logger.Info("WebRTC:     ws://localhost"+*webrtcAddr)
+		log.Info("WebRTC:     ws://localhost" + *webrtcAddr)
 	}
-	logger.Info("========================================")
-	logger.Info("等待连接...")
+	if *enableRTMP {
+		log.Info("RTMP:       rtmp://localhost" + *rtmpAddr + "/live/<stream>")
+	}
+	if *enableWHIP {
+		log.Info("WHIP:       http://localhost" + *whipAddr + "/whip")
+	}
+	if *enableWHEP {
+		log.Info("WHEP:       http://localhost" + *whepAddr + "/whep")
+	}
+	if *enableMQTT {
+		log.Info("MQTT:       " + *mqttBroker + " (topic: lingvoice/{session}/...)")
+	}
+	if *enableAPI {
+		log.Info("REST API:   http://localhost" + *apiAddr + "/api")
+	}
+	log.Info("========================================")
+	log.Info("等待连接...")
 
 	// 等待退出信号
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	logger.Info("正在关闭...")
+	log.Info("正在关闭...")
 	mgr.Close()
 	time.Sleep(200 * time.Millisecond) // 让 goroutine 退出
-	logger.Info("已关闭")
+	log.Info("已关闭")
 }

@@ -1,0 +1,9 @@
+# macOS
+.DS_Store
+
+# Logs
+logs/
+
+# Go
+*.test
+*.out

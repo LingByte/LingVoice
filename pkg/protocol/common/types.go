@@ -12,6 +12,10 @@ const (
 	ProtocolSIP    ProtocolType = "sip"
 	ProtocolWebRTC ProtocolType = "webrtc"
 	ProtocolWS     ProtocolType = "ws"
+	ProtocolRTMP   ProtocolType = "rtmp"
+	ProtocolWHIP   ProtocolType = "whip"
+	ProtocolWHEP   ProtocolType = "whep"
+	ProtocolMQTT   ProtocolType = "mqtt"
 )
 
 // EventType 协议事件类型（统一抽象，上层不关心是 SIP 还是 WebRTC）
@@ -109,7 +113,7 @@ func CodecFromString(s string) (CodecType, error) {
 		return CodecPCMU, nil
 	case "pcma":
 		return CodecPCMA, nil
-	case "pcm16":
+	case "pcm16", "pcm":
 		return CodecPCM16, nil
 	case "h264":
 		return CodecH264, nil

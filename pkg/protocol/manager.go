@@ -2,98 +2,194 @@ package protocol
 
 import (
 	"fmt"
-	"log/slog"
 	"sync"
 
+	"github.com/LingByte/LingVoice/pkg/protocol/api"
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
+	"github.com/LingByte/LingVoice/pkg/protocol/mqtt"
+	"github.com/LingByte/LingVoice/pkg/protocol/rtmp"
 	"github.com/LingByte/LingVoice/pkg/protocol/sip"
 	"github.com/LingByte/LingVoice/pkg/protocol/webrtc"
+	"github.com/LingByte/LingVoice/pkg/protocol/whep"
+	"github.com/LingByte/LingVoice/pkg/protocol/whip"
 	"github.com/LingByte/LingVoice/pkg/protocol/ws"
+	"github.com/LingByte/ling-base/common/logger"
+	"go.uber.org/zap"
 )
 
 // Manager 统一管理所有协议服务。
 // 上层（会话管理/编排）只跟 Manager 交互，不直接操作各协议。
 type Manager struct {
 	handler common.EventHandler
-	logger  *slog.Logger
+	log     *zap.Logger
 
-	wsServer     *ws.Server
-	sipServer    *sip.Server
-	webrtcServer *webrtc.Server
+	wsServer      *ws.Server
+	sipServer     *sip.Server
+	webrtcServer  *webrtc.Server
+	rtmpServer    *rtmp.Server
+	whipServer    *whip.Server
+	whepServer    *whep.Server
+	mqttServer    *mqtt.Server
+	apiServer     *api.Server
 
-	sessions sync.Map // map[string]common.ProtocolSession
+	sessions     sync.Map // map[string]common.ProtocolSession
+	enabledProtos []common.ProtocolType
 }
 
 // NewManager 创建协议管理器
-func NewManager(handler common.EventHandler, logger *slog.Logger) *Manager {
-	if logger == nil {
-		logger = slog.Default()
+func NewManager(handler common.EventHandler, log *zap.Logger) *Manager {
+	if log == nil {
+		log = logger.Lg
 	}
 	return &Manager{
 		handler: handler,
-		logger:  logger.With("component", "protocol-manager"),
+		log:     log.With(zap.String("component", "protocol-manager")),
 	}
 }
 
 // WithWebSocket 启用 WebSocket 协议
 func (m *Manager) WithWebSocket(config ws.Config) *Manager {
-	m.wsServer = ws.NewServer(config, m, m.logger)
+	m.wsServer = ws.NewServer(config, m, m.log)
+	m.enabledProtos = append(m.enabledProtos, common.ProtocolWS)
 	return m
 }
 
 // WithSIP 启用 SIP 协议
 func (m *Manager) WithSIP(config sip.Config) (*Manager, error) {
-	srv, err := sip.NewServer(config, m, m.logger)
+	srv, err := sip.NewServer(config, m, m.log)
 	if err != nil {
 		return nil, fmt.Errorf("create sip server: %w", err)
 	}
 	m.sipServer = srv
+	m.enabledProtos = append(m.enabledProtos, common.ProtocolSIP)
 	return m, nil
 }
 
 // WithWebRTC 启用 WebRTC 协议
 func (m *Manager) WithWebRTC(config webrtc.Config) *Manager {
-	m.webrtcServer = webrtc.NewServer(config, m, m.logger)
+	m.webrtcServer = webrtc.NewServer(config, m, m.log)
+	m.enabledProtos = append(m.enabledProtos, common.ProtocolWebRTC)
 	return m
+}
+
+// WithRTMP 启用 RTMP 协议
+func (m *Manager) WithRTMP(config rtmp.Config) *Manager {
+	m.rtmpServer = rtmp.NewServer(config, m, m.log)
+	m.enabledProtos = append(m.enabledProtos, common.ProtocolRTMP)
+	return m
+}
+
+// WithWHIP 启用 WHIP 协议
+func (m *Manager) WithWHIP(config whip.Config) *Manager {
+	m.whipServer = whip.NewServer(config, m, m.log)
+	m.enabledProtos = append(m.enabledProtos, common.ProtocolWHIP)
+	return m
+}
+
+// WithWHEP 启用 WHEP 协议
+func (m *Manager) WithWHEP(config whep.Config) *Manager {
+	m.whepServer = whep.NewServer(config, m, m.log)
+	m.enabledProtos = append(m.enabledProtos, common.ProtocolWHEP)
+	return m
+}
+
+// WithMQTT 启用 MQTT 协议
+func (m *Manager) WithMQTT(config mqtt.Config) *Manager {
+	m.mqttServer = mqtt.NewServer(config, m, m.log)
+	m.enabledProtos = append(m.enabledProtos, common.ProtocolMQTT)
+	return m
+}
+
+// WithAPI 启用 REST API 控制面
+func (m *Manager) WithAPI(config api.Config) *Manager {
+	m.apiServer = api.NewServer(config, m, m.log)
+	m.apiServer.SetProtocols(m.enabledProtos)
+	return m
+}
+
+// EnabledProtocols 返回已启用的协议列表
+func (m *Manager) EnabledProtocols() []common.ProtocolType {
+	return m.enabledProtos
 }
 
 // Start 启动所有已配置的协议服务
 func (m *Manager) Start() error {
-	var errs []error
-
 	// WebSocket
 	if m.wsServer != nil {
 		go func() {
 			if err := m.wsServer.Start(); err != nil {
-				m.logger.Error("ws server stopped", "error", err)
+				m.log.Error("ws server stopped", zap.Error(err))
 			}
 		}()
-		m.logger.Info("ws server started")
+		m.log.Info("ws server started")
 	}
 
 	// SIP
 	if m.sipServer != nil {
 		go func() {
 			if err := m.sipServer.Start(); err != nil {
-				m.logger.Error("sip server stopped", "error", err)
+				m.log.Error("sip server stopped", zap.Error(err))
 			}
 		}()
-		m.logger.Info("sip server started")
+		m.log.Info("sip server started")
 	}
 
 	// WebRTC
 	if m.webrtcServer != nil {
 		go func() {
 			if err := m.webrtcServer.Start(); err != nil {
-				m.logger.Error("webrtc server stopped", "error", err)
+				m.log.Error("webrtc server stopped", zap.Error(err))
 			}
 		}()
-		m.logger.Info("webrtc server started")
+		m.log.Info("webrtc server started")
 	}
 
-	if len(errs) > 0 {
-		return fmt.Errorf("start errors: %v", errs)
+	// RTMP
+	if m.rtmpServer != nil {
+		if err := m.rtmpServer.Start(); err != nil {
+			return fmt.Errorf("start rtmp: %w", err)
+		}
+		m.log.Info("rtmp server started")
 	}
+
+	// WHIP
+	if m.whipServer != nil {
+		go func() {
+			if err := m.whipServer.Start(); err != nil {
+				m.log.Error("whip server stopped", zap.Error(err))
+			}
+		}()
+		m.log.Info("whip server started")
+	}
+
+	// WHEP
+	if m.whepServer != nil {
+		go func() {
+			if err := m.whepServer.Start(); err != nil {
+				m.log.Error("whep server stopped", zap.Error(err))
+			}
+		}()
+		m.log.Info("whep server started")
+	}
+
+	// MQTT
+	if m.mqttServer != nil {
+		if err := m.mqttServer.Start(); err != nil {
+			return fmt.Errorf("start mqtt: %w", err)
+		}
+		m.log.Info("mqtt server started")
+	}
+
+	// REST API
+	if m.apiServer != nil {
+		go func() {
+			if err := m.apiServer.Start(); err != nil {
+				m.log.Error("api server stopped", zap.Error(err))
+			}
+		}()
+		m.log.Info("rest api server started")
+	}
+
 	return nil
 }
 
@@ -101,6 +197,12 @@ func (m *Manager) Start() error {
 func (m *Manager) Close() {
 	if m.sipServer != nil {
 		_ = m.sipServer.Close()
+	}
+	if m.rtmpServer != nil {
+		_ = m.rtmpServer.Close()
+	}
+	if m.mqttServer != nil {
+		_ = m.mqttServer.Close()
 	}
 }
 
@@ -138,7 +240,6 @@ func (m *Manager) OnEvent(event common.ProtocolEvent) error {
 	// 注册/注销 session
 	switch event.Type {
 	case common.EventIncomingCall:
-		// 从对应协议 server 获取 session 并注册
 		if sess := m.lookupSession(event.Protocol, event.SessionID); sess != nil {
 			m.sessions.Store(event.SessionID, sess)
 		}
@@ -172,6 +273,30 @@ func (m *Manager) lookupSession(protocol common.ProtocolType, id string) common.
 	case common.ProtocolWebRTC:
 		if m.webrtcServer != nil {
 			if s, ok := m.webrtcServer.GetSession(id); ok {
+				return s
+			}
+		}
+	case common.ProtocolRTMP:
+		if m.rtmpServer != nil {
+			if s, ok := m.rtmpServer.GetSession(id); ok {
+				return s
+			}
+		}
+	case common.ProtocolWHIP:
+		if m.whipServer != nil {
+			if s, ok := m.whipServer.GetSession(id); ok {
+				return s
+			}
+		}
+	case common.ProtocolWHEP:
+		if m.whepServer != nil {
+			if s, ok := m.whepServer.GetSession(id); ok {
+				return s
+			}
+		}
+	case common.ProtocolMQTT:
+		if m.mqttServer != nil {
+			if s, ok := m.mqttServer.GetSession(id); ok {
 				return s
 			}
 		}
