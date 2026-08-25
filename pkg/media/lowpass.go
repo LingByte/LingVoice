@@ -35,7 +35,10 @@ package media
 // the code surface for marginal CPU win on calls we already encode
 // in real time.
 
-import "math"
+import (
+	"math"
+	"unsafe"
+)
 
 const lowPassNTaps = 31
 
@@ -46,6 +49,7 @@ const lowPassNTaps = 31
 type lowPassFIR struct {
 	taps    []float64
 	history []int16
+	outBuf  []int16 // reusable output buffer, grows as needed
 }
 
 // NewDownsamplingLowPass returns a filter whose passband ends at
@@ -124,12 +128,19 @@ func designFIRLowPass(cutoff float64) *lowPassFIR {
 	return &lowPassFIR{
 		taps:    taps,
 		history: make([]int16, lowPassNTaps-1),
+		outBuf:  make([]int16, 0, 320), // will grow as needed
 	}
 }
 
 // filter convolves in[] with the tap set and returns a slice of the
 // same length. Causal delay is (N-1)/2 = 15 samples for a 31-tap
 // filter — about 0.94 ms at 16 kHz, inaudible in conversation.
+//
+// Zero-allocation hot path: the output buffer (outBuf) is reused across
+// calls, and the history is indexed directly instead of concatenating
+// into a temporary `extended` slice. The returned slice aliases the
+// filter's internal outBuf — callers must copy or consume before the
+// next filter() call.
 func (f *lowPassFIR) filter(in []int16) []int16 {
 	if f == nil || len(in) == 0 {
 		return in
@@ -137,17 +148,25 @@ func (f *lowPassFIR) filter(in []int16) []int16 {
 	histN := len(f.history)
 	nTaps := len(f.taps)
 
-	// Concatenate history and current chunk so the convolution can
-	// read past the chunk boundary without special-casing.
-	extended := make([]int16, histN+len(in))
-	copy(extended, f.history)
-	copy(extended[histN:], in)
+	// Reuse output buffer — grows only if a larger chunk arrives.
+	if cap(f.outBuf) < len(in) {
+		f.outBuf = make([]int16, len(in))
+	} else {
+		f.outBuf = f.outBuf[:len(in)]
+	}
+	out := f.outBuf
 
-	out := make([]int16, len(in))
 	for i := 0; i < len(in); i++ {
 		var acc float64
 		for k := 0; k < nTaps; k++ {
-			acc += f.taps[k] * float64(extended[i+k])
+			pos := i + k
+			var sample int16
+			if pos < histN {
+				sample = f.history[pos]
+			} else {
+				sample = in[pos-histN]
+			}
+			acc += f.taps[k] * float64(sample)
 		}
 		// Saturate to int16 range. This is hit on rare loud peaks
 		// (transient impulses near full scale); preferable to wrap-
@@ -160,31 +179,58 @@ func (f *lowPassFIR) filter(in []int16) []int16 {
 		out[i] = int16(acc)
 	}
 
-	// Persist the last (N-1) input samples for the next chunk.
-	copy(f.history, extended[len(extended)-histN:])
+	// Update history: keep the last (N-1) samples of (history + input).
+	// This is an O(histN) copy — histN is 30, negligible.
+	if len(in) >= histN {
+		copy(f.history, in[len(in)-histN:])
+	} else {
+		// Shift history left by len(in), then append the new samples.
+		copy(f.history, f.history[len(in):])
+		copy(f.history[histN-len(in):], in)
+	}
+
 	return out
 }
 
 // pcm16BytesToSamples / samplesToPCM16Bytes convert between the
 // little-endian byte form used on the resampler boundary and the
-// in-memory int16 form the FIR operates on. Both are zero-copy
-// when len is a multiple of 2 (which our PCM streams always are).
+// in-memory int16 form the FIR operates on. Both use unsafe pointer
+// reinterpretation for zero-copy, zero-allocation conversion.
+//
+// The returned slice shares memory with the input — callers must not
+// retain it beyond the input's lifetime (same semantics as a Rust
+// zero-copy view). This is safe because:
+//   - pcm16BytesToSamples: we only READ from the returned int16 slice.
+//   - samplesToPCM16Bytes: we only WRITE the result to a file/socket.
+//
+// On little-endian platforms (all currently supported Go targets) the
+// in-memory int16 layout is identical to the LE byte representation,
+// so the reinterpretation is exact.
 func pcm16BytesToSamples(b []byte) []int16 {
 	n := len(b) / 2
+	if n == 0 {
+		return nil
+	}
+	// Fast path: if the byte slice is 2-byte aligned (which it always is
+	// when allocated directly via make([]byte, ...) and not a sub-slice
+	// at an odd offset), reinterpret as int16 with zero copy.
+	if uintptr(unsafe.Pointer(&b[0]))%unsafe.Alignof(int16(0)) == 0 {
+		return unsafe.Slice((*int16)(unsafe.Pointer(&b[0])), n)
+	}
+	// Fallback: copy for unaligned data (rare — only from odd-offset sub-slices)
 	out := make([]int16, n)
 	for i := 0; i < n; i++ {
-		out[i] = int16(b[i*2]) | (int16(b[i*2+1]) << 8)
+		out[i] = int16(b[i*2]) | int16(b[i*2+1])<<8
 	}
 	return out
 }
 
 func samplesToPCM16Bytes(s []int16) []byte {
-	out := make([]byte, len(s)*2)
-	for i, v := range s {
-		out[i*2] = byte(v)
-		out[i*2+1] = byte(v >> 8)
+	if len(s) == 0 {
+		return nil
 	}
-	return out
+	// int16 slices are always 2-byte aligned, so this reinterpretation is safe.
+	return unsafe.Slice((*byte)(unsafe.Pointer(&s[0])), len(s)*2)
 }
 
 // DCBlockHPF is a one-pole IIR high-pass that removes DC offset and

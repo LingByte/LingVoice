@@ -105,27 +105,39 @@ func TestLowPassFIR_StatefulAcrossChunks(t *testing.T) {
 	// Splitting the input into two chunks and filtering each must
 	// produce IDENTICAL output to filtering it as one — that's the
 	// whole point of carrying history between calls.
+	//
+	// NOTE: filter() now reuses an internal output buffer for zero-
+	// allocation hot-path performance. The returned slice is invalidated
+	// on the next filter() call, so we copy each chunk before filtering
+	// the next one.
 	in := genTone(1500, 16000, 1024)
 
 	fA := NewDownsamplingLowPass(16000, 8000)
 	whole := fA.filter(in)
+	// Detach whole from fA's internal buffer so later calls can't clobber it.
+	wholeCopy := make([]int16, len(whole))
+	copy(wholeCopy, whole)
 
 	fB := NewDownsamplingLowPass(16000, 8000)
-	first := fB.filter(in[:512])
-	second := fB.filter(in[512:])
+	firstRaw := fB.filter(in[:512])
+	first := make([]int16, len(firstRaw))
+	copy(first, firstRaw)
+	secondRaw := fB.filter(in[512:])
+	second := make([]int16, len(secondRaw))
+	copy(second, secondRaw)
 
-	if len(whole) != len(first)+len(second) {
-		t.Fatalf("len mismatch: whole=%d split=%d+%d", len(whole), len(first), len(second))
+	if len(wholeCopy) != len(first)+len(second) {
+		t.Fatalf("len mismatch: whole=%d split=%d+%d", len(wholeCopy), len(first), len(second))
 	}
 	for i := 0; i < 512; i++ {
-		if whole[i] != first[i] {
-			t.Fatalf("first chunk diverges at sample %d: whole=%d split=%d", i, whole[i], first[i])
+		if wholeCopy[i] != first[i] {
+			t.Fatalf("first chunk diverges at sample %d: whole=%d split=%d", i, wholeCopy[i], first[i])
 		}
 	}
 	for i := 0; i < 512; i++ {
-		if whole[512+i] != second[i] {
+		if wholeCopy[512+i] != second[i] {
 			t.Fatalf("second chunk diverges at sample %d: whole=%d split=%d (history not carried correctly)",
-				i, whole[512+i], second[i])
+				i, wholeCopy[512+i], second[i])
 		}
 	}
 }

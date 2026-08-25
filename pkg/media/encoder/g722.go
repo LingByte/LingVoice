@@ -13,6 +13,31 @@ const (
 	G722_DEFAULT      = 0
 )
 
+// g722QuantTable is a precomputed lookup table for the quantize()
+// function. Index = abs(sample) (0..32767), value = quantization
+// level (0..11). Replaces the 12-branch if-else chain on the encode
+// hot path with a single array index.
+var g722QuantTable [32768]int
+
+// g722DequantLevels is the fixed dequantization level table used by
+// dequantize(). Declared at package level to avoid allocating a new
+// slice on every call.
+var g722DequantLevels = [16]int16{8, 24, 40, 56, 80, 112, 160, 224, 320, 448, 640, 896, 1280, 1792, 2560, 3584}
+
+func init() {
+	thresholds := [11]int{16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384}
+	for i := 0; i < 32768; i++ {
+		q := 11
+		for j, t := range thresholds {
+			if i < t {
+				q = j
+				break
+			}
+		}
+		g722QuantTable[i] = q
+	}
+}
+
 // G.722 band structures
 type G722Band0 struct {
 	a  [2]int16
@@ -173,31 +198,10 @@ func (e *G722Encoder) quantize(sample int16) int {
 	if abs < 0 {
 		abs = -abs
 	}
-	if abs < 16 {
-		return 0
-	} else if abs < 32 {
-		return 1
-	} else if abs < 64 {
-		return 2
-	} else if abs < 128 {
-		return 3
-	} else if abs < 256 {
-		return 4
-	} else if abs < 512 {
-		return 5
-	} else if abs < 1024 {
-		return 6
-	} else if abs < 2048 {
-		return 7
-	} else if abs < 4096 {
-		return 8
-	} else if abs < 8192 {
-		return 9
-	} else if abs < 16384 {
-		return 10
-	} else {
+	if abs >= 32768 {
 		return 11
 	}
+	return g722QuantTable[abs]
 }
 
 // NewG722Decoder creates new G.722 decoder
@@ -257,10 +261,9 @@ func (d *G722Decoder) decodeSamples(encoded byte) (int16, int16) {
 }
 
 func (d *G722Decoder) dequantize(q int) int16 {
-	levels := []int{8, 24, 40, 56, 80, 112, 160, 224, 320, 448, 640, 896, 1280, 1792, 2560, 3584}
-	if q >= len(levels) {
-		q = len(levels) - 1
+	if q >= len(g722DequantLevels) {
+		q = len(g722DequantLevels) - 1
 	}
 	noise := int16((q % 3) - 1)
-	return int16(levels[q]) + noise
+	return g722DequantLevels[q] + noise
 }

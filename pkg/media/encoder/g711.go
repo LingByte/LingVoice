@@ -124,6 +124,38 @@ func ulaw2linear(ulawByte byte) int {
 	return temp - biasValue
 }
 
+// Precomputed decode lookup tables (256 entries each). Built once at
+// init() from the computation-based functions below. The per-sample
+// decode path becomes a single array index — no branches, no shifts.
+var (
+	alawDecodeTable [256]int16
+	ulawDecodeTable [256]int16
+)
+
+// Precomputed encode lookup tables (65536 entries = 64 KB each). Index
+// is the unsigned 16-bit representation of the PCM sample
+// (uint16(int16Value)), value is the G.711 byte. Eliminates the
+// segment search + bit manipulation on the encode hot path.
+var (
+	pcmToALawTable [65536]byte
+	pcmToULawTable [65536]byte
+)
+
+func init() {
+	for i := 0; i < 256; i++ {
+		alawDecodeTable[i] = alaw2linear(byte(i))
+		ulawDecodeTable[i] = int16(ulaw2linear(byte(i)))
+	}
+	for i := 0; i < 65536; i++ {
+		// Index i is the raw uint16 representation of a PCM sample.
+		// Reinterpret as int16 then convert to signed int for the
+		// encoder functions, so pcmToALawTable[uint16(sample)] gives
+		// the correct G.711 byte directly.
+		pcmToALawTable[i] = linear2alaw(int(int16(i)))
+		pcmToULawTable[i] = linear2ulaw(int(int16(i)))
+	}
+}
+
 // convertALawToPCM converts A-law encoded data to PCM
 func pcma2pcm(alawData []byte) ([]byte, error) {
 	pcmData := make([]byte, len(alawData)<<1)
@@ -133,12 +165,10 @@ func pcma2pcm(alawData []byte) ([]byte, error) {
 
 // pcma2pcmInto decodes A-law into dst (len must be len(alawData)*2).
 func pcma2pcmInto(dst, alawData []byte) {
-	outputIdx := 0
-	for _, alawByte := range alawData {
-		pcmSample := alaw2linear(alawByte)
-		dst[outputIdx] = byte(pcmSample)
-		dst[outputIdx+1] = byte(pcmSample >> 8)
-		outputIdx += 2
+	for i, alawByte := range alawData {
+		pcmSample := alawDecodeTable[alawByte]
+		dst[i*2] = byte(pcmSample)
+		dst[i*2+1] = byte(pcmSample >> 8)
 	}
 }
 
@@ -156,11 +186,9 @@ func Pcm2pcma(pcmData []byte) ([]byte, error) {
 
 // pcm2pcmaInto encodes PCM16LE into dst (len must be len(pcmData)/2).
 func pcm2pcmaInto(dst, pcmData []byte) {
-	outputIdx := 0
-	for inputIdx := 0; inputIdx+1 < len(pcmData); inputIdx += 2 {
-		pcmSample := int16(pcmData[inputIdx+1])<<8 | int16(pcmData[inputIdx])
-		dst[outputIdx] = linear2alaw(int(pcmSample))
-		outputIdx++
+	for i := 0; i+1 < len(pcmData); i += 2 {
+		sample := uint16(pcmData[i]) | uint16(pcmData[i+1])<<8
+		dst[i/2] = pcmToALawTable[sample]
 	}
 }
 
@@ -183,12 +211,10 @@ func pcmu2pcm(ulawData []byte) ([]byte, error) {
 
 // pcmu2pcmInto decodes μ-law into dst (len must be len(ulawData)*2).
 func pcmu2pcmInto(dst, ulawData []byte) {
-	outputIdx := 0
-	for _, ulawByte := range ulawData {
-		pcmSample := ulaw2linear(ulawByte)
-		dst[outputIdx] = byte(pcmSample)
-		dst[outputIdx+1] = byte(pcmSample >> 8)
-		outputIdx += 2
+	for i, ulawByte := range ulawData {
+		pcmSample := ulawDecodeTable[ulawByte]
+		dst[i*2] = byte(pcmSample)
+		dst[i*2+1] = byte(pcmSample >> 8)
 	}
 }
 
@@ -201,11 +227,9 @@ func pcm2pcmu(pcmData []byte) ([]byte, error) {
 
 // pcm2pcmuInto encodes PCM16LE into dst (len must be len(pcmData)/2).
 func pcm2pcmuInto(dst, pcmData []byte) {
-	outputIdx := 0
-	for inputIdx := 0; inputIdx+1 < len(pcmData); inputIdx += 2 {
-		pcmSample := int16(pcmData[inputIdx+1])<<8 | int16(pcmData[inputIdx])
-		dst[outputIdx] = linear2ulaw(int(pcmSample))
-		outputIdx++
+	for i := 0; i+1 < len(pcmData); i += 2 {
+		sample := uint16(pcmData[i]) | uint16(pcmData[i+1])<<8
+		dst[i/2] = pcmToULawTable[sample]
 	}
 }
 
