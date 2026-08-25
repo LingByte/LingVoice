@@ -107,6 +107,9 @@ func BenchmarkLowPassFIR_16kTo8k_Concurrent(b *testing.B) {
 }
 
 // --- EventBus benchmarks ---
+// These benchmark the EventBus directly (now only used for low-frequency
+// state/error events). For the hot-path packet processing benchmark, see
+// BenchmarkProcessPacketDirect below.
 
 func BenchmarkEventBus_Publish(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -124,6 +127,47 @@ func BenchmarkEventBus_Publish(b *testing.B) {
 	}
 	// Let workers drain
 	time.Sleep(50 * time.Millisecond)
+}
+
+// BenchmarkProcessPacketDirect measures the new synchronous direct path:
+// EmitPacket → processPacketDirect → processor chain → trySendPacket.
+// This replaces the old EventBus path (channel + worker dispatch + MediaEvent).
+func BenchmarkProcessPacketDirect(b *testing.B) {
+	s := NewDefaultSession()
+	in := newMockTransport("pcmu", 8000)
+	out := newMockTransport("pcmu", 8000)
+	s.Input(in)
+	s.Output(out)
+	s.setupOutputRouter()
+
+	pkt := &AudioPacket{Payload: makePCM(8000, 20)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.EmitPacket(s, pkt)
+	}
+}
+
+// BenchmarkProcessPacketDirect_Concurrent measures the direct path under
+// concurrent goroutines (simulating multiple input transports).
+func BenchmarkProcessPacketDirect_Concurrent(b *testing.B) {
+	for _, g := range concurrencyLevels {
+		b.Run(fmt.Sprintf("g=%d", g), func(b *testing.B) {
+			s := NewDefaultSession()
+			out := newMockTransport("pcmu", 8000)
+			s.Output(out)
+			s.setupOutputRouter()
+
+			pkt := &AudioPacket{Payload: makePCM(8000, 20)}
+			b.ReportAllocs()
+			b.SetParallelism(g)
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					s.EmitPacket(s, pkt)
+				}
+			})
+		})
+	}
 }
 
 func BenchmarkEventBus_Publish_Concurrent(b *testing.B) {

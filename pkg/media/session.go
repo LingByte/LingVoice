@@ -335,10 +335,9 @@ func NewDefaultSession() *MediaSession {
 	return session
 }
 
-// WithQueueSize sets TX/output queue depth and rebuilds the per-session EventBus
-// before Serve(). Call this after NewDefaultSession when a larger buffer is needed;
-// otherwise the bus stays at the default QueueSize (256) and may drop packets under
-// heavy TTS/realtime output load.
+// WithQueueSize sets TX/output queue depth. The EventBus is rebuilt with a
+// smaller queue since it now only handles low-frequency state/error events
+// (packet processing is synchronous via processPacketDirect).
 func (s *MediaSession) WithQueueSize(n int) *MediaSession {
 	if n > 0 {
 		s.QueueSize = n
@@ -362,43 +361,26 @@ func (s *MediaSession) initEventBus() {
 	s.setupEventHandlers()
 }
 
+// mediaEventBusWorkers returns the number of EventBus workers. After the
+// hot-path refactoring, the EventBus only handles low-frequency state/error
+// events, so 2 workers are sufficient. The env override is kept for tuning.
 func mediaEventBusWorkers(queueSize int) int {
-	const maxWorkers = 32
 	for _, key := range []string{"MEDIA_EVENT_BUS_WORKERS", "SIP_MEDIA_EVENT_BUS_WORKERS"} {
 		if s := os.Getenv(key); s != "" {
 			n, err := strconv.Atoi(s)
 			if err == nil && n > 0 {
-				if n > maxWorkers {
-					return maxWorkers
-				}
 				return n
 			}
 		}
 	}
-	switch {
-	case queueSize >= 2048:
-		return 24
-	case queueSize >= 512:
-		return 12
-	default:
-		return 6
-	}
+	return 2
 }
 
-// setupEventHandlers configures default event handlers
+// setupEventHandlers configures default event handlers.
+// Packet events are NOT handled here — they go through the synchronous direct
+// path (processPacketDirect). Only low-frequency state/error events use the
+// EventBus.
 func (s *MediaSession) setupEventHandlers() {
-	// Handle packet events through processor registry
-	s.eventBus.Subscribe(EventTypePacket, func(ctx context.Context, event *MediaEvent) error {
-		processors := s.processorRegistry.GetProcessors(ctx, event)
-		for _, processor := range processors {
-			if err := processor.Process(ctx, s, event); err != nil {
-				log.With(logger.WithFields(map[string]interface{}{"processor": processor.Name(), "sessionID": s.ID, "error": err})...).Error("processor error")
-				s.CauseError(processor, err)
-			}
-		}
-		return nil
-	})
-
 	// Handle state events
 	s.eventBus.Subscribe(EventTypeState, func(ctx context.Context, event *MediaEvent) error {
 		if state, ok := event.Payload.(StateChange); ok {
@@ -677,25 +659,24 @@ func (s *MediaSession) RegisterProcessor(processor Processor) *MediaSession {
 	return s
 }
 
-// UseMiddleware is deprecated, use RegisterProcessor instead
+// UseMiddleware is deprecated, use RegisterProcessor instead.
+// Now creates PacketProcessor (implements PacketSink) so middleware runs on
+// the synchronous direct path without MediaEvent allocation.
 func (s *MediaSession) UseMiddleware(handles ...MediaHandlerFunc) *MediaSession {
 	for i, handle := range handles {
-		processor := NewFuncProcessor(
+		// Capture loop variable
+		handle := handle
+		processor := NewPacketProcessor(
 			fmt.Sprintf("middleware-%d", i),
 			PriorityNormal,
-			func(ctx context.Context, session *MediaSession, event *MediaEvent) error {
-				if event.Type == EventTypePacket {
-					if packet, ok := event.Payload.(MediaPacket); ok {
-						handler := &sessionHandlerAdapter{session: session}
-						data := MediaData{
-							Type:      MediaDataTypePacket,
-							Packet:    packet,
-							CreatedAt: event.Timestamp,
-							Sender:    event.Metadata["sender"],
-						}
-						handle(handler, data)
-					}
+			func(ctx context.Context, session *MediaSession, packet MediaPacket) error {
+				handler := &sessionHandlerAdapter{session: session}
+				data := MediaData{
+					Type:      MediaDataTypePacket,
+					Packet:    packet,
+					CreatedAt: time.Now(),
 				}
+				handle(handler, data)
 				return nil
 			},
 		)
@@ -842,8 +823,9 @@ func (s *MediaSession) Serve() error {
 	s.EmitState(s, Begin)
 	log.With(zap.Any("sessionID", s.ID)).Info("session started")
 
-	// Main event loop is now handled by event bus workers
-	// Just wait for context cancellation
+	// Packet processing is synchronous in processIncoming goroutines.
+	// EventBus workers only handle low-frequency state/error events.
+	// Wait for context cancellation.
 	<-s.ctx.Done()
 
 	return nil
@@ -943,8 +925,27 @@ func (s *MediaSession) EmitState(sender any, state string, params ...any) {
 }
 
 func (s *MediaSession) EmitPacket(sender any, packet MediaPacket) {
-	if s.eventBus != nil {
-		s.eventBus.PublishPacket(s.ID, packet, sender)
+	s.processPacketDirect(sender, packet)
+}
+
+// processPacketDirect invokes the packet processor chain synchronously in the
+// caller's goroutine. This is the hot path: no *MediaEvent allocation, no
+// Metadata map, no EventBus channel, no worker dispatch. Processors are read
+// from a lock-free atomic snapshot.
+func (s *MediaSession) processPacketDirect(sender any, packet MediaPacket) {
+	if packet == nil {
+		return
+	}
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sinks := s.processorRegistry.GetPacketProcessors()
+	for _, sink := range sinks {
+		if err := sink.ProcessPacket(ctx, s, sender, packet); err != nil {
+			log.With(logger.WithFields(map[string]interface{}{"processor": fmt.Sprintf("%T", sink), "sessionID": s.ID, "error": err})...).Error("processor error")
+			s.CauseError(sink, err)
+		}
 	}
 }
 

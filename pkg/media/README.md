@@ -119,16 +119,3 @@ go test -run=^$ -bench=. -benchmem ./pkg/media/encoder/...
 5. **EventBus**：~1μs/op（含 channel send + worker dispatch），并发下无明显瓶颈。
 6. **Pool**：对象池比直接分配快 18×（95 ns vs 1694 ns），零内存分配路径。
 7. **并发扩展性**：4 核机器上 g=4 已接近最优，g=16/g=64 因上下文切换开销不再提升甚至略降。
-
-## 已移除的实现
-
-以下 Rust / C / CGO 实现已从 `pkg/media` 中移除：
-
-- `denoise/` — C 降噪（denoise.c/.h）+ Rust ledenoise cgo 绑定
-- `rnnoise/` — librnnoise C 库 cgo 绑定
-- `native/ledenoise/` — Rust 降噪库（Cargo.toml、.rs、build.sh）
-- `encoder/lecodec/` — Rust 编解码库（Cargo.toml、.rs、fuzz、benches）
-- `encoder/lecodec*.go` — Rust lecodec cgo 绑定 + stub + pipeline + errors
-- `aec/` — 纯 Go NLMS 回声消除（按需求移除）
-
-保留的 cgo：`encoder/opus.go`（hraban/opus 绑定 libopus）。

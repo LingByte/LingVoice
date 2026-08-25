@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 // ProcessorPriority defines processing priority
@@ -36,10 +37,26 @@ type Processor interface {
 	Process(ctx context.Context, session *MediaSession, event *MediaEvent) error
 }
 
+// PacketSink is implemented by processors that can handle packets directly
+// without MediaEvent wrapping. This is the hot-path interface: callers avoid
+// allocating *MediaEvent + Metadata map and avoid channel/worker dispatch.
+// Processors implementing this interface are cached in a lock-free snapshot
+// and invoked synchronously from the ingress goroutine.
+type PacketSink interface {
+	// ProcessPacket handles a single packet directly. sender is the originator
+	// (typically a *TransportManager) and may be nil.
+	ProcessPacket(ctx context.Context, session *MediaSession, sender any, packet MediaPacket) error
+}
+
 // ProcessorRegistry manages registered processors
 type ProcessorRegistry struct {
 	processors []Processor
 	mu         sync.RWMutex
+
+	// packetSinks is a lock-free snapshot of all registered processors that
+	// implement PacketSink, in priority order. Rebuilt on Register/Unregister.
+	// Read by the hot path (processPacketDirect) without any lock.
+	packetSinks atomic.Pointer[[]PacketSink]
 }
 
 // NewProcessorRegistry creates a new processor registry
@@ -52,7 +69,6 @@ func NewProcessorRegistry() *ProcessorRegistry {
 // Register adds a processor to the registry
 func (pr *ProcessorRegistry) Register(processor Processor) {
 	pr.mu.Lock()
-	defer pr.mu.Unlock()
 
 	// Insert in priority order (higher priority first)
 	inserted := false
@@ -66,12 +82,13 @@ func (pr *ProcessorRegistry) Register(processor Processor) {
 	if !inserted {
 		pr.processors = append(pr.processors, processor)
 	}
+	pr.mu.Unlock()
+	pr.rebuildPacketSinks()
 }
 
 // Unregister removes a processor
 func (pr *ProcessorRegistry) Unregister(name string) {
 	pr.mu.Lock()
-	defer pr.mu.Unlock()
 
 	for i, p := range pr.processors {
 		if p.Name() == name {
@@ -79,6 +96,31 @@ func (pr *ProcessorRegistry) Unregister(name string) {
 			break
 		}
 	}
+	pr.mu.Unlock()
+	pr.rebuildPacketSinks()
+}
+
+// rebuildPacketSinks creates a lock-free snapshot of all PacketSink processors
+// in priority order. Called only on Register/Unregister (rare).
+func (pr *ProcessorRegistry) rebuildPacketSinks() {
+	pr.mu.RLock()
+	sinks := make([]PacketSink, 0, len(pr.processors))
+	for _, p := range pr.processors {
+		if sink, ok := p.(PacketSink); ok {
+			sinks = append(sinks, sink)
+		}
+	}
+	pr.mu.RUnlock()
+	pr.packetSinks.Store(&sinks)
+}
+
+// GetPacketProcessors returns the cached lock-free snapshot of PacketSink
+// processors. Safe to call from the hot path without any lock.
+func (pr *ProcessorRegistry) GetPacketProcessors() []PacketSink {
+	if p := pr.packetSinks.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // GetProcessors returns all processors that can handle the event, in priority order
@@ -163,6 +205,22 @@ func (fp *FuncProcessor) Process(ctx context.Context, session *MediaSession, eve
 	return fp.processFunc(ctx, session, event)
 }
 
+// ProcessPacket implements PacketSink — direct hot-path invocation without
+// MediaEvent allocation. Only handles packet events; synthesizes a minimal
+// MediaData for the wrapped MediaHandlerFunc.
+func (fp *FuncProcessor) ProcessPacket(ctx context.Context, session *MediaSession, sender any, packet MediaPacket) error {
+	// Check condition if set (non-packet conditions skip direct path)
+	if fp.condition != nil && !fp.condition(ctx, &MediaEvent{Type: EventTypePacket}) {
+		return nil
+	}
+	return fp.processFunc(ctx, session, &MediaEvent{
+		Type:      EventTypePacket,
+		SessionID: session.ID,
+		Payload:   packet,
+		Metadata:  map[string]any{"sender": sender},
+	})
+}
+
 // PacketProcessor is a specialized processor for packet events
 type PacketProcessor struct {
 	*BaseProcessor
@@ -191,4 +249,10 @@ func (pp *PacketProcessor) Process(ctx context.Context, session *MediaSession, e
 		return pp.processPacket(ctx, session, packet)
 	}
 	return fmt.Errorf("event payload is not a MediaPacket")
+}
+
+// ProcessPacket implements PacketSink — direct hot-path invocation without
+// MediaEvent allocation. This is the primary path for packet processing.
+func (pp *PacketProcessor) ProcessPacket(ctx context.Context, session *MediaSession, sender any, packet MediaPacket) error {
+	return pp.processPacket(ctx, session, packet)
 }
