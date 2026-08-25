@@ -8,7 +8,7 @@ logs/
 *.test
 *.out
 webrtc-demo
-webrtc-rust-demo
+/webrtc-rust-demo
 
 # Rust
 rust-media/target/
