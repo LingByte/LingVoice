@@ -282,26 +282,59 @@ function appendChat(channel, message, cls) {
 async function startMedia() {
     try {
         const codec = document.getElementById('codecSelect').value;
-        const rate = parseInt(document.getElementById('rateSelect').value);
+        const targetRate = parseInt(document.getElementById('rateSelect').value);
 
         mediaStream = await navigator.mediaDevices.getUserMedia({
-            audio: { sampleRate: rate, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+            audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
             video: false
         });
 
-        audioCtx = new AudioContext({ sampleRate: rate });
+        // 用默认采样率创建 AudioContext（浏览器通常用 48kHz）
+        // 不强制 sampleRate，因为浏览器经常忽略该参数
+        audioCtx = new AudioContext();
+        const actualRate = audioCtx.sampleRate;
+        log(`AudioContext 实际采样率: ${actualRate}Hz, 目标: ${targetRate}Hz`, 'info');
+
         const source = audioCtx.createMediaStreamSource(mediaStream);
 
-        // ScriptProcessorNode: bufferSize 决定每帧采样数
-        // 16kHz → 320 samples = 20ms; 48kHz → 960 samples = 20ms; 8kHz → 160 samples = 20ms
-        const bufferSize = rate / 50; // 20ms
+        // ScriptProcessorNode bufferSize 必须是 2 的幂
+        // 按实际采样率计算 20ms 的采样数
+        const actualTargetSamples = Math.round(actualRate / 50); // 20ms
+        let bufferSize = 256;
+        while (bufferSize < actualTargetSamples && bufferSize < 16384) {
+            bufferSize *= 2;
+        }
         scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+
+        // 累积缓冲区：存实际采样率的样本，凑够 20ms 后重采样到目标采样率再发送
+        let pcmBuffer = [];
+        const resampleRatio = actualRate / targetRate;
 
         scriptNode.onaudioprocess = (e) => {
             if (!isStreaming) return;
             const input = e.inputBuffer.getChannelData(0);
-            sendAudioFrame(input, codec, rate);
             updateVU(input);
+
+            // 累积实际采样率的样本
+            for (let i = 0; i < input.length; i++) {
+                pcmBuffer.push(input[i]);
+            }
+            // 每凑够 actualTargetSamples 个样本（20ms @ actualRate），
+            // 重采样到 targetRate 后发送
+            while (pcmBuffer.length >= actualTargetSamples) {
+                const rawFrame = pcmBuffer.splice(0, actualTargetSamples);
+                // 线性重采样到目标采样率
+                const targetSamples = Math.round(actualTargetSamples / resampleRatio);
+                const resampled = new Float32Array(targetSamples);
+                for (let i = 0; i < targetSamples; i++) {
+                    const srcIdx = i * resampleRatio;
+                    const idx0 = Math.floor(srcIdx);
+                    const idx1 = Math.min(idx0 + 1, rawFrame.length - 1);
+                    const frac = srcIdx - idx0;
+                    resampled[i] = rawFrame[idx0] * (1 - frac) + rawFrame[idx1] * frac;
+                }
+                sendAudioFrame(resampled, codec, targetRate);
+            }
         };
 
         source.connect(scriptNode);
@@ -368,7 +401,10 @@ function handleBinaryFrame(buf) {
     const codecId = view.getUint8(1);
     const seq = view.getUint16(2);
     const timestamp = view.getUint32(4);
-    const payload = data.slice(FRAME_HEADER_LEN);
+    // 复制 payload 到独立的 ArrayBuffer，避免 view 偏移问题
+    const payloadLen = data.length - FRAME_HEADER_LEN;
+    const payload = new Uint8Array(payloadLen);
+    payload.set(data.subarray(FRAME_HEADER_LEN));
 
     if (frameType === FRAME_AUDIO) {
         playAudioFrame(payload, codecId);
@@ -380,18 +416,28 @@ function handleBinaryFrame(buf) {
 
 // ─── 音频播放 ─────────────────────────────────────────────
 let playCtx = null;
+// 用一个队列 + 定时器来调度播放，避免帧间间隙导致卡顿
+let playQueue = [];
+let playNextTime = 0;
 
 function playAudioFrame(payload, codecId) {
     if (!playCtx) {
-        playCtx = new AudioContext({ sampleRate: parseInt(document.getElementById('rateSelect').value) });
+        const rate = parseInt(document.getElementById('rateSelect').value);
+        playCtx = new AudioContext({ sampleRate: rate });
+        playNextTime = playCtx.currentTime;
+    }
+
+    // Chrome 自动暂停 AudioContext，需要 resume
+    if (playCtx.state === 'suspended') {
+        playCtx.resume();
     }
 
     // 当前只支持 PCM16 播放
     if (codecId !== CODEC.pcm16) {
-        // Opus/PCMU/PCMA 需要解码器，这里暂跳过
         return;
     }
 
+    // payload → PCM16 → Float32
     const pcm16 = new Int16Array(payload.buffer, payload.byteOffset, payload.length / 2);
     const float32 = new Float32Array(pcm16.length);
     for (let i = 0; i < pcm16.length; i++) {
@@ -404,7 +450,19 @@ function playAudioFrame(payload, codecId) {
     const src = playCtx.createBufferSource();
     src.buffer = buffer;
     src.connect(playCtx.destination);
-    src.start();
+
+    // 按时间戳顺序调度，避免重叠和间隙
+    const now = playCtx.currentTime;
+    if (playNextTime < now) {
+        playNextTime = now;
+    }
+    try {
+        src.start(playNextTime);
+    } catch (e) {
+        // 如果时间戳已过期，立即播放
+        src.start();
+    }
+    playNextTime += buffer.duration;
 }
 
 // ─── VU 仪表 ──────────────────────────────────────────────

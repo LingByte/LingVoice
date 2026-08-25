@@ -22,8 +22,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -162,7 +164,28 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 	return nil
 }
 
+// frameCounter 用于周期性日志（避免每帧都打日志）
+var frameCounter sync.Map // sessionID → *atomic.Uint64
+
 func (h *rustHandler) OnMediaFrame(sessionID string, trackID common.TrackID, frame common.MediaFrame) error {
+	// 周期性日志：每 100 帧打一次
+	var counter *atomic.Uint64
+	if v, ok := frameCounter.Load(sessionID); ok {
+		counter = v.(*atomic.Uint64)
+	} else {
+		counter = &atomic.Uint64{}
+		frameCounter.Store(sessionID, counter)
+	}
+	n := counter.Add(1)
+	if n%100 == 1 {
+		h.log.Info("<< 媒体帧",
+			zap.String("session", sessionID),
+			zap.String("track", string(trackID)),
+			zap.Uint64("frameNum", n),
+			zap.Int("payloadLen", len(frame.Payload)),
+			zap.String("codec", frame.Codec.String()))
+	}
+
 	// 将音频帧推送到 Rust 媒体节点
 	if err := h.bridge.PushRtpPacket(sessionID, trackID, frame); err != nil {
 		h.log.Debug("push rtp packet failed",
@@ -214,7 +237,16 @@ func (h *rustHandler) startPullLoop(sessionID string, pubTrackID common.TrackID,
 	ctx, cancel := context.WithCancel(context.Background())
 	ts.pullCancel = cancel
 
+	var pullCount atomic.Uint64
 	err := h.bridge.StartPullRtp(ctx, sessionID, pubTrackID, ts.kind, ts.codec, func(frame common.MediaFrame) error {
+		n := pullCount.Add(1)
+		if n%100 == 1 {
+			h.log.Info(">> 拉取到媒体帧",
+				zap.String("session", sessionID),
+				zap.String("track", string(pubTrackID)),
+				zap.Uint64("frameNum", n),
+				zap.Int("payloadLen", len(frame.Payload)))
+		}
 		// 从 Rust 收到其他 participant 的媒体，写到 WS 客户端
 		return sess.SendMediaFrame(pubTrackID, frame)
 	})
@@ -259,11 +291,21 @@ func (h *rustHandler) cleanupSession(sessionID string) {
 
 func main() {
 	var (
-		addr     = flag.String("addr", ":8082", "WebSocket 服务监听地址")
-		path     = flag.String("path", "/ws/voice", "WebSocket 路径")
-		rustAddr = flag.String("rust", "localhost:50051", "Rust 媒体节点 gRPC 地址")
+		addr      = flag.String("addr", ":8082", "WebSocket 服务监听地址")
+		path      = flag.String("path", "/ws/voice", "WebSocket 路径")
+		rustAddr  = flag.String("rust", "localhost:50051", "Rust 媒体节点 gRPC 地址")
+		staticDir = flag.String("static", "cmd/ws-rust-demo/static", "静态文件目录")
 	)
 	flag.Parse()
+
+	_ = logger.Init(&logger.LogConfig{
+		Level:    "debug",
+		Filename: "logs/ws-rust-demo.log",
+		MaxSize:  100,
+		MaxAge:   30,
+		Daily:    true,
+	}, "dev")
+	defer logger.Sync()
 
 	log := logger.Lg
 
@@ -293,10 +335,10 @@ func main() {
 	mux.Handle(*path, srv.Handler())
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
-			http.ServeFile(w, r, "./static/index.html")
+			http.ServeFile(w, r, filepath.Join(*staticDir, "index.html"))
 			return
 		}
-		http.FileServer(http.Dir("./static")).ServeHTTP(w, r)
+		http.FileServer(http.Dir(*staticDir)).ServeHTTP(w, r)
 	})
 
 	// 健康检查

@@ -118,8 +118,15 @@ func NegotiateAudio(
 			continue
 		}
 
+		// Map protocol-level codec names to encoder registry names.
+		// "pcm16" is the protocol-layer name; the registry registers as "pcm".
+		registryName := prefLower
+		if registryName == "pcm16" {
+			registryName = "pcm"
+		}
+
 		// Check actual support in the encoder registry
-		if !encoder.HasCodec(prefLower) {
+		if !encoder.HasCodec(registryName) {
 			continue
 		}
 
