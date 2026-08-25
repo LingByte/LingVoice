@@ -249,3 +249,388 @@ impl SessionManager {
         self.sessions.iter().map(|s| s.id.clone()).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lm_core::{CodecType, EndpointId, SessionId, TrackId, TrackKind};
+
+    fn make_session_id(n: u32) -> SessionId {
+        SessionId(format!("sess-{}", n))
+    }
+    fn make_track_id(n: u32) -> TrackId {
+        TrackId(format!("track-{}", n))
+    }
+    fn make_endpoint_id(n: u32) -> EndpointId {
+        EndpointId(format!("ep-{}", n))
+    }
+    fn add_audio_track(sm: &SessionManager, sid: &SessionId, tid: &str) {
+        let session = sm.get_session(sid).unwrap();
+        let track = TrackState::new(
+            TrackId(tid.to_string()),
+            EndpointId("ep".to_string()),
+            sid.clone(),
+            CodecType::Opus,
+            TrackKind::Audio,
+            1000,
+        );
+        session
+            .tracks
+            .insert(TrackId(tid.to_string()), Arc::new(track));
+    }
+    fn add_video_track(sm: &SessionManager, sid: &SessionId, tid: &str) {
+        let session = sm.get_session(sid).unwrap();
+        let track = TrackState::new(
+            TrackId(tid.to_string()),
+            EndpointId("ep".to_string()),
+            sid.clone(),
+            CodecType::Vp8,
+            TrackKind::Video,
+            2000,
+        );
+        session
+            .tracks
+            .insert(TrackId(tid.to_string()), Arc::new(track));
+    }
+
+    // ========================================================================
+    // 1. SessionManager creation
+    // ========================================================================
+
+    #[test]
+    fn test_create_session() {
+        let sm = SessionManager::new();
+        let sid = make_session_id(1);
+        let session = sm
+            .create_session(sid.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        assert_eq!(session.id, sid);
+        assert!(sm.get_session(&sid).is_some());
+        assert_eq!(sm.session_count(), 1);
+    }
+
+    #[test]
+    fn test_create_duplicate_session() {
+        let sm = SessionManager::new();
+        let sid = make_session_id(1);
+        sm.create_session(sid.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        let result = sm.create_session(sid.clone(), Some("room-1".to_string()), None);
+        assert!(result.is_err());
+        assert_eq!(sm.session_count(), 1);
+    }
+
+    #[test]
+    fn test_create_session_no_room() {
+        let sm = SessionManager::new();
+        let sid = make_session_id(1);
+        let session = sm.create_session(sid.clone(), None, None).unwrap();
+        assert!(session.room_id.is_none());
+        assert_eq!(sm.session_count(), 1);
+        assert_eq!(sm.room_count(), 0);
+    }
+
+    // ========================================================================
+    // 2. Session destruction
+    // ========================================================================
+
+    #[test]
+    fn test_destroy_session() {
+        let sm = SessionManager::new();
+        let sid = make_session_id(1);
+        sm.create_session(sid.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        assert_eq!(sm.session_count(), 1);
+        sm.destroy_session(&sid).unwrap();
+        assert_eq!(sm.session_count(), 0);
+        assert!(sm.get_session(&sid).is_none());
+    }
+
+    #[test]
+    fn test_destroy_nonexistent() {
+        let sm = SessionManager::new();
+        let sid = make_session_id(1);
+        let result = sm.destroy_session(&sid);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_destroy_removes_from_room() {
+        let sm = SessionManager::new();
+        let sid1 = make_session_id(1);
+        let sid2 = make_session_id(2);
+        sm.create_session(sid1.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        sm.create_session(sid2.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        // Add audio tracks so peer lookup is meaningful
+        add_audio_track(&sm, &sid1, "a1");
+        add_audio_track(&sm, &sid2, "a2");
+
+        // Before destroy: sid1 sees 1 peer audio track
+        let peers = sm.get_room_peer_tracks_by_kind(&sid1, TrackKind::Audio);
+        assert_eq!(peers.len(), 1);
+
+        // Destroy sid2
+        sm.destroy_session(&sid2).unwrap();
+
+        // After destroy: sid1 sees 0 peer audio tracks, but room still exists
+        let peers_after = sm.get_room_peer_tracks_by_kind(&sid1, TrackKind::Audio);
+        assert_eq!(peers_after.len(), 0);
+        // room still has sid1
+        assert_eq!(sm.room_count(), 1);
+        assert_eq!(sm.session_count(), 1);
+    }
+
+    #[test]
+    fn test_destroy_empties_room() {
+        let sm = SessionManager::new();
+        let sid = make_session_id(1);
+        sm.create_session(sid.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        assert_eq!(sm.room_count(), 1);
+        sm.destroy_session(&sid).unwrap();
+        assert_eq!(sm.room_count(), 0);
+        assert_eq!(sm.session_count(), 0);
+    }
+
+    // ========================================================================
+    // 3. Room peer track lookup (kind-aware routing)
+    // ========================================================================
+
+    #[test]
+    fn test_get_room_peer_tracks_by_kind_audio_only() {
+        let sm = SessionManager::new();
+        let sid1 = make_session_id(1);
+        let sid2 = make_session_id(2);
+        sm.create_session(sid1.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        sm.create_session(sid2.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        add_audio_track(&sm, &sid1, "a1");
+        add_audio_track(&sm, &sid2, "a2");
+
+        let peers = sm.get_room_peer_tracks_by_kind(&sid1, TrackKind::Audio);
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].kind, TrackKind::Audio);
+    }
+
+    #[test]
+    fn test_get_room_peer_tracks_by_kind_video_only() {
+        let sm = SessionManager::new();
+        let sid1 = make_session_id(1);
+        let sid2 = make_session_id(2);
+        sm.create_session(sid1.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        sm.create_session(sid2.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        add_video_track(&sm, &sid1, "v1");
+        add_video_track(&sm, &sid2, "v2");
+
+        let peers = sm.get_room_peer_tracks_by_kind(&sid1, TrackKind::Video);
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].kind, TrackKind::Video);
+    }
+
+    #[test]
+    fn test_get_room_peer_tracks_by_kind_mixed() {
+        let sm = SessionManager::new();
+        let sid1 = make_session_id(1);
+        let sid2 = make_session_id(2);
+        sm.create_session(sid1.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        sm.create_session(sid2.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        add_audio_track(&sm, &sid1, "a1");
+        add_video_track(&sm, &sid1, "v1");
+        add_audio_track(&sm, &sid2, "a2");
+        add_video_track(&sm, &sid2, "v2");
+
+        let audio_peers = sm.get_room_peer_tracks_by_kind(&sid1, TrackKind::Audio);
+        assert_eq!(audio_peers.len(), 1);
+        assert_eq!(audio_peers[0].kind, TrackKind::Audio);
+
+        let video_peers = sm.get_room_peer_tracks_by_kind(&sid1, TrackKind::Video);
+        assert_eq!(video_peers.len(), 1);
+        assert_eq!(video_peers[0].kind, TrackKind::Video);
+    }
+
+    #[test]
+    fn test_get_room_peer_tracks_excludes_self() {
+        let sm = SessionManager::new();
+        let sid1 = make_session_id(1);
+        let sid2 = make_session_id(2);
+        sm.create_session(sid1.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        sm.create_session(sid2.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        add_audio_track(&sm, &sid1, "a1");
+        add_audio_track(&sm, &sid2, "a2");
+
+        let peers = sm.get_room_peer_tracks_by_kind(&sid1, TrackKind::Audio);
+        // Should only contain sid2's track, not sid1's own
+        assert_eq!(peers.len(), 1);
+        for p in &peers {
+            assert_ne!(p.session_id, sid1);
+        }
+    }
+
+    #[test]
+    fn test_get_room_peer_tracks_no_room() {
+        let sm = SessionManager::new();
+        let sid = make_session_id(1);
+        sm.create_session(sid.clone(), None, None).unwrap();
+        add_audio_track(&sm, &sid, "a1");
+
+        let peers = sm.get_room_peer_tracks_by_kind(&sid, TrackKind::Audio);
+        assert!(peers.is_empty());
+    }
+
+    #[test]
+    fn test_get_room_peer_tracks_isolated_rooms() {
+        let sm = SessionManager::new();
+        let sid1 = make_session_id(1);
+        let sid2 = make_session_id(2);
+        let sid3 = make_session_id(3);
+        sm.create_session(sid1.clone(), Some("room-A".to_string()), None)
+            .unwrap();
+        sm.create_session(sid2.clone(), Some("room-A".to_string()), None)
+            .unwrap();
+        sm.create_session(sid3.clone(), Some("room-B".to_string()), None)
+            .unwrap();
+        add_audio_track(&sm, &sid1, "a1");
+        add_audio_track(&sm, &sid2, "a2");
+        add_audio_track(&sm, &sid3, "a3");
+
+        // sid1 (room-A) should only see sid2, not sid3
+        let peers = sm.get_room_peer_tracks_by_kind(&sid1, TrackKind::Audio);
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].session_id, sid2);
+
+        // sid3 (room-B) should see no peers
+        let peers_b = sm.get_room_peer_tracks_by_kind(&sid3, TrackKind::Audio);
+        assert!(peers_b.is_empty());
+    }
+
+    #[test]
+    fn test_get_room_peer_tracks_kind_filter() {
+        let sm = SessionManager::new();
+        let sid1 = make_session_id(1);
+        let sid2 = make_session_id(2);
+        sm.create_session(sid1.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        sm.create_session(sid2.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        // sid1 has only audio, sid2 has only video
+        add_audio_track(&sm, &sid1, "a1");
+        add_video_track(&sm, &sid2, "v2");
+
+        // sid1 looks for peer audio → sid2 has no audio → 0
+        let audio_peers = sm.get_room_peer_tracks_by_kind(&sid1, TrackKind::Audio);
+        assert_eq!(audio_peers.len(), 0);
+
+        // sid2 looks for peer video → sid1 has no video → 0
+        let video_peers = sm.get_room_peer_tracks_by_kind(&sid2, TrackKind::Video);
+        assert_eq!(video_peers.len(), 0);
+    }
+
+    // ========================================================================
+    // 4. TrackState broadcast
+    // ========================================================================
+
+    #[test]
+    fn test_track_state_broadcast() {
+        let track = TrackState::new(
+            make_track_id(1),
+            make_endpoint_id(1),
+            make_session_id(1),
+            CodecType::Opus,
+            TrackKind::Audio,
+            1000,
+        );
+        let mut rx = track.subscribe();
+        let packet = RtpPacketOut {
+            ssrc: 1000,
+            payload_type: 111,
+            sequence_number: 1,
+            timestamp: 160,
+            marker: true,
+            payload: bytes::Bytes::from_static(b"hello"),
+            rid: String::new(),
+            clock_rate: 48000,
+        };
+        track.rtp_broadcast.send(packet.clone()).unwrap();
+        let received = rx.try_recv();
+        assert!(received.is_ok());
+        let got = received.unwrap();
+        assert_eq!(got.ssrc, 1000);
+        assert_eq!(got.payload, bytes::Bytes::from_static(b"hello"));
+    }
+
+    #[test]
+    fn test_track_state_multiple_subscribers() {
+        let track = TrackState::new(
+            make_track_id(1),
+            make_endpoint_id(1),
+            make_session_id(1),
+            CodecType::Vp8,
+            TrackKind::Video,
+            2000,
+        );
+        let mut rx1 = track.subscribe();
+        let mut rx2 = track.subscribe();
+        let packet = RtpPacketOut {
+            ssrc: 2000,
+            payload_type: 96,
+            sequence_number: 10,
+            timestamp: 3000,
+            marker: false,
+            payload: bytes::Bytes::from_static(b"video"),
+            rid: String::new(),
+            clock_rate: 90000,
+        };
+        track.rtp_broadcast.send(packet.clone()).unwrap();
+        let r1 = rx1.try_recv();
+        let r2 = rx2.try_recv();
+        assert!(r1.is_ok());
+        assert!(r2.is_ok());
+        assert_eq!(r1.unwrap().ssrc, 2000);
+        assert_eq!(r2.unwrap().ssrc, 2000);
+    }
+
+    // ========================================================================
+    // 5. Edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_session_ids() {
+        let sm = SessionManager::new();
+        let sid1 = make_session_id(1);
+        let sid2 = make_session_id(2);
+        let sid3 = make_session_id(3);
+        sm.create_session(sid1.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        sm.create_session(sid2.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        sm.create_session(sid3.clone(), Some("room-2".to_string()), None)
+            .unwrap();
+
+        let ids = sm.session_ids();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains(&sid1));
+        assert!(ids.contains(&sid2));
+        assert!(ids.contains(&sid3));
+    }
+
+    #[test]
+    fn test_room_count() {
+        let sm = SessionManager::new();
+        let sid1 = make_session_id(1);
+        let sid2 = make_session_id(2);
+        sm.create_session(sid1.clone(), Some("room-1".to_string()), None)
+            .unwrap();
+        sm.create_session(sid2.clone(), Some("room-2".to_string()), None)
+            .unwrap();
+        assert_eq!(sm.room_count(), 2);
+    }
+}
