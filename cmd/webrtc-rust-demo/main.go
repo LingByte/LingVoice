@@ -68,6 +68,8 @@ type sessionState struct {
 	created   bool
 	// per-track push/pull 管理（支持音频+视频多 track）
 	tracks map[common.TrackID]*trackState
+	// 自己的 publisher SSRC 集合（用于排除自己，避免自回声）
+	mySSRCs sync.Map // map[uint32]struct{}
 }
 
 type trackState struct {
@@ -152,7 +154,7 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 		}
 		h.mu.Unlock()
 
-		joinMsg := fmt.Sprintf(`{"type":"participant_joined","session":"%s"}`, event.SessionID)
+		joinMsg := fmt.Sprintf(`{"type":"participant_joined","session":"%s","request_keyframe":true}`, event.SessionID)
 		for _, peerID := range existingPeers {
 			if sess, ok := h.srv.GetSession(peerID); ok {
 				_ = sess.SendData("reliable", []byte(joinMsg))
@@ -175,6 +177,15 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 
 			ss := h.getOrCreateSession(event.SessionID)
 			ts := h.getOrCreateTrack(ss, event.Track.ID, kind, event.Track.Codec)
+
+			// 记录自己的 SSRC，pull 时排除
+			if event.Track.SSRC != 0 {
+				ss.mySSRCs.Store(event.Track.SSRC, struct{}{})
+				h.log.Info(">> 记录自己的 SSRC",
+					zap.String("session", event.SessionID),
+					zap.Uint32("ssrc", event.Track.SSRC),
+					zap.String("kind", kind.String()))
+			}
 
 			h.log.Info(">> 发布者轨道就绪",
 				zap.String("session", event.SessionID),
@@ -337,6 +348,11 @@ func (h *rustHandler) startPullLoop(sessionID string, pubTrackID common.TrackID,
 			return nil
 		}
 
+		// 排除自己的 SSRC（避免自回声）
+		if _, isMine := ss.mySSRCs.Load(ssrc); isMine {
+			return nil
+		}
+
 		// 查找或创建该 SSRC 对应的 subscriber track
 		ts := ss.tracks[pubTrackID]
 		if ts == nil {
@@ -378,12 +394,37 @@ func (h *rustHandler) startPullLoop(sessionID string, pubTrackID common.TrackID,
 			peerJoinMsg := fmt.Sprintf(`{"type":"track_added","ssrc":%d,"kind":"%s","subTrackID":"%s"}`, ssrc, kind.String(), string(newSubTrackID))
 			_ = sess.SendData("reliable", []byte(peerJoinMsg))
 
-			return sess.SendMediaFrame(newSubTrackID, frame)
+			// 如果是视频 track，向源参与者请求关键帧
+			if kind == common.TrackVideo {
+				h.mu.Lock()
+				for peerSID, pss := range h.sessions {
+					if peerSID == sessionID || pss.roomID != ss.roomID {
+						continue
+					}
+					// 检查这个 peer 是否有该 SSRC
+					if _, has := pss.mySSRCs.Load(ssrc); has {
+						if peerSess, ok := h.srv.GetSession(peerSID); ok {
+							_ = peerSess.RequestKeyFrame(ssrc)
+							h.log.Info(">> 请求关键帧",
+								zap.String("from", peerSID),
+								zap.Uint32("ssrc", ssrc))
+						}
+						break
+					}
+				}
+				h.mu.Unlock()
+			}
+		} else {
+			ts.subTracksMu.Unlock()
 		}
-		ts.subTracksMu.Unlock()
+
+		// 重写 SSRC 为固定值，让浏览器认为这是单一来源
+		// 每个 subscriber track 用自己的 SSRC，避免浏览器混淆不同来源的包
+		rewrittenFrame := frame
+		rewrittenFrame.SSRC = ssrc // 保持原始 SSRC，因为每个 track 只收一个 SSRC 的包
 
 		// 写到对应的 subscriber track
-		return sess.SendMediaFrame(subTrackID, frame)
+		return sess.SendMediaFrame(subTrackID, rewrittenFrame)
 	})
 	if err != nil {
 		h.log.Error("StartPullRtp failed",

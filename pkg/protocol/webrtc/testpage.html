@@ -334,6 +334,17 @@ function setupDataChannel(dc) {
         log('新参与者加入: ' + sysMsg.session, 'success');
         participants.add(sysMsg.session);
         updateParticipantsUI();
+        // 请求关键帧：通过重新 applyConstraints 触发
+        if (sysMsg.request_keyframe && localStream) {
+          localStream.getVideoTracks().forEach(track => {
+            // 浏览器重新生成关键帧
+            if (track.getConstraints) {
+              const constraints = track.getConstraints();
+              track.applyConstraints({...constraints, advanced: [{frameRate: 30}]}).catch(() => {});
+            }
+          });
+          log('已请求关键帧（新参与者加入）', 'info');
+        }
       }
     } catch {
       // 不是 JSON，按普通消息处理

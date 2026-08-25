@@ -163,6 +163,12 @@ func (s *Session) AddTrack(cfg common.TrackConfig) (common.TrackID, error) {
 	return s.sub.addTrack(cfg)
 }
 
+// RequestKeyFrame 请求远端发送关键帧（通过 publisher PC 发 PLI）
+// ssrc 是远端 publisher track 的 SSRC
+func (s *Session) RequestKeyFrame(ssrc uint32) error {
+	return sendPLI(s.pub.pc, ssrc)
+}
+
 func (s *Session) RemoveTrack(trackID common.TrackID) error {
 	return s.sub.removeTrack(trackID)
 }
