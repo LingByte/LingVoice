@@ -1,0 +1,19 @@
+[package]
+name = "lm-pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lm-core = { path = "../lm-core" }
+lm-codecs = { path = "../lm-codecs" }
+lm-transport = { path = "../lm-transport" }
+lm-router = { path = "../lm-router" }
+audio-codec.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
