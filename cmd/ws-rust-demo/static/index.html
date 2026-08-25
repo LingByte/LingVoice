@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LingVoice WebSocket + Rust Demo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #1a1a2e; color: #e0e0e0; padding: 20px;
+        }
+        h1 { color: #00d4ff; margin-bottom: 16px; font-size: 22px; }
+        h2 { color: #00d4ff; margin: 16px 0 8px; font-size: 16px; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .panel {
+            background: #16213e; border: 1px solid #0f3460;
+            border-radius: 8px; padding: 16px; margin-bottom: 12px;
+        }
+        .status {
+            display: inline-block; padding: 2px 10px; border-radius: 12px;
+            font-size: 12px; font-weight: bold;
+        }
+        .status.connected { background: #0f3460; color: #00ff88; }
+        .status.disconnected { background: #333; color: #888; }
+        .status.negotiating { background: #3a2a00; color: #ffaa00; }
+        .status.streaming { background: #0a4a0a; color: #00ff44; }
+        button {
+            background: #0f3460; color: #e0e0e0; border: 1px solid #1a4a8a;
+            padding: 8px 20px; border-radius: 4px; cursor: pointer; font-size: 14px;
+        }
+        button:hover { background: #1a4a8a; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        button.danger { background: #4a0f0f; border-color: #8a1a1a; }
+        button.danger:hover { background: #6a1a1a; }
+        input[type="text"] {
+            background: #0d1b2a; color: #e0e0e0; border: 1px solid #0f3460;
+            padding: 8px 12px; border-radius: 4px; width: 100%; font-size: 14px;
+        }
+        .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+        .row button { white-space: nowrap; }
+        .log {
+            background: #0d1b2a; border: 1px solid #0f3460; border-radius: 4px;
+            padding: 10px; height: 200px; overflow-y: auto;
+            font-family: "SF Mono", "Fira Code", monospace; font-size: 12px;
+            line-height: 1.6;
+        }
+        .log .info { color: #88ccff; }
+        .log .error { color: #ff6666; }
+        .log .success { color: #00ff88; }
+        .log .recv { color: #ffaa00; }
+        .log .send { color: #00cc88; }
+        .log .chat { color: #ff66ff; }
+        .stats { display: flex; gap: 20px; font-size: 13px; }
+        .stats span { color: #88ccff; }
+        .stats b { color: #00d4ff; }
+        .vu-meter {
+            width: 200px; height: 12px; background: #0d1b2a;
+            border: 1px solid #0f3460; border-radius: 6px; overflow: hidden;
+        }
+        .vu-bar {
+            height: 100%; width: 0%; background: linear-gradient(90deg, #00ff00, #ffff00, #ff0000);
+            transition: width 0.05s;
+        }
+        .chat-log {
+            background: #0d1b2a; border: 1px solid #0f3460; border-radius: 4px;
+            padding: 10px; height: 150px; overflow-y: auto;
+            font-size: 13px; line-height: 1.6;
+        }
+        .chat-log .me { color: #00cc88; }
+        .chat-log .other { color: #ffaa00; }
+        .chat-log .echo { color: #888; }
+        .label { font-size: 12px; color: #888; margin-bottom: 4px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>LingVoice WebSocket + Rust Media Demo</h1>
+
+    <div class="panel">
+        <div class="row">
+            <span>连接状态:</span>
+            <span id="status" class="status disconnected">未连接</span>
+            <span style="flex:1"></span>
+            <span class="label">Room: <b>ws-room</b></span>
+        </div>
+        <div class="row">
+            <button id="btnConnect" onclick="connect()">连接</button>
+            <button id="btnStart" onclick="startMedia()" disabled>开始通话</button>
+            <button id="btnStop" onclick="stopMedia()" class="danger" disabled>停止</button>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>音频</h2>
+        <div class="row">
+            <span class="label">编解码:</span>
+            <select id="codecSelect">
+                <option value="pcm16">PCM16 (16-bit raw)</option>
+                <option value="opus">Opus</option>
+                <option value="pcmu">PCMU (G.711 μ-law)</option>
+                <option value="pcma">PCMA (G.711 A-law)</option>
+            </select>
+            <span class="label">采样率:</span>
+            <select id="rateSelect">
+                <option value="16000">16 kHz</option>
+                <option value="48000">48 kHz</option>
+                <option value="8000">8 kHz</option>
+            </select>
+        </div>
+        <div class="row">
+            <span class="label">输入电平:</span>
+            <div class="vu-meter"><div id="vuBar" class="vu-bar"></div></div>
+        </div>
+        <div class="stats">
+            <span>发送帧: <b id="sentFrames">0</b></span>
+            <span>接收帧: <b id="recvFrames">0</b></span>
+            <span>发送字节: <b id="sentBytes">0</b></span>
+            <span>接收字节: <b id="recvBytes">0</b></span>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>文本消息</h2>
+        <div class="chat-log" id="chatLog"></div>
+        <div class="row" style="margin-top:8px">
+            <input type="text" id="chatInput" placeholder="输入文本消息..." onkeydown="if(event.key==='Enter')sendChat()">
+            <button onclick="sendChat()">发送</button>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>日志</h2>
+        <div class="log" id="log"></div>
+    </div>
+</div>
+
+<script>
+// ─── 全局状态 ─────────────────────────────────────────────
+let ws = null;
+let audioCtx = null;
+let mediaStream = null;
+let scriptNode = null;
+let isStreaming = false;
+let sendSeq = 0;
+let recvSeq = 0;
+let stats = { sentFrames: 0, recvFrames: 0, sentBytes: 0, recvBytes: 0 };
+
+// ─── 编解码常量（与 Go 侧 common.CodecType 对齐）─────────
+const CODEC = { opus: 0x01, pcmu: 0x02, pcma: 0x03, pcm16: 0x04, h264: 0x05, vp8: 0x06 };
+const FRAME_AUDIO = 0x01, FRAME_VIDEO = 0x02;
+const FRAME_HEADER_LEN = 8;
+
+// ─── 日志 ─────────────────────────────────────────────────
+function log(msg, cls = 'info') {
+    const el = document.getElementById('log');
+    const time = new Date().toLocaleTimeString();
+    el.innerHTML += `<div class="${cls}">[${time}] ${msg}</div>`;
+    el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(text, cls) {
+    const el = document.getElementById('status');
+    el.textContent = text;
+    el.className = 'status ' + cls;
+}
+
+// ─── WebSocket 连接 ───────────────────────────────────────
+function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${proto}//${location.host}/ws/voice`;
+    log(`连接 ${url} ...`);
+    setStatus('连接中...', 'negotiating');
+
+    ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+        log('WebSocket 已连接', 'success');
+        setStatus('已连接', 'connected');
+        sendOffer();
+    };
+
+    ws.onmessage = (ev) => {
+        if (ev.data instanceof ArrayBuffer) {
+            handleBinaryFrame(ev.data);
+        } else {
+            handleTextMessage(ev.data);
+        }
+    };
+
+    ws.onclose = () => {
+        log('WebSocket 已断开', 'error');
+        setStatus('未连接', 'disconnected');
+        document.getElementById('btnConnect').disabled = false;
+        document.getElementById('btnStart').disabled = true;
+        document.getElementById('btnStop').disabled = true;
+        stopMedia();
+    };
+
+    ws.onerror = (err) => {
+        log('WebSocket 错误', 'error');
+    };
+
+    document.getElementById('btnConnect').disabled = true;
+}
+
+function sendOffer() {
+    const codec = document.getElementById('codecSelect').value;
+    const rate = parseInt(document.getElementById('rateSelect').value);
+    const offer = {
+        type: 'offer',
+        version: 1,
+        media: {
+            audio: {
+                codecs: [codec],
+                sampleRates: [rate],
+                channels: [1]
+            }
+        }
+    };
+    ws.send(JSON.stringify(offer));
+    log(`发送 offer: codec=${codec}, rate=${rate}`, 'send');
+}
+
+// ─── 文本消息处理 ─────────────────────────────────────────
+function handleTextMessage(data) {
+    let msg;
+    try { msg = JSON.parse(data); } catch (e) {
+        log(`无效 JSON: ${data}`, 'error');
+        return;
+    }
+
+    switch (msg.type) {
+        case 'answer':
+            log(`收到 answer: session=${msg.session}, codec=${msg.media?.audio?.codec}, rate=${msg.media?.audio?.sampleRate}`, 'success');
+            setStatus('已协商', 'connected');
+            document.getElementById('btnStart').disabled = false;
+            break;
+        case 'ready':
+            log('服务端 ready，可以开始发送媒体', 'success');
+            setStatus('通话中', 'streaming');
+            break;
+        case 'chat':
+            appendChat(msg.channel || 'chat', msg.message, msg.message?.startsWith('[echo]') ? 'echo' : 'other');
+            log(`收到文本 [${msg.channel}]: ${msg.message}`, 'chat');
+            break;
+        case 'error':
+            log(`错误: [${msg.code}] ${msg.message}`, 'error');
+            break;
+        case 'stop':
+            log('服务端停止', 'info');
+            stopMedia();
+            break;
+        default:
+            log(`未知消息: ${data}`, 'info');
+    }
+}
+
+function sendChat() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        log('未连接', 'error');
+        return;
+    }
+    const input = document.getElementById('chatInput');
+    const text = input.value.trim();
+    if (!text) return;
+    ws.send(JSON.stringify({ type: 'chat', channel: 'chat', message: text }));
+    appendChat('chat', text, 'me');
+    log(`发送文本: ${text}`, 'send');
+    input.value = '';
+}
+
+function appendChat(channel, message, cls) {
+    const el = document.getElementById('chatLog');
+    const time = new Date().toLocaleTimeString();
+    el.innerHTML += `<div class="${cls}">[${time}] ${message}</div>`;
+    el.scrollTop = el.scrollHeight;
+}
+
+// ─── 音频处理 ─────────────────────────────────────────────
+async function startMedia() {
+    try {
+        const codec = document.getElementById('codecSelect').value;
+        const rate = parseInt(document.getElementById('rateSelect').value);
+
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+            audio: { sampleRate: rate, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+            video: false
+        });
+
+        audioCtx = new AudioContext({ sampleRate: rate });
+        const source = audioCtx.createMediaStreamSource(mediaStream);
+
+        // ScriptProcessorNode: bufferSize 决定每帧采样数
+        // 16kHz → 320 samples = 20ms; 48kHz → 960 samples = 20ms; 8kHz → 160 samples = 20ms
+        const bufferSize = rate / 50; // 20ms
+        scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+
+        scriptNode.onaudioprocess = (e) => {
+            if (!isStreaming) return;
+            const input = e.inputBuffer.getChannelData(0);
+            sendAudioFrame(input, codec, rate);
+            updateVU(input);
+        };
+
+        source.connect(scriptNode);
+        scriptNode.connect(audioCtx.destination);
+
+        // 发送 start
+        ws.send(JSON.stringify({ type: 'start' }));
+        log('发送 start，等待 ready...', 'send');
+
+        isStreaming = true;
+        document.getElementById('btnStart').disabled = true;
+        document.getElementById('btnStop').disabled = false;
+
+    } catch (err) {
+        log(`获取麦克风失败: ${err.message}`, 'error');
+    }
+}
+
+function sendAudioFrame(float32, codecName, sampleRate) {
+    // float32 → PCM16
+    const pcm16 = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32[i]));
+        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+
+    let payload;
+    if (codecName === 'pcm16') {
+        payload = pcm16.buffer;
+    } else {
+        // 其他编解码暂以 PCM16 原始数据发送（服务端会按协商编解码处理）
+        // 实际生产中浏览器侧需要 Opus 编码器（如 libopus-wasm）
+        payload = pcm16.buffer;
+    }
+
+    // 构造 8 字节头 + payload
+    const header = new ArrayBuffer(FRAME_HEADER_LEN);
+    const view = new DataView(header);
+    view.setUint8(0, FRAME_AUDIO);
+    view.setUint8(1, CODEC[codecName] || CODEC.pcm16);
+    view.setUint16(2, sendSeq); // sequence
+    view.setUint32(4, sendSeq * (sampleRate / 50)); // timestamp (sample clock)
+    sendSeq++;
+
+    const frame = new Uint8Array(FRAME_HEADER_LEN + payload.byteLength);
+    frame.set(new Uint8Array(header), 0);
+    frame.set(new Uint8Array(payload), FRAME_HEADER_LEN);
+
+    ws.send(frame.buffer);
+    stats.sentFrames++;
+    stats.sentBytes += frame.byteLength;
+    updateStats();
+}
+
+function handleBinaryFrame(buf) {
+    const data = new Uint8Array(buf);
+    if (data.length < FRAME_HEADER_LEN) {
+        log(`帧太短: ${data.length} bytes`, 'error');
+        return;
+    }
+
+    const view = new DataView(buf);
+    const frameType = view.getUint8(0);
+    const codecId = view.getUint8(1);
+    const seq = view.getUint16(2);
+    const timestamp = view.getUint32(4);
+    const payload = data.slice(FRAME_HEADER_LEN);
+
+    if (frameType === FRAME_AUDIO) {
+        playAudioFrame(payload, codecId);
+        stats.recvFrames++;
+        stats.recvBytes += buf.byteLength;
+        updateStats();
+    }
+}
+
+// ─── 音频播放 ─────────────────────────────────────────────
+let playCtx = null;
+
+function playAudioFrame(payload, codecId) {
+    if (!playCtx) {
+        playCtx = new AudioContext({ sampleRate: parseInt(document.getElementById('rateSelect').value) });
+    }
+
+    // 当前只支持 PCM16 播放
+    if (codecId !== CODEC.pcm16) {
+        // Opus/PCMU/PCMA 需要解码器，这里暂跳过
+        return;
+    }
+
+    const pcm16 = new Int16Array(payload.buffer, payload.byteOffset, payload.length / 2);
+    const float32 = new Float32Array(pcm16.length);
+    for (let i = 0; i < pcm16.length; i++) {
+        float32[i] = pcm16[i] / 0x8000;
+    }
+
+    const buffer = playCtx.createBuffer(1, float32.length, playCtx.sampleRate);
+    buffer.copyToChannel(float32, 0);
+
+    const src = playCtx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(playCtx.destination);
+    src.start();
+}
+
+// ─── VU 仪表 ──────────────────────────────────────────────
+function updateVU(float32) {
+    let sum = 0;
+    for (let i = 0; i < float32.length; i++) sum += float32[i] * float32[i];
+    const rms = Math.sqrt(sum / float32.length);
+    const pct = Math.min(100, rms * 200);
+    document.getElementById('vuBar').style.width = pct + '%';
+}
+
+// ─── 停止 ─────────────────────────────────────────────────
+function stopMedia() {
+    isStreaming = false;
+    if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    if (playCtx) { playCtx.close(); playCtx = null; }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'stop' }));
+    }
+    document.getElementById('btnStart').disabled = false;
+    document.getElementById('btnStop').disabled = true;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        setStatus('已协商', 'connected');
+    }
+    document.getElementById('vuBar').style.width = '0%';
+    log('媒体已停止', 'info');
+}
+
+function updateStats() {
+    document.getElementById('sentFrames').textContent = stats.sentFrames;
+    document.getElementById('recvFrames').textContent = stats.recvFrames;
+    document.getElementById('sentBytes').textContent = stats.sentBytes;
+    document.getElementById('recvBytes').textContent = stats.recvBytes;
+}
+
+// ─── 初始化 ───────────────────────────────────────────────
+log('页面已加载，点击"连接"开始');
+log('协议: offer → answer → start → ready → binary frames + chat');
+</script>
+</body>
+</html>
