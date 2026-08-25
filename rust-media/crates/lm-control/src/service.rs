@@ -288,14 +288,18 @@ impl media_node_server::MediaNode for MediaNodeServer {
                 // 注意：不发到自己的 broadcast，避免自回声。
                 // pull_rtp 从自己的 publisher track 拉的是其他 session 转发过来的包。
 
-                debug!(
-                    session = %req.session_id,
-                    track = %req.track_id,
-                    ssrc = packet.ssrc,
-                    seq = packet.sequence_number,
-                    peer_count,
-                    "rtp packet routed to room peers"
-                );
+                // 采样日志：每 1000 包打一次，避免日志淹没
+                if packets_received % 1000 == 0 {
+                    info!(
+                        session = %req.session_id,
+                        track = %req.track_id,
+                        ssrc = packet.ssrc,
+                        seq = packet.sequence_number,
+                        peer_count,
+                        total = packets_received,
+                        "rtp push_rtp progress (sampled 1/1000)"
+                    );
+                }
             }
         }
 
@@ -336,6 +340,8 @@ impl media_node_server::MediaNode for MediaNodeServer {
 
         // spawn forwarder: broadcast receiver → gRPC stream
         tokio::spawn(async move {
+            let mut packets_sent: u64 = 0;
+            let mut lagged_total: u64 = 0;
             loop {
                 match rx.recv().await {
                     Ok(pkt) => {
@@ -350,15 +356,22 @@ impl media_node_server::MediaNode for MediaNodeServer {
                             clock_rate: pkt.clock_rate,
                         };
                         if tx.send(Ok(rtp_packet)).await.is_err() {
-                            debug!("pull_rtp stream closed, stopping forwarder");
+                            info!(packets_sent, lagged_total, "pull_rtp stream closed, stopping forwarder");
                             break;
+                        }
+                        packets_sent += 1;
+                        if packets_sent % 1000 == 0 {
+                            info!(packets_sent, lagged_total, "pull_rtp progress (sampled 1/1000)");
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        debug!("pull_rtp lagged, skipped {} packets", n);
+                        lagged_total += n as u64;
+                        if lagged_total % 100 < n as u64 {
+                            warn!(skipped = n, lagged_total, "pull_rtp lagged (sampled)");
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        debug!("pull_rtp broadcast closed, stopping forwarder");
+                        info!(packets_sent, lagged_total, "pull_rtp broadcast closed, stopping forwarder");
                         break;
                     }
                 }
