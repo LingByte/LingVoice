@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
+	"github.com/LingByte/LingVoice/pkg/protocol/media"
 	"github.com/LingByte/ling-base/common/logger"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
@@ -27,13 +28,17 @@ type Config struct {
 	// RouteFunc 路由函数：根据 To 返回目标地址。
 	// 为 nil 则默认拒绝。
 	RouteFunc func(to string) (target string, ok bool)
+	// AudioCodecs 服务端优先支持的音频编解码列表，用于 SDP 协商。
+	// 为空则默认 ["pcmu", "pcma", "opus"]。
+	AudioCodecs []string
 }
 
 // DefaultConfig 默认配置
 func DefaultConfig() Config {
 	return Config{
-		Addr:  "0.0.0.0:5060",
-		Realm: "lingvoice",
+		Addr:        "0.0.0.0:5060",
+		Realm:       "lingvoice",
+		AudioCodecs: []string{"pcmu", "pcma", "opus"},
 	}
 }
 
@@ -385,46 +390,18 @@ func (s *Server) checkAuth(req *sip.Request) bool {
 	return ok
 }
 
+// parseSDP 解析 SDP 并使用 pkg/media encoder registry 协商编解码。
 func (s *Server) parseSDP(body []byte) *common.AudioMedia {
-	if len(body) == 0 {
+	prefs := s.config.AudioCodecs
+	if len(prefs) == 0 {
+		prefs = []string{"pcmu", "pcma", "opus"}
+	}
+	result, err := media.NegotiateFromSDP(body, prefs, 20)
+	if err != nil {
+		s.log.Debug("sip SDP negotiation failed", zap.Error(err))
 		return nil
 	}
-	sdpStr := string(body)
-	// 简化 SDP 解析：找 rtpmap 行
-	// a=rtpmap:96 opus/48000/2
-	// a=rtpmap:0 PCMU/8000
-	lines := splitLines(sdpStr)
-	for _, line := range lines {
-		if startsWith(line, "a=rtpmap:") {
-			// 解析 payload type 和 codec
-			rest := line[9:] // 去掉 "a=rtpmap:"
-			parts := splitSpace(rest)
-			if len(parts) >= 2 {
-				codecStr := parts[1]
-				// codecStr 格式: opus/48000/2 或 PCMU/8000
-				codecParts := splitSlash(codecStr)
-				if len(codecParts) >= 2 {
-					codecName := codecParts[0]
-					codec, err := common.CodecFromString(codecName)
-					if err != nil {
-						continue
-					}
-					sr := parseUint(codecParts[1])
-					ch := uint16(1)
-					if len(codecParts) >= 3 {
-						ch = uint16(parseUint(codecParts[2]))
-					}
-					return &common.AudioMedia{
-						Codec:           codec,
-						SampleRate:      uint32(sr),
-						Channels:        ch,
-						FrameDurationMs: 20,
-					}
-				}
-			}
-		}
-	}
-	return nil
+	return result.Audio
 }
 
 func getContact(req *sip.Request) string {

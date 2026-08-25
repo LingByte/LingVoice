@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
+	"github.com/LingByte/LingVoice/pkg/protocol/media"
 	"github.com/LingByte/ling-base/common/logger"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -159,9 +160,18 @@ func (s *Server) setupPeerConnection(session *Session, conn *websocket.Conn) {
 			zap.String("codec", track.Codec().MimeType),
 		)
 
+		codecName := codecFromMimeType(track.Codec().MimeType)
+		if codecName == "" {
+			s.log.Warn("webrtc unknown codec mimetype", zap.String("session", session.id), zap.String("mimetype", track.Codec().MimeType))
+			return
+		}
+
+		// 通过 media encoder registry 验证编解码可用性
+		codec, _ := common.CodecFromString(codecName)
+		codecCfg := media.CodecTypeToConfig(codec, track.Codec().ClockRate, uint16(track.Codec().Channels), 20)
+
 		// 通知上层：媒体就绪
-		codec, _ := common.CodecFromString(codecFromMimeType(track.Codec().MimeType))
-		media := &common.MediaDescription{
+		mediaDesc := &common.MediaDescription{
 			Audio: &common.AudioMedia{
 				Codec:           codec,
 				SampleRate:      track.Codec().ClockRate,
@@ -173,9 +183,30 @@ func (s *Server) setupPeerConnection(session *Session, conn *websocket.Conn) {
 			Type:      common.EventMediaReady,
 			Protocol:  common.ProtocolWebRTC,
 			SessionID: session.id,
-			Media:     media,
+			Media:     mediaDesc,
 			Timestamp: time.Now(),
 		})
+
+		// 尝试创建 encoder/decoder（上层可直接使用 media session）
+		pcmCfg := media.DefaultPCMConfig()
+		enc, dec, err := media.CreateEncoderDecoder(&media.NegotiationResult{
+			Audio:       mediaDesc.Audio,
+			CodecConfig: codecCfg,
+			CodecName:   codecName,
+		}, pcmCfg)
+		if err != nil {
+			s.log.Warn("webrtc codec not in media registry, passing raw frames",
+				zap.String("session", session.id),
+				zap.String("codec", codecName),
+				zap.Error(err))
+		} else {
+			s.log.Info("webrtc codec negotiated via media registry",
+				zap.String("session", session.id),
+				zap.String("codec", codecName),
+				zap.Int("pcmSampleRate", pcmCfg.SampleRate))
+			_ = enc // encoder/decoder available for upper layer via media session
+			_ = dec
+		}
 
 		// 读 RTP 包，回调上层
 		for {

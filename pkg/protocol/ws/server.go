@@ -8,6 +8,7 @@ import (
 
 	"github.com/LingByte/ling-base/common/logger"
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
+	"github.com/LingByte/LingVoice/pkg/protocol/media"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
@@ -296,46 +297,26 @@ func (s *Server) handleBinaryMessage(session *Session, data []byte) error {
 	return s.handler.OnMediaFrame(session.id, frame)
 }
 
-// negotiateAudio 从客户端提供的列表中选择服务端支持的编解码
+// negotiateAudio 从客户端提供的列表中选择服务端支持的编解码。
+// 使用 pkg/media encoder registry 验证编解码实际可用性。
 func (s *Server) negotiateAudio(offer *OfferAudio) (*common.AudioMedia, error) {
 	if offer == nil || len(offer.Codecs) == 0 {
 		return nil, ErrCodecNotSupported
 	}
 
-	// 服务端支持的编解码优先级
-	serverCodecs := s.config.AudioCodecs
-
-	for _, sc := range serverCodecs {
-		for _, cc := range offer.Codecs {
-			if sc == cc {
-				codec, err := common.CodecFromString(cc)
-				if err != nil {
-					continue
-				}
-				// 选采样率
-				sr := s.config.AudioSampleRate
-				for _, r := range offer.SampleRates {
-					if r == sr {
-						break
-					}
-				}
-				// 选声道
-				ch := s.config.AudioChannels
-				for _, c := range offer.Channels {
-					if c == ch {
-						break
-					}
-				}
-				return &common.AudioMedia{
-					Codec:           codec,
-					SampleRate:      sr,
-					Channels:        ch,
-					FrameDurationMs: s.config.AudioFrameMs,
-				}, nil
-			}
-		}
+	result, err := media.NegotiateAudio(
+		s.config.AudioCodecs,
+		offer.Codecs,
+		offer.SampleRates,
+		offer.Channels,
+		s.config.AudioSampleRate,
+		s.config.AudioChannels,
+		s.config.AudioFrameMs,
+	)
+	if err != nil {
+		return nil, ErrCodecNotSupported
 	}
-	return nil, ErrCodecNotSupported
+	return result.Audio, nil
 }
 
 func (s *Server) negotiateVideo(offer *OfferVideo) *common.VideoMedia {
