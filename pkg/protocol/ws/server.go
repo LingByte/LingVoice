@@ -187,6 +187,21 @@ func (s *Server) handleTextMessage(session *Session, data []byte) error {
 		}
 		s.log.Debug("ws event", zap.String("session", session.id), zap.String("event", msg.Event))
 		return nil
+	case MsgTypeChat:
+		var msg ChatMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return err
+		}
+		channel := msg.Channel
+		if channel == "" {
+			channel = "chat"
+		}
+		s.log.Debug("ws chat", zap.String("session", session.id), zap.String("channel", channel), zap.String("message", msg.Message))
+		return s.handler.OnData(session.id, common.DataMessage{
+			Channel:  channel,
+			Data:     []byte(msg.Message),
+			IsString: true,
+		})
 	default:
 		return s.sendError(session, "unknown-type", "unknown message type: "+base.Type)
 	}

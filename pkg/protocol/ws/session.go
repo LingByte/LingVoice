@@ -115,6 +115,19 @@ func (s *Session) MediaStats() map[common.TrackID]common.TrackStats {
 	return stats
 }
 
+// SendData 通过指定通道发送文本数据（实现 DataSession 接口）。
+// WS 协议用 JSON ChatMessage 承载文本消息，channel 作为通道标签。
+func (s *Session) SendData(channel string, data []byte) error {
+	if s.closed.Load() {
+		return ErrSessionNotFound
+	}
+	return s.sendJSON(ChatMessage{
+		Type:    MsgTypeChat,
+		Channel: channel,
+		Message: string(data),
+	})
+}
+
 // sendJSON 发送文本 JSON 消息
 func (s *Session) sendJSON(v any) error {
 	s.mu.Lock()

@@ -23,6 +23,8 @@ package ws
 //   {"type":"stop"}                    停止媒体传输
 //   {"type":"dtmf","digit":"1"}        DTMF 事件
 //   {"type":"event","event":"speaking"}  VAD 事件（speaking/silence）
+//   {"type":"chat","message":"hello"}  文本消息（触发 OnData 回调）
+//   {"type":"chat","channel":"asr","message":"你好"}  指定通道的文本消息
 
 import "github.com/LingByte/LingVoice/pkg/protocol/common"
 
@@ -48,6 +50,7 @@ const (
 	MsgTypeDTMF   = "dtmf"
 	MsgTypeEvent  = "event"
 	MsgTypeError  = "error"
+	MsgTypeChat   = "chat" // 文本消息（媒体阶段，触发 OnData）
 )
 
 // OfferMessage 客户端 → 服务端：声明支持的编解码
@@ -137,6 +140,15 @@ type EventMessage struct {
 type ErrorMessage struct {
 	Type    string `json:"type"`
 	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// ChatMessage 文本消息（媒体阶段，双向）
+// 客户端 → 服务端：用户输入的文本（如聊天、ASR 文本、指令）
+// 服务端 → 客户端：回复文本（如 LLM 回复、TTS 文本、系统提示）
+type ChatMessage struct {
+	Type    string `json:"type"`
+	Channel string `json:"channel,omitempty"` // 通道标签，如 "chat"、"asr"、"tts"、"llm"
 	Message string `json:"message"`
 }
 
