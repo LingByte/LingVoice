@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LingVoice WebRTC Test</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
+h1 { color: #e94560; margin-bottom: 16px; }
+h2 { color: #0f3460; background: #16213e; padding: 8px 12px; border-radius: 4px; margin: 16px 0 8px; }
+.panel { background: #16213e; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+button { background: #e94560; color: #fff; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; margin: 2px; font-size: 14px; }
+button:hover { background: #c73650; }
+button:disabled { background: #555; cursor: not-allowed; }
+button.green { background: #0f3460; }
+button.green:hover { background: #1a4a8a; }
+video, audio { width: 320px; height: 240px; background: #000; border-radius: 4px; margin: 4px; }
+pre { background: #0d1117; color: #8b949e; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 12px; max-height: 200px; overflow-y: auto; }
+.log-line { padding: 2px 0; border-bottom: 1px solid #21262d; }
+.log-line.info { color: #58a6ff; }
+.log-line.error { color: #f85149; }
+.log-line.success { color: #3fb950; }
+.log-line.warn { color: #d29922; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.stat-card { background: #0d1117; padding: 8px 12px; border-radius: 4px; }
+.stat-label { color: #8b949e; font-size: 12px; }
+.stat-value { color: #58a6ff; font-size: 18px; font-weight: bold; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; }
+.col { flex: 1; min-width: 300px; }
+input[type="text"] { background: #0d1117; border: 1px solid #30363d; color: #eee; padding: 6px 10px; border-radius: 4px; width: 200px; }
+</style>
+</head>
+<body>
+<h1>LingVoice WebRTC Test Page</h1>
+
+<div class="panel">
+  <h2>连接控制</h2>
+  <button id="btnConnect" onclick="connect()">连接</button>
+  <button id="btnDisconnect" onclick="disconnect()" disabled>断开</button>
+  <button onclick="startMedia()" id="btnMedia" disabled>开启音视频</button>
+  <button onclick="sendPing()" id="btnPing" disabled>发送 Ping</button>
+  <span id="connStatus" style="margin-left:12px;color:#8b949e">未连接</span>
+</div>
+
+<div class="row">
+  <div class="col">
+    <div class="panel">
+      <h2>本地媒体</h2>
+      <video id="localVideo" autoplay muted playsinline></video>
+      <audio id="localAudio" autoplay muted></audio>
+    </div>
+  </div>
+  <div class="col">
+    <div class="panel">
+      <h2>远端媒体</h2>
+      <video id="remoteVideo" autoplay playsinline></video>
+      <audio id="remoteAudio" autoplay></audio>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>QoS 统计</h2>
+  <div class="stats" id="statsContainer">
+    <div class="stat-card"><div class="stat-label">等待连接...</div></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>数据通道</h2>
+  <input type="text" id="dataInput" placeholder="输入消息..." onkeydown="if(event.key==='Enter')sendData()">
+  <button onclick="sendData()" id="btnSendData" disabled>发送</button>
+  <pre id="dataLog" style="margin-top:8px"></pre>
+</div>
+
+<div class="panel">
+  <h2>信令日志</h2>
+  <pre id="signalLog"></pre>
+</div>
+
+<script>
+let ws = null;
+let publisherPC = null;
+let subscriberPC = null;
+let localStream = null;
+let reliableDC = null;
+let lossyDC = null;
+
+function log(msg, level = 'info') {
+  const el = document.getElementById('signalLog');
+  const line = document.createElement('div');
+  line.className = 'log-line ' + level;
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(text) {
+  document.getElementById('connStatus').textContent = text;
+}
+
+function sendSignal(msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg));
+    log('→ ' + msg.type + (msg.sdp ? ' (SDP ' + msg.sdp.length + ' bytes)' : '') + (msg.candidate ? ' (candidate)' : ''), 'info');
+  }
+}
+
+async function connect() {
+  const wsUrl = 'ws://' + location.host + '/webrtc/signal';
+  log('连接信令: ' + wsUrl);
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    log('信令 WebSocket 已连接', 'success');
+    setStatus('信令已连接');
+    document.getElementById('btnConnect').disabled = true;
+    document.getElementById('btnDisconnect').disabled = false;
+    document.getElementById('btnMedia').disabled = false;
+    document.getElementById('btnPing').disabled = false;
+    document.getElementById('btnSendData').disabled = false;
+  };
+
+  ws.onmessage = async (event) => {
+    const msg = JSON.parse(event.data);
+    log('← ' + msg.type + (msg.sdp ? ' (SDP ' + msg.sdp.length + ' bytes)' : '') + (msg.candidate ? ' (candidate ' + msg.target + ')' : ''), 'success');
+
+    switch (msg.type) {
+      case 'pub_answer':
+        if (publisherPC) {
+          await publisherPC.setRemoteDescription({type: 'answer', sdp: msg.sdp});
+          log('Publisher remote description set', 'success');
+        }
+        break;
+      case 'sub_offer':
+        if (!subscriberPC) {
+          subscriberPC = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+          subscriberPC.onicecandidate = (e) => {
+            if (e.candidate) sendSignal({type: 'candidate', target: 'subscriber', candidate: e.candidate.toJSON()});
+          };
+          subscriberPC.ontrack = (e) => {
+            log('收到远端 track: ' + e.track.kind, 'success');
+            if (e.track.kind === 'video') {
+              document.getElementById('remoteVideo').srcObject = e.streams[0];
+            } else {
+              document.getElementById('remoteAudio').srcObject = e.streams[0];
+            }
+          };
+          subscriberPC.ondatachannel = (e) => {
+            log('收到数据通道: ' + e.channel.label, 'success');
+            setupDataChannel(e.channel);
+          };
+        }
+        await subscriberPC.setRemoteDescription({type: 'offer', sdp: msg.sdp});
+        const answer = await subscriberPC.createAnswer();
+        await subscriberPC.setLocalDescription(answer);
+        sendSignal({type: 'sub_answer', sdp: answer.sdp});
+        break;
+      case 'candidate':
+        if (msg.target === 'publisher' && publisherPC) {
+          await publisherPC.addIceCandidate(msg.candidate);
+        } else if (msg.target === 'subscriber' && subscriberPC) {
+          await subscriberPC.addIceCandidate(msg.candidate);
+        }
+        break;
+      case 'restart_offer':
+        if (publisherPC) {
+          await publisherPC.setRemoteDescription({type: 'offer', sdp: msg.sdp});
+          const ans = await publisherPC.createAnswer();
+          await publisherPC.setLocalDescription(ans);
+          sendSignal({type: 'pub_answer', sdp: ans.sdp});
+        }
+        break;
+    }
+  };
+
+  ws.onerror = (e) => log('WebSocket 错误: ' + e, 'error');
+  ws.onclose = () => {
+    log('信令 WebSocket 已关闭', 'warn');
+    setStatus('未连接');
+    document.getElementById('btnConnect').disabled = false;
+    document.getElementById('btnDisconnect').disabled = true;
+    document.getElementById('btnMedia').disabled = true;
+    document.getElementById('btnPing').disabled = true;
+    document.getElementById('btnSendData').disabled = true;
+  };
+}
+
+async function startMedia() {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
+    document.getElementById('localVideo').srcObject = localStream;
+    log('本地媒体已获取 (audio + video)', 'success');
+
+    // 创建 Publisher PC
+    publisherPC = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+
+    publisherPC.onicecandidate = (e) => {
+      if (e.candidate) sendSignal({type: 'candidate', target: 'publisher', candidate: e.candidate.toJSON()});
+    };
+
+    publisherPC.onconnectionstatechange = () => {
+      log('Publisher 连接状态: ' + publisherPC.connectionState, 'info');
+      if (publisherPC.connectionState === 'connected') {
+        setStatus('WebRTC 已连接');
+        startStatsPolling();
+      }
+    };
+
+    // 创建数据通道
+    reliableDC = publisherPC.createDataChannel('reliable', {ordered: true});
+    setupDataChannel(reliableDC);
+    lossyDC = publisherPC.createDataChannel('lossy', {ordered: false, maxRetransmits: 0});
+    setupDataChannel(lossyDC);
+
+    // 添加本地 track
+    localStream.getTracks().forEach(track => {
+      publisherPC.addTrack(track, localStream);
+      log('添加本地 track: ' + track.kind + ' (' + track.id + ')', 'info');
+    });
+
+    // 创建 offer
+    const offer = await publisherPC.createOffer();
+    await publisherPC.setLocalDescription(offer);
+    sendSignal({type: 'pub_offer', sdp: offer.sdp});
+
+  } catch (err) {
+    log('获取媒体失败: ' + err.message, 'error');
+    // 尝试仅音频
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({audio: true, video: false});
+      log('回退到仅音频', 'warn');
+      publisherPC = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+      publisherPC.onicecandidate = (e) => {
+        if (e.candidate) sendSignal({type: 'candidate', target: 'publisher', candidate: e.candidate.toJSON()});
+      };
+      publisherPC.onconnectionstatechange = () => {
+        log('Publisher 连接状态: ' + publisherPC.connectionState, 'info');
+        if (publisherPC.connectionState === 'connected') {
+          setStatus('WebRTC 已连接');
+          startStatsPolling();
+        }
+      };
+      reliableDC = publisherPC.createDataChannel('reliable', {ordered: true});
+      setupDataChannel(reliableDC);
+      lossyDC = publisherPC.createDataChannel('lossy', {ordered: false, maxRetransmits: 0});
+      setupDataChannel(lossyDC);
+      localStream.getTracks().forEach(track => publisherPC.addTrack(track, localStream));
+      const offer = await publisherPC.createOffer();
+      await publisherPC.setLocalDescription(offer);
+      sendSignal({type: 'pub_offer', sdp: offer.sdp});
+    } catch (err2) {
+      log('音频也失败: ' + err2.message, 'error');
+    }
+  }
+}
+
+function setupDataChannel(dc) {
+  dc.onopen = () => log('数据通道已打开: ' + dc.label, 'success');
+  dc.onclose = () => log('数据通道已关闭: ' + dc.label, 'warn');
+  dc.onmessage = (e) => {
+    const dataLog = document.getElementById('dataLog');
+    const line = document.createElement('div');
+    line.className = 'log-line success';
+    line.textContent = `[${dc.label}] ${e.data}`;
+    dataLog.appendChild(line);
+    dataLog.scrollTop = dataLog.scrollHeight;
+  };
+  dc.onerror = (e) => log('数据通道错误: ' + dc.label + ' ' + e, 'error');
+}
+
+function sendData() {
+  const input = document.getElementById('dataInput');
+  const text = input.value.trim();
+  if (!text || !reliableDC || reliableDC.readyState !== 'open') return;
+  reliableDC.send(text);
+  const dataLog = document.getElementById('dataLog');
+  const line = document.createElement('div');
+  line.className = 'log-line info';
+  line.textContent = `[reliable] ${text}`;
+  dataLog.appendChild(line);
+  dataLog.scrollTop = dataLog.scrollHeight;
+  input.value = '';
+}
+
+function sendPing() {
+  if (reliableDC && reliableDC.readyState === 'open') {
+    reliableDC.send('ping ' + Date.now());
+  }
+}
+
+function disconnect() {
+  if (publisherPC) { publisherPC.close(); publisherPC = null; }
+  if (subscriberPC) { subscriberPC.close(); subscriberPC = null; }
+  if (ws) { ws.close(); ws = null; }
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+  document.getElementById('localVideo').srcObject = null;
+  document.getElementById('remoteVideo').srcObject = null;
+  document.getElementById('remoteAudio').srcObject = null;
+  setStatus('未连接');
+  log('已断开', 'warn');
+}
+
+// QoS 统计轮询
+let statsInterval = null;
+function startStatsPolling() {
+  if (statsInterval) clearInterval(statsInterval);
+  statsInterval = setInterval(updateStats, 2000);
+  updateStats();
+}
+
+function updateStats() {
+  const container = document.getElementById('statsContainer');
+  container.innerHTML = '';
+
+  if (publisherPC) {
+    publisherPC.getStats(null).then(stats => {
+      let html = '';
+      stats.forEach(report => {
+        if (report.type === 'inbound-rtp') {
+          html += `<div class="stat-card">
+            <div class="stat-label">接收 ${report.kind || 'media'}</div>
+            <div class="stat-value">${report.packetsReceived || 0} pkts</div>
+            <div class="stat-label">丢包: ${report.packetsLost || 0} | 抖动: ${((report.jitter || 0)/1000).toFixed(2)}ms</div>
+            <div class="stat-label">字节: ${report.bytesReceived || 0}</div>
+          </div>`;
+        }
+        if (report.type === 'outbound-rtp') {
+          html += `<div class="stat-card">
+            <div class="stat-label">发送 ${report.kind || 'media'}</div>
+            <div class="stat-value">${report.packetsSent || 0} pkts</div>
+            <div class="stat-label">字节: ${report.bytesSent || 0}</div>
+          </div>`;
+        }
+        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+          html += `<div class="stat-card">
+            <div class="stat-label">RTT</div>
+            <div class="stat-value">${((report.currentRoundTripTime || 0) * 1000).toFixed(1)} ms</div>
+          </div>`;
+        }
+      });
+      if (html) container.innerHTML = html;
+    });
+  }
+}
+
+// 页面关闭时清理
+window.onbeforeunload = disconnect;
+</script>
+</body>
+</html>

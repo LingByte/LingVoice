@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +24,14 @@ import (
 	pionwebrtc "github.com/pion/webrtc/v4"
 	"go.uber.org/zap"
 )
+
+// normalizeAddr 将 ":8081" 转为 "localhost:8081"
+func normalizeAddr(addr string) string {
+	if strings.HasPrefix(addr, ":") {
+		return "localhost" + addr
+	}
+	return addr
+}
 
 type demoHandler struct {
 	log *zap.Logger
@@ -155,15 +164,24 @@ func main() {
 		zap.String("path", *path),
 		zap.String("stun", *stun),
 	)
-	fmt.Printf("\nWebRTC 信令服务器已启动: http://%s%s\n\n", *addr, *path)
-	fmt.Printf("用 WebRTC 客户端连接 WebSocket 信令: ws://localhost%s\n", *path)
-	fmt.Println("信令流程:")
-	fmt.Println("  1. 客户端发送 {type: 'pub_offer', sdp: '...'}")
-	fmt.Println("  2. 服务端返回 {type: 'pub_answer', sdp: '...'}")
-	fmt.Println("  3. 双方交换 {type: 'candidate', target: 'publisher'/'subscriber', candidate: {...}}")
-	fmt.Println("  4. 服务端发送 {type: 'sub_offer', sdp: '...'}（当有轨道要发送时）")
-	fmt.Println("  5. 客户端返回 {type: 'sub_answer', sdp: '...'}")
-	fmt.Println()
+	fmt.Printf("\n")
+	fmt.Printf("========================================\n")
+	fmt.Printf("  LingVoice WebRTC Demo Server\n")
+	fmt.Printf("========================================\n")
+	fmt.Printf("\n")
+	fmt.Printf("  测试页面: http://%s\n", normalizeAddr(*addr))
+	fmt.Printf("  信令路径: ws://%s%s\n", normalizeAddr(*addr), *path)
+	fmt.Printf("  STUN:     %s\n", *stun)
+	fmt.Printf("\n")
+	fmt.Printf("  信令流程:\n")
+	fmt.Printf("    1. 客户端发送 {type: 'pub_offer', sdp: '...'}\n")
+	fmt.Printf("    2. 服务端返回 {type: 'pub_answer', sdp: '...'}\n")
+	fmt.Printf("    3. 双方交换 {type: 'candidate', target: 'publisher'/'subscriber', candidate: {...}}\n")
+	fmt.Printf("    4. 服务端发送 {type: 'sub_offer', sdp: '...'}（当有轨道要发送时）\n")
+	fmt.Printf("    5. 客户端返回 {type: 'sub_answer', sdp: '...'}\n")
+	fmt.Printf("\n")
+	fmt.Printf("  按 Ctrl+C 退出\n")
+	fmt.Printf("\n")
 
 	// 等待退出信号
 	sigCh := make(chan os.Signal, 1)
@@ -178,8 +196,30 @@ func qosMonitor(srv *webrtc.Server, log *zap.Logger, interval time.Duration) {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		// 遍历所有会话打印 QoS
-		// 这里简化处理，实际可通过 API 查询
-		log.Info("QoS monitor tick")
+		count := 0
+		// 遍历所有会话
+		srv.RangeSessions(func(sess *webrtc.Session) bool {
+			count++
+			stats := sess.QoS()
+			log.Info("QoS",
+				zap.String("session", sess.ID()),
+				zap.Duration("duration", stats.Duration),
+				zap.Int("tracks", len(stats.Tracks)),
+			)
+			for trackID, ts := range stats.Tracks {
+				log.Info("  track stats",
+					zap.String("trackID", string(trackID)),
+					zap.Uint64("packetsSent", ts.PacketsSent),
+					zap.Uint64("packetsRecv", ts.PacketsReceived),
+					zap.Uint64("packetsLost", ts.PacketsLost),
+					zap.Uint64("bytesSent", ts.BytesSent),
+					zap.Uint64("bytesRecv", ts.BytesReceived),
+				)
+			}
+			return true
+		})
+		if count > 0 {
+			log.Info("QoS monitor", zap.Int("activeSessions", count))
+		}
 	}
 }
