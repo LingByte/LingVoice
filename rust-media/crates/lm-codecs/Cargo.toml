@@ -1,0 +1,11 @@
+[package]
+name = "lm-codecs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lm-core = { path = "../lm-core" }
+audio-codec.workspace = true
+anyhow.workspace = true

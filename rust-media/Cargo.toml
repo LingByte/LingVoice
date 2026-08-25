@@ -1,0 +1,63 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lm-core",
+    "crates/lm-codecs",
+    "crates/lm-transport",
+    "crates/lm-router",
+    "crates/lm-pipeline",
+    "crates/lm-mixer",
+    "crates/lm-recorder",
+    "crates/lm-dsp",
+    "crates/lm-control",
+    "crates/lm-telemetry",
+    "bin/media-node",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0"
+authors = ["LingByte"]
+
+[workspace.dependencies]
+# gRPC
+prost = "0.13"
+prost-types = "0.13"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tonic = "0.12"
+tonic-types = "0.12"
+
+# 编解码
+audio-codec = "0.4"
+
+# WebRTC（暂不启用 str0m，Phase 1 先做 RTP 透传）
+# str0m = "0.7"
+
+# 并发
+dashmap = "6"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# 错误处理
+anyhow = "1"
+thiserror = "2"
+
+# 工具
+uuid = { version = "1", features = ["v4"] }
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
