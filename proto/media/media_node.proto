@@ -1,0 +1,450 @@
+syntax = "proto3";
+
+package lingvoice.media.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/LingByte/LingVoice/proto/media/v1;mediav1";
+
+// LingVoice Media Node gRPC 接口
+//
+// Go 控制面（信令/连接） → gRPC → Rust 媒体面（编解码/混音/转发/录制）
+//
+// 媒体传输模型：
+//   Ingress: Go OnTrack → PushRtp(client stream) → Rust ingress pipeline
+//   Egress:  Rust pacing task → PullRtp(server stream) → Go WriteRTP
+//   Inject:  Go TTS → InjectAudio(client stream) → Rust encode → send
+//   Events:  Rust → Events(server stream) → Go (VAD/DTMF/recording done)
+
+// === 核心类型 ===
+
+// RtpPacket 明文 RTP 包（Go 层已处理 ICE/DTLS/SRTP 解密）
+message RtpPacket {
+  uint32 ssrc = 1;
+  uint32 payload_type = 2;
+  uint32 sequence_number = 3;
+  uint32 timestamp = 4;
+  bool marker = 5;
+  bytes payload = 6;
+  string rid = 7;       // simulcast RID（如 "low"/"mid"/"high"）
+  uint32 clock_rate = 8; // 编解码时钟率（用于时间戳计算）
+}
+
+// PcmFrame PCM 音频帧（用于 TTS 注入、WS media、ASR 推流）
+message PcmFrame {
+  uint32 sample_rate = 1;
+  uint32 channels = 2;
+  bytes samples = 3;    // i16 PCM, little-endian interleaved
+  uint32 timestamp = 4; // RTP 时间戳基准
+  bool silence = 5;
+}
+
+// TrackInfo 轨道信息（与 Go 层 common.TrackInfo 对应）
+message TrackInfo {
+  string track_id = 1;
+  string kind = 2;       // "audio" | "video"
+  string direction = 3;  // "recv" | "send"
+  string codec = 4;      // "opus" | "pcmu" | "pcma" | "h264" | "vp8" | "vp9"
+  uint32 sample_rate = 5;
+  uint32 channels = 6;
+  uint32 ssrc = 7;
+  string rid = 8;        // simulcast RID
+  string stream_id = 9;
+}
+
+// CodecInfo 编解码信息（SDP 协商结果）
+message CodecInfo {
+  string codec = 1;       // "opus" | "pcmu" | "pcma" | "g722" | "h264" | "vp8"
+  uint32 payload_type = 2;
+  uint32 clock_rate = 3;
+  uint32 channels = 4;
+  string fmtp = 5;        // SDP fmtp 参数
+}
+
+// === 会话管理 ===
+
+message CreateSessionRequest {
+  string session_id = 1;
+  string room_id = 2;     // 可选，会议场景
+  string tenant_id = 3;   // 多租户隔离
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+  string node_id = 2;     // Rust 媒体节点 ID
+}
+
+message DestroySessionRequest {
+  string session_id = 1;
+}
+
+message DestroySessionResponse {}
+
+// === 端点管理 ===
+
+// EndpointType 端点类型
+// 参考 rtpbridge Endpoint 枚举 + RustPBX TransportMode
+enum EndpointType {
+  ENDPOINT_UNSPECIFIED = 0;
+  ENDPOINT_WEBRTC = 1;    // Go 层处理 ICE/DTLS/SRTP，Rust 收明文 RTP
+  ENDPOINT_RTP = 2;       // 纯 RTP（SIP 场景，Rust 直接监听 UDP）
+  ENDPOINT_WS = 3;        // WebSocket media（PCM over WS）
+  ENDPOINT_RTMP = 4;      // RTMP（Rust 直接监听 TCP）
+  ENDPOINT_FILE = 5;      // 文件播放（WAV/MP3）
+  ENDPOINT_BRIDGE = 6;    // 跨会话桥接端点
+}
+
+// Direction 媒体方向
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  DIRECTION_SENDRECV = 1;
+  DIRECTION_SENDONLY = 2;
+  DIRECTION_RECVONLY = 3;
+  DIRECTION_INACTIVE = 4;
+}
+
+message AddEndpointRequest {
+  string session_id = 1;
+  string endpoint_id = 2;
+  EndpointType type = 3;
+  Direction direction = 4;
+  repeated CodecInfo codecs = 5;
+  // RTP 端点特有
+  string rtp_bind_addr = 6;   // Rust 监听地址（如 "0.0.0.0:0"）
+  string rtp_remote_addr = 7; // 远端地址（如 "192.168.1.100:5004"）
+  // WS/PCM 端点特有
+  uint32 pcm_sample_rate = 8;
+  uint32 pcm_channels = 9;
+}
+
+message AddEndpointResponse {
+  string endpoint_id = 1;
+  // RTP 端点：Rust 分配的监听端口
+  uint32 rtp_port = 2;
+}
+
+message RemoveEndpointRequest {
+  string session_id = 1;
+  string endpoint_id = 2;
+}
+
+message RemoveEndpointResponse {}
+
+// === 轨道管理 ===
+
+message AddTrackRequest {
+  string session_id = 1;
+  string endpoint_id = 2;
+  TrackInfo track = 3;
+}
+
+message AddTrackResponse {
+  string track_id = 1;
+}
+
+message RemoveTrackRequest {
+  string session_id = 1;
+  string track_id = 2;
+}
+
+message RemoveTrackResponse {}
+
+// === 媒体传输 ===
+
+// PushRtpRequest Go→Rust 推送 RTP 包
+// 使用 client streaming：Go 层持续推送，Rust 层处理（解码/转发/录制）
+message PushRtpRequest {
+  string session_id = 1;
+  string track_id = 2;
+  RtpPacket packet = 3;
+}
+
+message PushRtpResponse {
+  uint64 packets_received = 1; // 总共接收的包数
+}
+
+// PullRtpRequest Go→Rust 请求拉取 RTP 包
+// 使用 server streaming：Rust 层持续推送处理后的 RTP 包，Go 层写入 PeerConnection
+message PullRtpRequest {
+  string session_id = 1;
+  string track_id = 2;
+}
+
+// === 媒体控制 ===
+
+message StartRecordingRequest {
+  string session_id = 1;
+  string format = 2;          // "wav" | "opus" | "pcap"
+  string path = 3;            // 文件路径
+  uint32 channels = 4;         // 1=mono, 2=stereo
+  bool mono_caller_only = 5;  // 仅录制 caller
+  uint64 max_duration_ms = 6; // 最大时长（0=无限）
+}
+
+message StartRecordingResponse {
+  string recording_id = 1;
+}
+
+message StopRecordingRequest {
+  string session_id = 1;
+  string recording_id = 2;
+}
+
+message StopRecordingResponse {
+  string file_path = 1;
+  uint64 duration_ms = 2;
+  uint64 file_size = 3;
+}
+
+// === 混音 ===
+
+message StartMixRequest {
+  string room_id = 1;
+  uint32 sample_rate = 2;    // 混音采样率（通常 48000）
+  uint32 frame_size = 3;     // 每帧样本数（960 = 20ms@48k）
+}
+
+message StartMixResponse {
+  string mix_id = 1;
+}
+
+message StopMixRequest {
+  string mix_id = 1;
+}
+
+message StopMixResponse {}
+
+message AddMixParticipantRequest {
+  string mix_id = 1;
+  string session_id = 2;
+  string track_id = 3;
+  bool muted = 4;
+}
+
+message AddMixParticipantResponse {}
+
+message RemoveMixParticipantRequest {
+  string mix_id = 1;
+  string session_id = 2;
+}
+
+message RemoveMixParticipantResponse {}
+
+message SetMixGainRequest {
+  string mix_id = 1;
+  string src_session_id = 2;
+  string dst_session_id = 3;
+  float gain = 4;  // 0.0=静音, 1.0=正常
+}
+
+message SetMixGainResponse {}
+
+// === 桥接 ===
+
+message BridgeSessionsRequest {
+  string session_a_id = 1;
+  string session_b_id = 2;
+  bool force_transcode = 3; // 强制转码（即使编解码相同）
+}
+
+message BridgeSessionsResponse {
+  bool relay_mode = 1;      // true=零拷贝 relay, false=转码
+  string codec_a = 2;
+  string codec_b = 3;
+}
+
+message UnbridgeSessionsRequest {
+  string session_a_id = 1;
+  string session_b_id = 2;
+}
+
+message UnbridgeSessionsResponse {}
+
+// === 音频注入（TTS） ===
+
+// InjectAudioRequest Go→Rust 推送 PCM 帧（TTS 输出）
+// 使用 client streaming：Go 层持续推送 PCM，Rust 层编码为 RTP 后发送
+message InjectAudioRequest {
+  string session_id = 1;
+  string track_id = 2;
+  PcmFrame frame = 3;
+}
+
+message InjectAudioResponse {
+  uint64 frames_injected = 1;
+}
+
+// === DTMF ===
+
+message SendDtmfRequest {
+  string session_id = 1;
+  string track_id = 2;
+  string digit = 3;       // "0"-"9", "*", "#", "A"-"D"
+  uint32 duration_ms = 4; // 持续时间（默认 100ms）
+}
+
+message SendDtmfResponse {}
+
+// === 事件 ===
+
+message MediaEvent {
+  string session_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  oneof event {
+    TrackAdded track_added = 3;
+    TrackRemoved track_removed = 4;
+    VadEvent vad = 5;
+    DtmfEvent dtmf = 6;
+    RecordingCompleted recording_completed = 7;
+    RtpTimeout rtp_timeout = 8;
+    ErrorEvent error = 9;
+    MixParticipantJoined mix_participant_joined = 10;
+    MixParticipantLeft mix_participant_left = 11;
+    DominantSpeakerChanged dominant_speaker_changed = 12;
+  }
+}
+
+message TrackAdded {
+  TrackInfo track = 1;
+}
+
+message TrackRemoved {
+  string track_id = 1;
+}
+
+message VadEvent {
+  string track_id = 1;
+  bool speech_started = 2;
+  float energy = 3;       // 0.0-1.0
+}
+
+message DtmfEvent {
+  string track_id = 1;
+  string digit = 2;
+  uint32 duration_ms = 3;
+}
+
+message RecordingCompleted {
+  string recording_id = 1;
+  string file_path = 2;
+  uint64 duration_ms = 3;
+  uint64 file_size = 4;
+}
+
+message RtpTimeout {
+  string track_id = 1;
+  uint64 duration_ms = 2;
+}
+
+message ErrorEvent {
+  string code = 1;
+  string message = 2;
+  string track_id = 3;
+}
+
+message MixParticipantJoined {
+  string mix_id = 1;
+  string session_id = 2;
+}
+
+message MixParticipantLeft {
+  string mix_id = 1;
+  string session_id = 2;
+}
+
+message DominantSpeakerChanged {
+  string mix_id = 1;
+  string session_id = 2;  // 新的主发言者
+}
+
+message EventsRequest {
+  string session_id = 1;  // 可选，订阅特定会话；空=订阅所有
+}
+
+// === 统计 ===
+
+message GetStatsRequest {
+  string session_id = 1;
+}
+
+message GetStatsResponse {
+  string session_id = 1;
+  uint64 duration_ms = 2;
+  repeated TrackStats tracks = 3;
+}
+
+message TrackStats {
+  string track_id = 1;
+  uint64 packets_received = 2;
+  uint64 packets_sent = 3;
+  uint64 packets_lost = 4;
+  uint64 bytes_received = 5;
+  uint64 bytes_sent = 6;
+  uint32 jitter_ms = 7;
+  uint32 rtt_ms = 8;
+  float loss_pct = 9;
+  uint32 bitrate_kbps = 10;
+}
+
+// === 健康检查 ===
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string node_id = 1;
+  uint32 active_sessions = 2;
+  uint32 active_endpoints = 3;
+  uint64 total_packets_received = 4;
+  uint64 total_packets_sent = 5;
+  double cpu_usage = 6;
+  uint64 memory_usage_mb = 7;
+}
+
+// === 服务定义 ===
+
+// MediaNode 服务 — Go 控制面 → Rust 媒体面
+service MediaNode {
+  // 健康检查
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // 会话管理
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc DestroySession(DestroySessionRequest) returns (DestroySessionResponse);
+
+  // 端点管理
+  rpc AddEndpoint(AddEndpointRequest) returns (AddEndpointResponse);
+  rpc RemoveEndpoint(RemoveEndpointRequest) returns (RemoveEndpointResponse);
+
+  // 轨道管理
+  rpc AddTrack(AddTrackRequest) returns (AddTrackResponse);
+  rpc RemoveTrack(RemoveTrackRequest) returns (RemoveTrackResponse);
+
+  // 媒体传输（核心热路径）
+  rpc PushRtp(stream PushRtpRequest) returns (PushRtpResponse);
+  rpc PullRtp(PullRtpRequest) returns (stream RtpPacket);
+  rpc InjectAudio(stream InjectAudioRequest) returns (InjectAudioResponse);
+
+  // 媒体控制
+  rpc StartRecording(StartRecordingRequest) returns (StartRecordingResponse);
+  rpc StopRecording(StopRecordingRequest) returns (StopRecordingResponse);
+
+  // 混音
+  rpc StartMix(StartMixRequest) returns (StartMixResponse);
+  rpc StopMix(StopMixRequest) returns (StopMixResponse);
+  rpc AddMixParticipant(AddMixParticipantRequest) returns (AddMixParticipantResponse);
+  rpc RemoveMixParticipant(RemoveMixParticipantRequest) returns (RemoveMixParticipantResponse);
+  rpc SetMixGain(SetMixGainRequest) returns (SetMixGainResponse);
+
+  // 桥接
+  rpc BridgeSessions(BridgeSessionsRequest) returns (BridgeSessionsResponse);
+  rpc UnbridgeSessions(UnbridgeSessionsRequest) returns (UnbridgeSessionsResponse);
+
+  // DTMF
+  rpc SendDtmf(SendDtmfRequest) returns (SendDtmfResponse);
+
+  // 事件流
+  rpc Events(EventsRequest) returns (stream MediaEvent);
+
+  // 统计
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+}
