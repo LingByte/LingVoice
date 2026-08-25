@@ -4,10 +4,8 @@
 package media
 
 import (
-	"context"
 	"fmt"
 	"testing"
-	"time"
 )
 
 // --- helpers ---
@@ -106,32 +104,13 @@ func BenchmarkLowPassFIR_16kTo8k_Concurrent(b *testing.B) {
 	}
 }
 
-// --- EventBus benchmarks ---
-// These benchmark the EventBus directly (now only used for low-frequency
-// state/error events). For the hot-path packet processing benchmark, see
-// BenchmarkProcessPacketDirect below.
+// --- Packet processing benchmarks ---
+// The old EventBus has been removed entirely. Packet processing is now
+// synchronous via processPacketDirect. State/error events are also
+// synchronous via EmitState/CauseError.
 
-func BenchmarkEventBus_Publish(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	eb := NewEventBus(ctx, 1024, 4)
-	defer eb.Close()
-	eb.Subscribe(EventTypePacket, func(ctx context.Context, e *MediaEvent) error {
-		return nil
-	})
-	pkt := &AudioPacket{Payload: makePCM(16000, 20)}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		eb.PublishPacket("bench-session", pkt, "bench")
-	}
-	// Let workers drain
-	time.Sleep(50 * time.Millisecond)
-}
-
-// BenchmarkProcessPacketDirect measures the new synchronous direct path:
+// BenchmarkProcessPacketDirect measures the synchronous direct path:
 // EmitPacket → processPacketDirect → processor chain → trySendPacket.
-// This replaces the old EventBus path (channel + worker dispatch + MediaEvent).
 func BenchmarkProcessPacketDirect(b *testing.B) {
 	s := NewDefaultSession()
 	in := newMockTransport("pcmu", 8000)
@@ -166,29 +145,6 @@ func BenchmarkProcessPacketDirect_Concurrent(b *testing.B) {
 					s.EmitPacket(s, pkt)
 				}
 			})
-		})
-	}
-}
-
-func BenchmarkEventBus_Publish_Concurrent(b *testing.B) {
-	for _, g := range []int{1, 4, 16, 64} {
-		b.Run(fmt.Sprintf("g=%d", g), func(b *testing.B) {
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			eb := NewEventBus(ctx, 4096, g)
-			defer eb.Close()
-			eb.Subscribe(EventTypePacket, func(ctx context.Context, e *MediaEvent) error {
-				return nil
-			})
-			pkt := &AudioPacket{Payload: makePCM(16000, 20)}
-			b.ReportAllocs()
-			b.SetParallelism(g)
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					eb.PublishPacket("bench-session", pkt, "bench")
-				}
-			})
-			time.Sleep(50 * time.Millisecond)
 		})
 	}
 }

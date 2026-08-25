@@ -21,6 +21,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// log is the package-level logger. Falls back to a no-op logger when
+// logger.Lg is nil (e.g. tests that don't call logger.Init()).
+var log = func() *zap.Logger {
+	if logger.Lg != nil {
+		return logger.Lg
+	}
+	return zap.NewNop()
+}()
+
 // TransportManager manages transport connections
 type TransportManager struct {
 	session             *MediaSession
@@ -288,7 +297,6 @@ type MediaSession struct {
 	droppedPackets atomic.Int64
 
 	// New event-driven architecture
-	eventBus          *EventBus
 	processorRegistry *ProcessorRegistry
 	router            *Router
 	inputConnectors   []*TransportConnector
@@ -330,87 +338,18 @@ func NewDefaultSession() *MediaSession {
 	session.processorRegistry = NewProcessorRegistry()
 	session.router = NewRouter(StrategyBroadcast)
 	session.relay = NewRelayState()
-	session.initEventBus()
 
 	return session
 }
 
-// WithQueueSize sets TX/output queue depth. The EventBus is rebuilt with a
-// smaller queue since it now only handles low-frequency state/error events
-// (packet processing is synchronous via processPacketDirect).
+// WithQueueSize sets TX/output queue depth.
 func (s *MediaSession) WithQueueSize(n int) *MediaSession {
 	if n > 0 {
 		s.QueueSize = n
 	}
-	if !s.Running {
-		s.initEventBus()
-	}
 	return s
 }
 
-func (s *MediaSession) initEventBus() {
-	q := s.QueueSize
-	if q <= 0 {
-		q = 256
-		s.QueueSize = q
-	}
-	if s.eventBus != nil {
-		s.eventBus.Close()
-	}
-	s.eventBus = NewEventBus(s.ctx, q, mediaEventBusWorkers(q))
-	s.setupEventHandlers()
-}
-
-// mediaEventBusWorkers returns the number of EventBus workers. After the
-// hot-path refactoring, the EventBus only handles low-frequency state/error
-// events, so 2 workers are sufficient. The env override is kept for tuning.
-func mediaEventBusWorkers(queueSize int) int {
-	for _, key := range []string{"MEDIA_EVENT_BUS_WORKERS", "SIP_MEDIA_EVENT_BUS_WORKERS"} {
-		if s := os.Getenv(key); s != "" {
-			n, err := strconv.Atoi(s)
-			if err == nil && n > 0 {
-				return n
-			}
-		}
-	}
-	return 2
-}
-
-// setupEventHandlers configures default event handlers.
-// Packet events are NOT handled here — they go through the synchronous direct
-// path (processPacketDirect). Only low-frequency state/error events use the
-// EventBus.
-func (s *MediaSession) setupEventHandlers() {
-	// Handle state events
-	s.eventBus.Subscribe(EventTypeState, func(ctx context.Context, event *MediaEvent) error {
-		if state, ok := event.Payload.(StateChange); ok {
-			// Process state-specific handlers
-			if handlers, found := s.stateHandles[state.State]; found {
-				for _, handler := range handlers {
-					callHandleWithState(s, handler, state)
-				}
-			}
-			// Process wildcard handlers
-			if handlers, found := s.stateHandles[AllStates]; found {
-				for _, handler := range handlers {
-					callHandleWithState(s, handler, state)
-				}
-			}
-		}
-		return nil
-	})
-
-	// Handle error events
-	s.eventBus.Subscribe(EventTypeError, func(ctx context.Context, event *MediaEvent) error {
-		if err, ok := event.Payload.(error); ok {
-			sender := event.Metadata["sender"]
-			for _, handler := range s.errors {
-				handler(sender, err)
-			}
-		}
-		return nil
-	})
-}
 func (s *MediaSession) SetSessionID(id string) *MediaSession {
 	s.ID = id
 	return s
@@ -791,7 +730,7 @@ func (s *MediaSession) Serve() error {
 		}
 		s.Running = false
 		log.With(zap.Any("sessionID", s.ID)).Info("session stopped")
-		// Emit End before cleanup (transports first, then EventBus) so shutdown stays ordered.
+		// Emit End before cleanup so state handlers run while session is still valid.
 		s.EmitState(s, End)
 		s.cleanup()
 		for idx := range s.postHoooks {
@@ -824,7 +763,7 @@ func (s *MediaSession) Serve() error {
 	log.With(zap.Any("sessionID", s.ID)).Info("session started")
 
 	// Packet processing is synchronous in processIncoming goroutines.
-	// EventBus workers only handle low-frequency state/error events.
+	// State/error events are dispatched synchronously via EmitState/CauseError.
 	// Wait for context cancellation.
 	<-s.ctx.Done()
 
@@ -846,7 +785,7 @@ func (s *MediaSession) Codec() CodecConfig {
 }
 
 func (s *MediaSession) cleanup() {
-	// Stop transports first so input/output loops stop emitting to EventBus before we close it.
+	// Stop transports so input/output loops terminate.
 	for idx := range s.inputs {
 		tl := s.inputs[idx]
 		tl.cleanup()
@@ -855,10 +794,6 @@ func (s *MediaSession) cleanup() {
 	for idx := range s.outputs {
 		tl := s.outputs[idx]
 		tl.cleanup()
-	}
-
-	if s.eventBus != nil {
-		s.eventBus.Close()
 	}
 }
 
@@ -899,12 +834,7 @@ func (s *MediaSession) CauseError(sender any, err error) {
 		}
 	}
 
-	// Publish error event
-	if s.eventBus != nil {
-		s.eventBus.PublishError(s.ID, err, sender)
-	}
-
-	// Also call direct error handlers for backward compatibility
+	// Synchronous direct dispatch to error handlers.
 	for _, handle := range s.errors {
 		handle(sender, err)
 	}
@@ -919,8 +849,17 @@ func (s *MediaSession) EmitState(sender any, state string, params ...any) {
 
 	log.With(logger.WithFields(map[string]interface{}{"sender": sender, "state": state, "params": params, "sessionID": s.ID})...).Info("emitstate")
 
-	if s.eventBus != nil {
-		s.eventBus.PublishState(s.ID, event, sender)
+	// Synchronous direct dispatch — no EventBus channel/worker needed for
+	// low-frequency state events.
+	if handlers, found := s.stateHandles[event.State]; found {
+		for _, handler := range handlers {
+			callHandleWithState(s, handler, event)
+		}
+	}
+	if handlers, found := s.stateHandles[AllStates]; found {
+		for _, handler := range handlers {
+			callHandleWithState(s, handler, event)
+		}
 	}
 }
 

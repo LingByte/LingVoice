@@ -236,7 +236,6 @@ func TestSession_DroppedPacketsCounter(t *testing.T) {
 
 	// Small queue to force drops
 	s.QueueSize = 2
-	s.initEventBus()
 	s.Output(out)
 
 	// Manually send packets without starting the output loop

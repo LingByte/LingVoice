@@ -137,6 +137,28 @@ var (
 	MediaDataTypeMetric = "metric"
 )
 
+// EventType represents the type of event (used by Processor interface for
+// backward compatibility; the hot path uses PacketSink directly).
+type EventType string
+
+const (
+	EventTypePacket    EventType = "packet"
+	EventTypeState     EventType = "state"
+	EventTypeError     EventType = "error"
+	EventTypeLifecycle EventType = "lifecycle"
+)
+
+// MediaEvent represents an event. Used by the Processor interface's
+// Process/CanHandle methods. The hot path (packet processing) does NOT
+// allocate MediaEvent — it uses PacketSink.ProcessPacket directly.
+type MediaEvent struct {
+	Type      EventType
+	Timestamp time.Time
+	SessionID string
+	Payload   interface{}
+	Metadata  map[string]interface{}
+}
+
 var (
 	ErrNotInputTransport  = errors.New("not input transport")
 	ErrNotOutputTransport = errors.New("not output transport")
