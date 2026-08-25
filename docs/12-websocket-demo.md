@@ -352,15 +352,18 @@ const decoder = new OpusDecoder(sampleRate, channels);
 const pcm16 = decoder.decode(opusData);
 ```
 
-### 7.3 视频支持
+### 7.3 关于视频
 
-协议层已支持视频（`frame_type=0x02`），demo 暂未启用。扩展方式：
+WS 协议层保留了 video 帧定义（`frame_type=0x02`、OfferVideo/AnswerVideo），但**不推荐用于实时视频传输**：
 
-1. offer 中声明 `video.codecs: ["vp8"]`
-2. 浏览器用 `canvas.captureStream()` 采集视频
-3. 用 WebCodecs API 编码 VP8
-4. 二进制帧发送 `frame_type=0x02`
-5. Rust kind-aware 路由自动处理
+| 问题 | 说明 |
+|------|------|
+| TCP 队头阻塞 | 视频关键帧丢包重传会阻塞后续所有帧，导致累积延迟 |
+| 无拥塞控制 | 无法根据网络状况自适应码率，弱网下卡顿严重 |
+| 无带宽估计 | 视频码率需要动态调整，WS 没有反馈机制 |
+| 帧大小 | VP8/H264 关键帧可达几十 KB，WS 二进制帧无分片 |
+
+**实时视频应使用 WebRTC / WHIP / WHEP**（基于 UDP + SRTP，有 ICE/DTLS/拥塞控制/带宽估计）。WS 协议的 video 字段仅保留用于协议完整性，如非实时场景（如录播回放）可酌情使用。
 
 ### 7.4 多房间
 

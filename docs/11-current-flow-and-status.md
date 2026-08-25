@@ -169,7 +169,7 @@ graph TD
 | 协议 | 信令实现 | Demo | Rust 媒体集成 | 端到端媒体流 | 状态 |
 |------|---------|------|-------------|------------|------|
 | **WebRTC** | ✅ Pion 完整 | ✅ webrtc-rust-demo | ✅ rustbridge push/pull | ✅ 音频+视频 | **跑通** |
-| **WebSocket** | ✅ offer/answer/start/stop | ✅ conversation-demo | ❌ | ❌ | 信令通，媒体本地 |
+| **WebSocket** | ✅ offer/answer/start/stop + chat | ✅ ws-rust-demo | ✅ rustbridge push/pull | ✅ 音频 + 文本 | **跑通** |
 | **SIP** | ✅ sipgo (INVITE/BYE/REGISTER) | ✅ protocol-server | ❌ | ❌ | 信令通，无 RTP |
 | **RTMP** | ✅ gortmplib (publish/play) | ✅ protocol-server | ❌ | ❌ | 信令通，无媒体 |
 | **WHIP** | ✅ Pion (POST/DELETE) | ✅ protocol-server | ❌ | ❌ | 信令通，无媒体 |
@@ -177,16 +177,30 @@ graph TD
 | **MQTT** | ✅ paho (signal/media topic) | ✅ protocol-server | ❌ | ❌ | 信令通，无媒体 |
 | **REST API** | ✅ session CRUD | ✅ protocol-server | ❌ | N/A | 管理面通 |
 
-**结论：只有 WebRTC 跑通了端到端媒体流（Go↔Rust）。其他协议的信令层都已实现，但媒体帧未接入 Rust 媒体节点。**
+**结论：WebRTC 和 WebSocket 已跑通端到端媒体流（Go↔Rust）。其余协议的信令层都已实现，但媒体帧未接入 Rust 媒体节点。**
+
+### 协议适用场景
+
+| 协议 | 音频 | 视频 | 文本 | 适用场景 |
+|------|:----:|:----:|:----:|---------|
+| **WebRTC** | ✅ | ✅ | ❌ (需 DataChannel) | 浏览器实时音视频通话 |
+| **WebSocket** | ✅ | ❌ | ✅ | 语音 Agent + 文本交互（低复杂度接入） |
+| **SIP** | ✅ | ✅ | ❌ | 传统电话互通、SIP 外呼 |
+| **RTMP** | ✅ | ✅ | ❌ | 直播推流/拉流 |
+| **WHIP** | ✅ | ✅ | ❌ | WebRTC 推流入站 |
+| **WHEP** | ✅ | ✅ | ❌ | WebRTC 拉流出站 |
+| **MQTT** | ✅ | ❌ | ✅ | IoT 设备语音接入 |
+
+> **WebSocket 不适合传视频**：基于 TCP，无拥塞控制/带宽估计，视频关键帧（几十 KB）会导致队头阻塞和累积延迟。实时视频应使用 WebRTC / WHIP / WHEP（基于 UDP + SRTP）。WS 协议层虽保留了 video 帧定义，但仅用于协议完整性，不推荐用于实时视频传输。
 
 ---
 
 ## 6. 当前完成度 vs 计划
 
 ```mermaid
-pie title Phase 1 完成度（约 40%）
-    "已完成" : 40
-    "未完成" : 60
+pie title Phase 1 完成度（约 45%）
+    "已完成" : 45
+    "未完成" : 55
 ```
 
 | 模块 | 状态 | 说明 |
@@ -196,11 +210,12 @@ pie title Phase 1 完成度（约 40%）
 | Go 协议层 (信令) | ✅ | 7 种协议 adapter 全部实现 |
 | Go↔Rust 桥接 (rustbridge) | ✅ | per-track push/pull，已修复 pull stream map 泄漏 |
 | WebRTC 端到端 demo | ✅ | 音频+视频双向 room 路由 |
+| WebSocket 端到端 demo | ✅ | 音频+文本，WS 协议加 chat 消息类型 |
 | audio-codec vendor | ✅ | 源码内嵌，不再依赖 crates.io |
 | 单元测试 | ✅ | Rust 18 + Go 40 = 58 tests |
 | **Go 控制面 `control/`** | ❌ | 无 AgentSession/TurnManager/AgentLoop |
 | **插件系统** | ❌ | 无 ASR/TTS/LLM 接口、无 registry、无 mock 插件 |
-| **协议→Rust 媒体集成** | ❌ | 仅 WebRTC，其余 6 种协议未接 |
+| **协议→Rust 媒体集成** | ❌ | 仅 WebRTC + WebSocket，其余 5 种协议未接 |
 | **EgressSubscriber fan-out** | ❌ | trait 定义了但无具体实现 |
 | **协议业务逻辑** | ❌ | 无 auth/router/transfer |
 
