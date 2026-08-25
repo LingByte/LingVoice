@@ -198,9 +198,9 @@ graph TD
 ## 6. 当前完成度 vs 计划
 
 ```mermaid
-pie title Phase 1 完成度（约 45%）
-    "已完成" : 45
-    "未完成" : 55
+pie title Phase 1 完成度（约 65%）
+    "已完成" : 65
+    "未完成" : 35
 ```
 
 | 模块 | 状态 | 说明 |
@@ -211,13 +211,18 @@ pie title Phase 1 完成度（约 45%）
 | Go↔Rust 桥接 (rustbridge) | ✅ | per-track push/pull，已修复 pull stream map 泄漏 |
 | WebRTC 端到端 demo | ✅ | 音频+视频双向 room 路由 |
 | WebSocket 端到端 demo | ✅ | 音频+文本，WS 协议加 chat 消息类型 |
+| WHIP 端到端 demo | ✅ | 推流→Rust room 路由，cmd/whip-rust-demo |
+| WHEP 端到端 demo | ✅ | 拉流←Rust room 路由，cmd/whep-rust-demo |
+| RTMP 端到端 demo | ✅ | 推流→Rust room 路由，cmd/rtmp-rust-demo |
+| MQTT 端到端 demo | ✅ | 双向音频，cmd/mqtt-rust-demo（需 MQTT broker） |
+| SIP 端到端 demo | ✅ | 信令+RTP bridge 框架，cmd/sip-rust-demo（SDP answer 待完善） |
 | audio-codec vendor | ✅ | 源码内嵌，不再依赖 crates.io |
 | 单元测试 | ✅ | Rust 18 + Go 40 = 58 tests |
 | **Go 控制面 `control/`** | ❌ | 无 AgentSession/TurnManager/AgentLoop |
 | **插件系统** | ❌ | 无 ASR/TTS/LLM 接口、无 registry、无 mock 插件 |
-| **协议→Rust 媒体集成** | ❌ | 仅 WebRTC + WebSocket，其余 5 种协议未接 |
 | **EgressSubscriber fan-out** | ❌ | trait 定义了但无具体实现 |
 | **协议业务逻辑** | ❌ | 无 auth/router/transfer |
+| **SIP SDP answer** | ❌ | answer 未带本地 RTP 端口，对端不知往哪发 RTP |
 
 ---
 
@@ -248,10 +253,12 @@ graph LR
    - `control/plugin/registry.go` — 插件注册 + YAML 配置加载
    - `cmd/mock-asr/`、`cmd/mock-tts/`、`cmd/mock-llm/` — Mock 插件实现
 
-3. **协议→Rust 媒体集成** — P1
-   - WebSocket → rustbridge（最简单，已有 conversation-demo 基础）
-   - WHIP/WHEP → rustbridge（Pion 已有，模式与 WebRTC 一致）
-   - SIP → rustbridge（需要 RTP bridge，sipgo 不处理媒体）
+3. ~~**协议→Rust 媒体集成**~~ — ✅ 已完成
+   - ✅ WebSocket → rustbridge
+   - ✅ WHIP/WHEP → rustbridge
+   - ✅ RTMP → rustbridge（publisher 端）
+   - ✅ MQTT → rustbridge
+   - ✅ SIP → rustbridge（信令+RTP bridge 框架，SDP answer 待完善）
 
 4. **EgressSubscriber 实现** — P1
    - RelaySubscriber — 零拷贝 RTP 转发（当前 demo 的 Rust 路由是雏形）
