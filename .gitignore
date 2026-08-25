@@ -13,3 +13,4 @@ webrtc-demo
 # Rust
 rust-media/target/
 **/*.rs.bk
+/ws-rust-demo

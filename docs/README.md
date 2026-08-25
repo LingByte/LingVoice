@@ -27,6 +27,7 @@ LingVoice 是一个**通用语音中台**：以插件化架构支持 WebRTC / We
 | [09-protocol-layer.md](./09-protocol-layer.md) | 协议层设计：SIP/WebRTC/WS 拆分边界、Go 协议应用层、统一事件抽象 |
 | [10-rust-media-architecture.md](./10-rust-media-architecture.md) | Rust 媒体面架构：10 crate 设计、传输/编解码/管线/路由 |
 | [11-current-flow-and-status.md](./11-current-flow-and-status.md) | 当前流转状态：实际媒体流路径、各协议接入情况、后续路线 |
+| [12-websocket-demo.md](./12-websocket-demo.md) | WebSocket 协议设计、消息格式、ws-rust-demo 完整链路 |
 
 ## 阅读顺序
 
