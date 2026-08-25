@@ -6,6 +6,8 @@ package media
 import (
 	"context"
 	"io"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -100,9 +102,10 @@ func TestPacketPool_NilPut(t *testing.T) {
 // mockTransport for session relay tests
 type mockTransport struct {
 	codec   CodecConfig
+	sentMu  sync.Mutex
 	sent    []MediaPacket
 	nextCh  chan MediaPacket
-	closed  bool
+	closed  atomic.Bool
 	ctx     context.Context
 }
 
@@ -114,7 +117,7 @@ func newMockTransport(codec string, sampleRate int) *mockTransport {
 	}
 }
 
-func (m *mockTransport) Close() error { m.closed = true; return nil }
+func (m *mockTransport) Close() error { m.closed.Store(true); return nil }
 func (m *mockTransport) String() string { return "mock" }
 func (m *mockTransport) Attach(s *MediaSession) {}
 func (m *mockTransport) Next(ctx context.Context) (MediaPacket, error) {
@@ -129,8 +132,17 @@ func (m *mockTransport) Next(ctx context.Context) (MediaPacket, error) {
 	}
 }
 func (m *mockTransport) Send(ctx context.Context, packet MediaPacket) (int, error) {
+	m.sentMu.Lock()
 	m.sent = append(m.sent, packet)
+	m.sentMu.Unlock()
 	return 1, nil
+}
+func (m *mockTransport) SentPackets() []MediaPacket {
+	m.sentMu.Lock()
+	defer m.sentMu.Unlock()
+	out := make([]MediaPacket, len(m.sent))
+	copy(out, m.sent)
+	return out
 }
 func (m *mockTransport) Codec() CodecConfig { return m.codec }
 
@@ -140,13 +152,13 @@ func TestSession_RelaySameCodec_SkipsDecodeEncode(t *testing.T) {
 	out := newMockTransport("pcmu", 8000)
 
 	// Set dummy encoder/decoder that would corrupt data if called
-	called := false
+	var called atomic.Bool
 	s.Encode(func(pkt MediaPacket) ([]MediaPacket, error) {
-		called = true
+		called.Store(true)
 		return []MediaPacket{pkt}, nil
 	})
 	s.Decode(func(pkt MediaPacket) ([]MediaPacket, error) {
-		called = true
+		called.Store(true)
 		return []MediaPacket{pkt}, nil
 	})
 
@@ -169,10 +181,10 @@ func TestSession_RelaySameCodec_SkipsDecodeEncode(t *testing.T) {
 	_ = s.Close()
 	time.Sleep(50 * time.Millisecond)
 
-	if called {
+	if called.Load() {
 		t.Fatal("encoder/decoder should NOT be called in relay mode")
 	}
-	if len(out.sent) == 0 {
+	if len(out.SentPackets()) == 0 {
 		t.Fatal("packet should have been sent to output")
 	}
 }
@@ -182,14 +194,14 @@ func TestSession_RelayDifferentCodec_DecodesAndEncodes(t *testing.T) {
 	in := newMockTransport("pcmu", 8000)
 	out := newMockTransport("pcma", 8000)
 
-	decodeCalled := false
-	encodeCalled := false
+	var decodeCalled atomic.Bool
+	var encodeCalled atomic.Bool
 	s.Decode(func(pkt MediaPacket) ([]MediaPacket, error) {
-		decodeCalled = true
+		decodeCalled.Store(true)
 		return []MediaPacket{pkt}, nil
 	})
 	s.Encode(func(pkt MediaPacket) ([]MediaPacket, error) {
-		encodeCalled = true
+		encodeCalled.Store(true)
 		return []MediaPacket{pkt}, nil
 	})
 
@@ -210,10 +222,10 @@ func TestSession_RelayDifferentCodec_DecodesAndEncodes(t *testing.T) {
 	_ = s.Close()
 	time.Sleep(50 * time.Millisecond)
 
-	if !decodeCalled {
+	if !decodeCalled.Load() {
 		t.Fatal("decoder should be called when relay is inactive")
 	}
-	if !encodeCalled {
+	if !encodeCalled.Load() {
 		t.Fatal("encoder should be called when relay is inactive")
 	}
 }

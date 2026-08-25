@@ -38,7 +38,9 @@ func (tl *TransportManager) String() string {
 
 func (tl *TransportManager) processIncoming() {
 	log.With(logger.WithFields(map[string]interface{}{"sessionID": tl.session.GetSession().ID, "transport": tl.transport})...).Info("input transport processing started")
+	tl.mtx.Lock()
 	tl.incomingClosedChan = make(chan struct{}, 1)
+	tl.mtx.Unlock()
 	defer func() {
 		if r := recover(); r != nil {
 			log.With(logger.WithFields(map[string]interface{}{"sessionID": tl.session.GetSession().ID, "transport": tl.transport, "error": r, "stacktrace": string(debug.Stack())})...).Error("input transport processing panic")
@@ -110,7 +112,9 @@ func (tl *TransportManager) processOutgoing() {
 	if tl.txqueue == nil {
 		panic("output queue is nil, transport manager not properly initialized")
 	}
+	tl.mtx.Lock()
 	tl.outcomingClosedChan = make(chan struct{}, 1)
+	tl.mtx.Unlock()
 	defer func() {
 		if r := recover(); r != nil {
 			log.With(logger.WithFields(map[string]interface{}{"sessionID": tl.session.ID, "transport": tl.transport, "error": r, "stacktrace": string(debug.Stack())})...).Error("output transport processing panic")
