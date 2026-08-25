@@ -134,6 +134,26 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 			cancel()
 		}
 
+		// 通知同 room 已有的参与者：有新人加入
+		h.mu.Lock()
+		var existingPeers []string
+		for sid, pss := range h.sessions {
+			if sid != event.SessionID && pss.roomID == ss.roomID && pss.created {
+				existingPeers = append(existingPeers, sid)
+			}
+		}
+		h.mu.Unlock()
+
+		joinMsg := fmt.Sprintf(`{"type":"participant_joined","session":"%s"}`, event.SessionID)
+		for _, peerID := range existingPeers {
+			if sess, ok := h.srv.GetSession(peerID); ok {
+				_ = sess.SendData("reliable", []byte(joinMsg))
+				h.log.Info(">> 通知 peer participant joined",
+					zap.String("peer", peerID),
+					zap.String("new", event.SessionID))
+			}
+		}
+
 	case common.EventAnswered:
 		h.log.Info(">> ICE 连接成功", zap.String("session", event.SessionID))
 
