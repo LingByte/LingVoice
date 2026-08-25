@@ -55,6 +55,7 @@ type rustHandler struct {
 
 type sessionState struct {
 	sessionID string
+	roomID    string
 	created   bool
 	// per-track push/pull 管理（支持音频+视频多 track）
 	tracks map[common.TrackID]*trackState
@@ -86,6 +87,7 @@ func (h *rustHandler) getOrCreateSession(sessionID string) *sessionState {
 	if !ok {
 		ss = &sessionState{
 			sessionID: sessionID,
+			roomID:    "demo-room",
 			tracks:    make(map[common.TrackID]*trackState),
 		}
 		h.sessions[sessionID] = ss
@@ -179,8 +181,9 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 		h.log.Info(">> 挂断", zap.String("session", event.SessionID))
 		// 取消所有 track 的 push/pull
 		h.mu.Lock()
-		if ss, ok := h.sessions[event.SessionID]; ok {
-			for _, ts := range ss.tracks {
+		hangingSS, ok := h.sessions[event.SessionID]
+		if ok {
+			for _, ts := range hangingSS.tracks {
 				if ts.pushCancel != nil {
 					ts.pushCancel()
 				}
@@ -190,7 +193,28 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 			}
 			delete(h.sessions, event.SessionID)
 		}
+		// 收集同 room 的其他 session，通知它们 participant left
+		var peers []string
+		if ok && hangingSS != nil {
+			for sid, ss := range h.sessions {
+				if sid != event.SessionID && ss.roomID == hangingSS.roomID && ss.created {
+					peers = append(peers, sid)
+				}
+			}
+		}
 		h.mu.Unlock()
+
+		// 通知同 room 的其他 participant：有人离开了
+		leaveMsg := fmt.Sprintf(`{"type":"participant_left","session":"%s"}`, event.SessionID)
+		for _, peerID := range peers {
+			if sess, ok := h.srv.GetSession(peerID); ok {
+				_ = sess.SendData("reliable", []byte(leaveMsg))
+				h.log.Info(">> 通知 peer participant left",
+					zap.String("peer", peerID),
+					zap.String("left", event.SessionID))
+			}
+		}
+
 		// 清理 Rust session
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := h.bridge.DestroySession(ctx, event.SessionID); err != nil {

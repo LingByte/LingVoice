@@ -270,8 +270,22 @@ function setupDataChannel(dc) {
   dc.onmessage = (e) => {
     const dataLog = document.getElementById('dataLog');
     const line = document.createElement('div');
-    line.className = 'log-line success';
-    line.textContent = `[${dc.label}] ${e.data}`;
+    // 检查是否是 participant_left 系统消息
+    try {
+      const sysMsg = JSON.parse(e.data);
+      if (sysMsg.type === 'participant_left') {
+        line.className = 'log-line warn';
+        line.textContent = `[系统] 参与者已离开: ${sysMsg.session}`;
+        log('参与者离开: ' + sysMsg.session, 'warn');
+        setStatus('对方已离开');
+      } else {
+        line.className = 'log-line success';
+        line.textContent = `[${dc.label}] ${e.data}`;
+      }
+    } catch {
+      line.className = 'log-line success';
+      line.textContent = `[${dc.label}] ${e.data}`;
+    }
     dataLog.appendChild(line);
     dataLog.scrollTop = dataLog.scrollHeight;
   };
