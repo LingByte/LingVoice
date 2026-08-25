@@ -25,10 +25,12 @@ LingVoice 是一个**通用语音中台**：以插件化架构支持 WebRTC / We
 | [07-media-pipeline.md](./07-media-pipeline.md) | 媒体管线：ptime 节奏器 + 多订阅者出口（混合模型） |
 | [08-rustpbx-research.md](./08-rustpbx-research.md) | RustPBX 调研、架构对比、钢人论证、底座选型决策 |
 | [09-protocol-layer.md](./09-protocol-layer.md) | 协议层设计：SIP/WebRTC/WS 拆分边界、Go 协议应用层、统一事件抽象 |
+| [10-rust-media-architecture.md](./10-rust-media-architecture.md) | Rust 媒体面架构：10 crate 设计、传输/编解码/管线/路由 |
+| [11-current-flow-and-status.md](./11-current-flow-and-status.md) | 当前流转状态：实际媒体流路径、各协议接入情况、后续路线 |
 
 ## 阅读顺序
 
-第一次阅读建议按 `00 → 01 → 08 → 07 → 09 → 04 → 06 → 02 → 03 → 05`。
+第一次阅读建议按 `00 → 01 → 08 → 07 → 09 → 04 → 06 → 02 → 03 → 05 → 11`。
 
 - `08` 是架构选型的决策记录，包含 RustPBX 调研、钢人论证、混合模型结论——先看它理解为什么选这条路。
 - `07` 是混合媒体管线的详细设计，是 `08` 结论的技术落地。
