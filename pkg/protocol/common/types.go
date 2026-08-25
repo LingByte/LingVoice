@@ -146,6 +146,14 @@ const (
 	FrameVideo FrameType = 0x02
 )
 
+// FrameTypeFromKind 根据 TrackKind 返回对应的 FrameType
+func FrameTypeFromKind(kind TrackKind) FrameType {
+	if kind == TrackVideo {
+		return FrameVideo
+	}
+	return FrameAudio
+}
+
 // CodecType 编解码类型
 type CodecType uint8
 
