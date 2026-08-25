@@ -382,6 +382,7 @@ func (h *rustHandler) startPullLoop(sessionID string, pubTrackID common.TrackID,
 				return fmt.Errorf("add subscriber track for ssrc %d: %w", ssrc, err)
 			}
 			ts.subTracks[ssrc] = newSubTrackID
+			subTrackID = newSubTrackID
 			ts.subTracksMu.Unlock()
 
 			h.log.Info(">> 新远端参与者 track 创建（按 SSRC 分流）",
