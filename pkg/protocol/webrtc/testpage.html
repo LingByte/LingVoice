@@ -270,26 +270,51 @@ function setupDataChannel(dc) {
   dc.onmessage = (e) => {
     const dataLog = document.getElementById('dataLog');
     const line = document.createElement('div');
-    // 检查是否是 participant_left 系统消息
+    // 检查是否是系统消息
+    let isSystem = false;
     try {
-      const sysMsg = JSON.parse(e.data);
+      const text = typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data);
+      const sysMsg = JSON.parse(text);
       if (sysMsg.type === 'participant_left') {
+        isSystem = true;
         line.className = 'log-line warn';
         line.textContent = `[系统] 参与者已离开: ${sysMsg.session}`;
         log('参与者离开: ' + sysMsg.session, 'warn');
-        setStatus('对方已离开');
-      } else {
-        line.className = 'log-line success';
-        line.textContent = `[${dc.label}] ${e.data}`;
+        // 执行远端下线：关闭 subscriber PC，清理远端媒体
+        handlePeerLeft();
       }
     } catch {
+      // 不是 JSON，按普通消息处理
+    }
+    if (!isSystem) {
+      const text = typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data);
       line.className = 'log-line success';
-      line.textContent = `[${dc.label}] ${e.data}`;
+      line.textContent = `[${dc.label}] ${text}`;
     }
     dataLog.appendChild(line);
     dataLog.scrollTop = dataLog.scrollHeight;
   };
   dc.onerror = (e) => log('数据通道错误: ' + dc.label + ' ' + e, 'error');
+}
+
+// 对方离开时的本地清理：关闭 subscriber PC，停止远端媒体播放
+function handlePeerLeft() {
+  setStatus('对方已离开');
+  // 关闭 subscriber PC（停止接收远端媒体）
+  if (subscriberPC) {
+    subscriberPC.close();
+    subscriberPC = null;
+    log('已关闭 subscriber 连接', 'warn');
+  }
+  // 清理远端媒体元素
+  document.getElementById('remoteVideo').srcObject = null;
+  document.getElementById('remoteAudio').srcObject = null;
+  // 停止 QoS 统计
+  if (statsInterval) {
+    clearInterval(statsInterval);
+    statsInterval = null;
+    document.getElementById('statsContainer').innerHTML = '<div class="log-line warn">对方已离开，统计已停止</div>';
+  }
 }
 
 function sendData() {

@@ -176,7 +176,8 @@ func (s *Session) SendData(channel string, data []byte) error {
 	if !ok {
 		return fmt.Errorf("data channel not found: %s", channel)
 	}
-	return dc.Send(data)
+	// 优先用 SendText 发送（让前端 onmessage 收到 string 而非 ArrayBuffer）
+	return dc.SendText(string(data))
 }
 
 // --- QoS ---
