@@ -134,28 +134,36 @@ async function connect() {
         }
         break;
       case 'sub_offer':
-        if (!subscriberPC) {
-          subscriberPC = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
-          subscriberPC.onicecandidate = (e) => {
-            if (e.candidate) sendSignal({type: 'candidate', target: 'subscriber', candidate: e.candidate.toJSON()});
-          };
-          subscriberPC.ontrack = (e) => {
-            log('收到远端 track: ' + e.track.kind, 'success');
-            if (e.track.kind === 'video') {
-              document.getElementById('remoteVideo').srcObject = e.streams[0];
-            } else {
-              document.getElementById('remoteAudio').srcObject = e.streams[0];
-            }
-          };
-          subscriberPC.ondatachannel = (e) => {
-            log('收到数据通道: ' + e.channel.label, 'success');
-            setupDataChannel(e.channel);
-          };
+        try {
+          if (!subscriberPC) {
+            subscriberPC = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+            subscriberPC.onicecandidate = (e) => {
+              if (e.candidate) sendSignal({type: 'candidate', target: 'subscriber', candidate: e.candidate.toJSON()});
+            };
+            subscriberPC.ontrack = (e) => {
+              log('收到远端 track: ' + e.track.kind, 'success');
+              if (e.track.kind === 'video') {
+                document.getElementById('remoteVideo').srcObject = e.streams[0];
+              } else {
+                document.getElementById('remoteAudio').srcObject = e.streams[0];
+              }
+            };
+            subscriberPC.ondatachannel = (e) => {
+              log('收到数据通道: ' + e.channel.label, 'success');
+              setupDataChannel(e.channel);
+            };
+          }
+          log('处理 sub_offer: setRemoteDescription (sdp=' + msg.sdp.length + ' bytes)');
+          await subscriberPC.setRemoteDescription({type: 'offer', sdp: msg.sdp});
+          log('sub_offer: setRemoteDescription OK', 'success');
+          const answer = await subscriberPC.createAnswer();
+          await subscriberPC.setLocalDescription(answer);
+          log('→ sub_answer (sdp=' + answer.sdp.length + ' bytes)');
+          sendSignal({type: 'sub_answer', sdp: answer.sdp});
+        } catch (err) {
+          log('sub_offer 处理失败: ' + err.message, 'error');
+          console.error('sub_offer error:', err);
         }
-        await subscriberPC.setRemoteDescription({type: 'offer', sdp: msg.sdp});
-        const answer = await subscriberPC.createAnswer();
-        await subscriberPC.setLocalDescription(answer);
-        sendSignal({type: 'sub_answer', sdp: answer.sdp});
         break;
       case 'candidate':
         if (msg.target === 'publisher' && publisherPC) {
