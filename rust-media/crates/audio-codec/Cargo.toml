@@ -1,0 +1,28 @@
+[package]
+name = "audio-codec"
+version = "0.4.6"
+edition = "2021"
+authors = ["jinti<shenjindi@fourz.cn>", "LingByte"]
+description = "Vendored VoIP audio codecs (G.711, G.722, G.729, Opus) for LingVoice."
+license = "MIT"
+repository = "https://github.com/restsend/audio-codec"
+readme = "README.md"
+keywords = ["sip", "voip", "telephony", "webrtc", "no-std"]
+categories = ["multimedia", "no-std"]
+
+[features]
+default = ["std", "opus"]
+std = ["g729-sys/std", "opus-rs?/std", "opus-rs?/heap"]
+opus = ["dep:opus-rs", "opus-rs/libm"]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+g729-sys = { version = "0.2", default-features = false }
+opus-rs = { version = "0.1.32", optional = true, default-features = false }
+libm = { version = "0.2", default-features = false }
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["html_reports"] }
+opusic-sys = "0.7.3"

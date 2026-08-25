@@ -1,0 +1,625 @@
+use core::f64::consts::PI as PI_F64;
+
+use super::{CodecError, Sample};
+
+#[cfg(feature = "std")]
+use super::PcmBuf;
+
+/// Number of polyphase filter phases.
+pub const NUM_PHASES: usize = 256;
+/// Number of filter taps per phase.
+pub const TAPS_PER_PHASE: usize = 24;
+/// Required length of the caller-provided coefficient buffer (`NUM_PHASES * TAPS_PER_PHASE`).
+pub const COEFFS_LEN: usize = NUM_PHASES * TAPS_PER_PHASE;
+
+/// `f64::sin` polyfill that works in both std and no_std (via libm).
+#[inline]
+fn fsin(x: f64) -> f64 {
+    #[cfg(feature = "std")]
+    {
+        f64::sin(x)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        libm::sin(x)
+    }
+}
+
+/// `f64::sqrt` polyfill.
+#[inline]
+fn fsqrt(x: f64) -> f64 {
+    #[cfg(feature = "std")]
+    {
+        f64::sqrt(x)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        libm::sqrt(x)
+    }
+}
+
+pub struct Resampler<'a> {
+    input_rate: usize,
+    output_rate: usize,
+    ratio: f64,
+    coeffs: &'a mut [f32],
+    num_phases: usize,
+    taps_per_phase: usize,
+    history: [f32; TAPS_PER_PHASE],
+    current_pos: f64,
+}
+
+fn bessel_i0(x: f64) -> f64 {
+    let mut sum = 1.0_f64;
+    let mut term = 1.0_f64;
+    let x_sq = x * x * 0.25;
+
+    for m in 1..=30 {
+        term *= x_sq / (m * m) as f64;
+        sum += term;
+        if term < 1e-15 * sum {
+            break;
+        }
+    }
+    sum
+}
+
+fn kaiser_window(n: usize, n_total: usize, beta: f64) -> f64 {
+    if n_total <= 1 {
+        return 1.0;
+    }
+    let alpha = (n_total - 1) as f64 / 2.0;
+    let x = (n as f64 - alpha) / alpha;
+    let arg = beta * fsqrt(1.0 - x * x);
+    bessel_i0(arg) / bessel_i0(beta)
+}
+
+impl<'a> Resampler<'a> {
+    /// Create a new `Resampler`, writing polyphase filter coefficients into the
+    /// caller-provided buffer.
+    ///
+    /// `coeffs.len()` must be at least [`COEFFS_LEN`] (= 6144 floats, ~24 KB).
+    /// The buffer is held by the resampler for its entire lifetime; it is
+    /// written once here and read on every subsequent `resample_into` call.
+    pub fn new(
+        input_rate: usize,
+        output_rate: usize,
+        coeffs: &'a mut [f32],
+    ) -> Result<Self, CodecError> {
+        if coeffs.len() < COEFFS_LEN {
+            return Err(CodecError::BufferTooSmall);
+        }
+        if input_rate == 0 || output_rate == 0 {
+            return Err(CodecError::InvalidInput);
+        }
+
+        const KAISER_BETA: f64 = 7.0;
+
+        let ratio = output_rate as f64 / input_rate as f64;
+        let num_phases = NUM_PHASES;
+        let taps_per_phase = TAPS_PER_PHASE;
+        let filter_len = num_phases * taps_per_phase;
+
+        let coeffs = &mut coeffs[..filter_len];
+
+        let cutoff = if ratio < 1.0 {
+            ratio * 0.5 * 0.95
+        } else {
+            0.5 * 0.95
+        };
+
+        let center = (taps_per_phase as f64 - 1.0) / 2.0;
+
+        // Design the polyphase filter directly into the borrowed buffer.
+        // We use a fixed-size scratch array on the stack (24 f64 = 192 bytes).
+        let mut phase_coeffs: [f64; TAPS_PER_PHASE] = [0.0; TAPS_PER_PHASE];
+
+        for p in 0..num_phases {
+            let mut sum = 0.0_f64;
+
+            for t in 0..taps_per_phase {
+                let x = t as f64 - center - (p as f64 / num_phases as f64);
+
+                let sinc_val = if x.abs() < 1e-10 {
+                    2.0 * cutoff
+                } else {
+                    let x_pi = x * PI_F64;
+                    fsin(x_pi * 2.0 * cutoff) / x_pi
+                };
+
+                let full_filter_idx = t * num_phases + p;
+                let window = kaiser_window(full_filter_idx, filter_len, KAISER_BETA);
+
+                phase_coeffs[t] = sinc_val * window;
+                sum += phase_coeffs[t];
+            }
+
+            for t in 0..taps_per_phase {
+                let normalized = (phase_coeffs[t] / sum) as f32;
+                coeffs[p * taps_per_phase + t] = normalized;
+            }
+        }
+
+        Ok(Self {
+            input_rate,
+            output_rate,
+            ratio,
+            coeffs,
+            num_phases,
+            taps_per_phase,
+            history: [0.0; TAPS_PER_PHASE],
+            current_pos: 0.0,
+        })
+    }
+
+    pub fn input_rate(&self) -> usize {
+        self.input_rate
+    }
+
+    pub fn output_rate(&self) -> usize {
+        self.output_rate
+    }
+
+    #[inline(always)]
+    fn dot_product(a: &[f32], b: &[f32]) -> f32 {
+        debug_assert_eq!(a.len(), TAPS_PER_PHASE);
+        debug_assert_eq!(b.len(), TAPS_PER_PHASE);
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            // ARM NEON: 24 taps = 6 iterations of 4-wide vectors
+            unsafe {
+                use core::arch::aarch64::*;
+                let mut sumv = vdupq_n_f32(0.0);
+                for i in (0..TAPS_PER_PHASE).step_by(4) {
+                    let av = vld1q_f32(a.as_ptr().add(i));
+                    let bv = vld1q_f32(b.as_ptr().add(i));
+                    sumv = vfmaq_f32(sumv, av, bv);
+                }
+                vaddvq_f32(sumv)
+            }
+        }
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx"))]
+        {
+            unsafe {
+                use core::arch::x86_64::*;
+                let mut sumv = _mm256_setzero_ps();
+                for i in (0..TAPS_PER_PHASE).step_by(8) {
+                    let av = _mm256_loadu_ps(a.as_ptr().add(i));
+                    let bv = _mm256_loadu_ps(b.as_ptr().add(i));
+                    sumv = _mm256_add_ps(sumv, _mm256_mul_ps(av, bv));
+                }
+                // Horizontal sum
+                let x128 = _mm_add_ps(_mm256_extractf128_ps(sumv, 1), _mm256_castps256_ps128(sumv));
+                let x64 = _mm_add_ps(x128, _mm_movehl_ps(x128, x128));
+                let x32 = _mm_add_ss(x64, _mm_shuffle_ps(x64, x64, 0x55));
+                _mm_cvtss_f32(x32)
+            }
+        }
+        #[cfg(all(
+            target_arch = "x86_64",
+            target_feature = "sse2",
+            not(target_feature = "avx")
+        ))]
+        {
+            unsafe {
+                use core::arch::x86_64::*;
+                let mut sumv = _mm_setzero_ps();
+                for i in (0..TAPS_PER_PHASE).step_by(4) {
+                    let av = _mm_loadu_ps(a.as_ptr().add(i));
+                    let bv = _mm_loadu_ps(b.as_ptr().add(i));
+                    sumv = _mm_add_ps(sumv, _mm_mul_ps(av, bv));
+                }
+                let x64 = _mm_add_ps(sumv, _mm_shuffle_ps(sumv, sumv, 0x4e));
+                let x32 = _mm_add_ss(x64, _mm_shuffle_ps(x64, x64, 0x11));
+                _mm_cvtss_f32(x32)
+            }
+        }
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            all(target_arch = "x86_64", target_feature = "sse2")
+        )))]
+        {
+            let mut s = 0.0f32;
+            for i in 0..TAPS_PER_PHASE {
+                s += a[i] * b[i];
+            }
+            s
+        }
+    }
+
+    /// Resample `input` into the caller-provided `out` buffer.
+    ///
+    /// Returns the number of samples written. Returns
+    /// [`CodecError::BufferTooSmall`] if `out` cannot hold the result; use
+    /// [`Self::max_output_samples`] to size it.
+    pub fn resample_into(
+        &mut self,
+        input: &[Sample],
+        out: &mut [Sample],
+    ) -> Result<usize, CodecError> {
+        if self.input_rate == self.output_rate {
+            if out.len() < input.len() {
+                return Err(CodecError::BufferTooSmall);
+            }
+            out[..input.len()].copy_from_slice(input);
+            return Ok(input.len());
+        }
+
+        let inv_ratio = 1.0 / self.ratio;
+        let taps = self.taps_per_phase;
+        let num_phases_f = self.num_phases as f64;
+
+        let mut written = 0usize;
+
+        for &sample in input {
+            self.history.copy_within(1..taps, 0);
+            self.history[taps - 1] = sample as f32;
+
+            while self.current_pos < 1.0 {
+                let phase_idx = (self.current_pos * num_phases_f) as usize;
+                let phase_idx = phase_idx.min(self.num_phases - 1); // Safety clamp
+                let offset = phase_idx * taps;
+                let phase_coeffs = &self.coeffs[offset..offset + taps];
+
+                let out_sample = Self::dot_product(phase_coeffs, &self.history);
+
+                if written >= out.len() {
+                    return Err(CodecError::BufferTooSmall);
+                }
+                out[written] = out_sample.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                written += 1;
+                self.current_pos += inv_ratio;
+            }
+            self.current_pos -= 1.0;
+        }
+
+        Ok(written)
+    }
+
+    /// Upper bound on the number of samples `resample_into` will produce for
+    /// an input of `n_input` samples.
+    pub fn max_output_samples(&self, n_input: usize) -> usize {
+        if self.input_rate == self.output_rate {
+            return n_input;
+        }
+        ((n_input as f64 * self.ratio) as usize) + 1
+    }
+
+    /// Convenience wrapper that allocates a `Vec` and calls `resample_into`.
+    #[cfg(feature = "std")]
+    pub fn resample(&mut self, input: &[Sample]) -> PcmBuf {
+        let max = self.max_output_samples(input.len());
+        let mut out = vec![0i16; max];
+        match self.resample_into(input, &mut out) {
+            Ok(n) => {
+                out.truncate(n);
+                out
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.history.fill(0.0);
+        self.current_pos = 0.0;
+    }
+}
+
+/// One-shot resampling convenience helper (allocates).
+///
+/// Only available with the `std` feature.
+#[cfg(feature = "std")]
+pub fn resample(input: &[Sample], input_sample_rate: u32, output_sample_rate: u32) -> PcmBuf {
+    if input_sample_rate == output_sample_rate {
+        return input.to_vec();
+    }
+    let mut coeffs = vec![0.0f32; COEFFS_LEN];
+    let mut r = match Resampler::new(
+        input_sample_rate as usize,
+        output_sample_rate as usize,
+        &mut coeffs,
+    ) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    r.resample(input)
+}
+
+/// Self-contained [`Resampler`] that owns its coefficient buffer (std only).
+///
+/// [`Resampler`] borrows a ~24 KB caller-provided coefficient slice, which
+/// makes it awkward to store as a long-lived struct field (the buffer must
+/// outlive the resampler). `BoxedResampler` heap-allocates the coefficients
+/// once and keeps them alive for the resampler's whole lifetime, restoring
+/// the pre-0.4 ergonomic `new(input_rate, output_rate)` + `resample(..)`
+/// call shape for std users that hold resamplers in struct fields.
+#[cfg(feature = "std")]
+pub struct BoxedResampler {
+    /// Heap allocation: the buffer address is stable for the box's lifetime
+    /// and never reallocated, which is what the `Resampler<'static>` borrow
+    /// below relies on. Field order matters for drop: `inner` (borrower)
+    /// must drop before `coeffs` (borrowed).
+    inner: Resampler<'static>,
+    #[allow(dead_code)]
+    coeffs: Box<[f32]>,
+}
+
+#[cfg(feature = "std")]
+impl BoxedResampler {
+    /// Create a resampler that owns its polyphase filter coefficients.
+    ///
+    /// Fails only for zero rates (the coefficient buffer is always sized
+    /// correctly internally).
+    pub fn new(input_rate: usize, output_rate: usize) -> Result<Self, CodecError> {
+        let mut coeffs = vec![0.0f32; COEFFS_LEN].into_boxed_slice();
+        // SAFETY: `coeffs` is a heap box whose address cannot change while
+        // the allocation lives. We extend the borrow to 'static solely to
+        // store both the buffer and its borrower in the same struct; the
+        // struct's field order drops `inner` before `coeffs`, and nothing
+        // else can reach the buffer (it is moved into `Self` right after).
+        let inner = unsafe {
+            let ptr = coeffs.as_mut_ptr();
+            let loan: &'static mut [f32] = core::slice::from_raw_parts_mut(ptr, coeffs.len());
+            Resampler::new(input_rate, output_rate, loan)?
+        };
+        Ok(Self { inner, coeffs })
+    }
+
+    /// Convenience wrapper that allocates the output buffer.
+    pub fn resample(&mut self, input: &[Sample]) -> PcmBuf {
+        self.inner.resample(input)
+    }
+
+    /// Resample into a caller-provided buffer (no allocation).
+    pub fn resample_into(
+        &mut self,
+        input: &[Sample],
+        out: &mut [Sample],
+    ) -> Result<usize, CodecError> {
+        self.inner.resample_into(input, out)
+    }
+
+    /// Upper bound on the output sample count for `n_input` input samples.
+    pub fn max_output_samples(&self, n_input: usize) -> usize {
+        self.inner.max_output_samples(n_input)
+    }
+
+    /// Reset the resampling history (e.g. after a source discontinuity).
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f32::consts::PI as PI_F32;
+    use std::time::Instant;
+
+    fn new_resampler(input_rate: usize, output_rate: usize) -> Resampler<'static> {
+        // Leak intentionally: tests are short-lived and we need a 'static reference.
+        let coeffs: &'static mut [f32] = Box::leak(vec![0.0f32; COEFFS_LEN].into_boxed_slice());
+        Resampler::new(input_rate, output_rate, coeffs).expect("resampler init")
+    }
+
+    #[test]
+    fn test_resample_8k_to_16k() {
+        let mut resampler = new_resampler(8000, 16000);
+        let input = vec![1000i16; 80];
+        let output = resampler.resample(&input);
+        assert!(output.len() >= 150 && output.len() <= 170);
+        for &s in &output[48..output.len().saturating_sub(48)] {
+            assert!((s - 1000).abs() < 100, "Value {} is too far from 1000", s);
+        }
+    }
+
+    #[test]
+    fn test_resample_16k_to_8k() {
+        let mut resampler = new_resampler(16000, 8000);
+        let input = vec![1000i16; 160];
+        let output = resampler.resample(&input);
+        assert!(output.len() >= 75 && output.len() <= 85);
+        let skip = output.len() / 4;
+        for &s in &output[skip..output.len() - skip] {
+            assert!((s - 1000).abs() < 100, "Value {} is too far from 1000", s);
+        }
+    }
+
+    #[test]
+    fn test_frequency_response_downsample() {
+        let mut resampler = new_resampler(16000, 8000);
+        let freq = 2000.0_f32; // Well below 4kHz Nyquist
+        let samples: Vec<i16> = (0..160)
+            .map(|i| ((i as f32 * freq * 2.0 * PI_F32 / 16000.0).sin() * 10000.0) as i16)
+            .collect();
+
+        let output = resampler.resample(&samples);
+
+        // Output should have similar amplitude (allowing for some attenuation)
+        let input_rms: f32 = samples
+            .iter()
+            .map(|&s| (s as f32).powi(2))
+            .sum::<f32>()
+            .sqrt()
+            / samples.len() as f32;
+        let output_rms: f32 = output
+            .iter()
+            .map(|&s| (s as f32).powi(2))
+            .sum::<f32>()
+            .sqrt()
+            / output.len() as f32;
+
+        assert!(
+            output_rms > input_rms * 0.7,
+            "Too much attenuation: input_rms={}, output_rms={}",
+            input_rms,
+            output_rms
+        );
+    }
+
+    #[test]
+    fn test_aliasing_suppression() {
+        let mut resampler = new_resampler(16000, 8000);
+        let freq = 7000.0_f32; // Above 4kHz Nyquist of output
+        let samples: Vec<i16> = (0..1600)
+            .map(|i| ((i as f32 * freq * 2.0 * PI_F32 / 16000.0).sin() * 10000.0) as i16)
+            .collect();
+
+        let output = resampler.resample(&samples);
+
+        let output_rms: f32 =
+            (output.iter().map(|&s| (s as f32).powi(2)).sum::<f32>() / output.len() as f32).sqrt();
+        let input_rms: f32 = 10000.0 / 1.414; // Expected RMS of sine wave with amplitude 10000
+
+        assert!(
+            output_rms < input_rms / 50.0,
+            "Aliasing not sufficiently suppressed: output_rms={}",
+            output_rms
+        );
+    }
+
+    #[test]
+    fn test_performance_48k_to_8k() {
+        let mut resampler = new_resampler(48000, 8000);
+        let input = vec![0i16; 48000];
+
+        let start = Instant::now();
+        let iterations = 100;
+        for _ in 0..iterations {
+            let _ = resampler.resample(&input);
+            resampler.reset();
+        }
+        let duration = start.elapsed();
+        let per_second = duration.as_secs_f64() / iterations as f64;
+        println!(
+            "Resampling 1s of 48kHz to 8kHz (24 taps) took: {:.4}ms",
+            per_second * 1000.0
+        );
+        assert!(
+            per_second < 0.1,
+            "Performance regression: {}ms",
+            per_second * 1000.0
+        );
+    }
+
+    #[test]
+    fn test_continuity_between_chunks() {
+        let input_rate = 16000;
+        let output_rate = 8000;
+
+        let freq = 1000.0_f32;
+        let total_samples = 3200;
+        let input: Vec<i16> = (0..total_samples)
+            .map(|i| ((i as f32 * freq * 2.0 * PI_F32 / input_rate as f32).sin() * 5000.0) as i16)
+            .collect();
+
+        let mut resampler1 = new_resampler(input_rate, output_rate);
+        let output1 = resampler1.resample(&input);
+
+        let mut resampler2 = new_resampler(input_rate, output_rate);
+        let mid = input.len() / 2;
+        let mut output2 = resampler2.resample(&input[..mid]);
+        output2.extend_from_slice(&resampler2.resample(&input[mid..]));
+
+        assert_eq!(output1.len(), output2.len(), "Output lengths differ");
+
+        let max_diff: i16 = output1
+            .iter()
+            .zip(output2.iter())
+            .map(|(a, b)| (a - b).abs())
+            .max()
+            .unwrap_or(0);
+
+        assert!(
+            max_diff < 100,
+            "Large discontinuity between chunks: max_diff={}",
+            max_diff
+        );
+    }
+
+    /// `BoxedResampler` must produce byte-identical output to the borrowed
+    /// `Resampler` fed the same coefficients, and survive being moved +
+    /// reused across many calls (stable self-referential borrow).
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_boxed_resampler_matches_borrowed() {
+        let input_rate = 48000usize;
+        let output_rate = 8000usize;
+        let input: Vec<i16> = (0..4800)
+            .map(|i| ((i as f32 * 0.05).sin() * 8000.0) as i16)
+            .collect();
+
+        let expected = {
+            let mut coeffs = vec![0.0f32; COEFFS_LEN];
+            let mut borrowed = Resampler::new(input_rate, output_rate, &mut coeffs).unwrap();
+            borrowed.resample(&input)
+        };
+
+        let mut boxed = BoxedResampler::new(input_rate, output_rate).unwrap();
+        let expected_max = ((input.len() * output_rate + input_rate - 1) / input_rate) + 1;
+        assert_eq!(boxed.max_output_samples(input.len()), expected_max);
+        let got = boxed.resample(&input);
+        assert_eq!(
+            expected, got,
+            "BoxedResampler output must match borrowed Resampler"
+        );
+
+        // Reuse after move: the coefficient borrow must stay valid across
+        // moves. The resampler is a streaming state machine — a second
+        // `resample` of the same input keeps the tail of the previous run in
+        // its history, so only the output LENGTH is stable across the move.
+        let mut moved = boxed;
+        let again = moved.resample(&input);
+        assert_eq!(expected.len(), again.len());
+
+        // reset() clears the history and phase, so a fresh `resample` of the
+        // same input must reproduce the very first output exactly.
+        moved.reset();
+        let after_reset = moved.resample(&input);
+        assert_eq!(expected, after_reset);
+
+        assert!(
+            BoxedResampler::new(0, 8000).is_err(),
+            "zero input rate must error"
+        );
+        assert!(
+            BoxedResampler::new(48000, 0).is_err(),
+            "zero output rate must error"
+        );
+    }
+}
+#[cfg(test)]
+mod debug_probe2 {
+    use super::*;
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn probe_order() {
+        let input: Vec<i16> = (0..4800)
+            .map(|i| ((i as f32 * 0.05).sin() * 8000.0) as i16)
+            .collect();
+        // borrowed FIRST, then boxed — same order as the failing test
+        let expected = {
+            let mut coeffs = vec![0.0f32; COEFFS_LEN];
+            let mut r = Resampler::new(48000, 8000, &mut coeffs).unwrap();
+            r.resample(&input)
+        };
+        let mut boxed = BoxedResampler::new(48000, 8000).unwrap();
+        let got = boxed.resample(&input);
+        let diffs: Vec<usize> = expected
+            .iter()
+            .zip(got.iter())
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .map(|(i, _)| i)
+            .collect();
+        println!(
+            "diff_count={} first_diffs={:?} expected_len={} got_len={}",
+            diffs.len(),
+            &diffs[..diffs.len().min(8)],
+            expected.len(),
+            got.len()
+        );
+    }
+}
