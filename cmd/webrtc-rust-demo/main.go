@@ -17,8 +17,17 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"flag"
 	"fmt"
+	"math/big"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -346,6 +355,9 @@ func main() {
 		stun       = flag.String("stun", "stun:stun.l.google.com:19302", "STUN 服务器")
 		rustAddr   = flag.String("rust", "127.0.0.1:50051", "Rust 媒体节点 gRPC 地址")
 		statsInt   = flag.Int("stats-interval", 5, "QoS 统计打印间隔（秒），0=禁用")
+		tls        = flag.Bool("tls", false, "启用 HTTPS（局域网联调用，自动生成自签证书）")
+		tlsCert    = flag.String("tls-cert", "", "TLS 证书文件（为空且 --tls 时自动生成）")
+		tlsKey     = flag.String("tls-key", "", "TLS 私钥文件（为空且 --tls 时自动生成）")
 	)
 	flag.Parse()
 
@@ -393,9 +405,22 @@ func main() {
 
 	// 4. 启动 WebRTC 服务器
 	go func() {
-		if err := srv.Start(); err != nil {
-			log.Error("webrtc server stopped", zap.Error(err))
-			os.Exit(1)
+		if *tls {
+			certFile, keyFile, err := ensureTLSCert(*tlsCert, *tlsKey, log)
+			if err != nil {
+				log.Error("TLS cert prepare failed", zap.Error(err))
+				os.Exit(1)
+			}
+			log.Info("starting HTTPS server", zap.String("addr", *addr), zap.String("cert", certFile))
+			if err := http.ListenAndServeTLS(*addr, certFile, keyFile, srv.Handler()); err != nil {
+				log.Error("webrtc server stopped", zap.Error(err))
+				os.Exit(1)
+			}
+		} else {
+			if err := srv.Start(); err != nil {
+				log.Error("webrtc server stopped", zap.Error(err))
+				os.Exit(1)
+			}
 		}
 	}()
 
@@ -417,14 +442,30 @@ func main() {
 	fmt.Printf("  LingVoice WebRTC + Rust Media Demo\n")
 	fmt.Printf("========================================\n")
 	fmt.Printf("\n")
-	fmt.Printf("  WebRTC 信令: http://%s\n", normalizeAddr(*addr))
-	fmt.Printf("  WebSocket:   ws://%s%s\n", normalizeAddr(*addr), *path)
+	scheme := "http"
+	wsScheme := "ws"
+	if *tls {
+		scheme = "https"
+		wsScheme = "wss"
+	}
+	fmt.Printf("  WebRTC 信令: %s://%s\n", scheme, normalizeAddr(*addr))
+	fmt.Printf("  WebSocket:   %s://%s%s\n", wsScheme, normalizeAddr(*addr), *path)
 	fmt.Printf("  Rust 媒体:   %s\n", *rustAddr)
 	fmt.Printf("  STUN:        %s\n", *stun)
+	if *tls {
+		fmt.Printf("  TLS:         已启用（自签证书，浏览器需点\"继续访问\"）\n")
+	}
 	fmt.Printf("\n")
 	fmt.Printf("  媒体链路 (音频+视频):\n")
 	fmt.Printf("    浏览器A → Go/Pion → gRPC PushRtp → Rust room 路由 → gRPC PullRtp → Go/Pion → 浏览器B\n")
 	fmt.Printf("\n")
+	if *tls {
+		fmt.Printf("  局域网联调:\n")
+		fmt.Printf("    1. 查本机 IP: ifconfig | grep 'inet ' | grep -v 127\n")
+		fmt.Printf("    2. 另一台电脑浏览器打开 https://<本机IP>:8081\n")
+		fmt.Printf("    3. 浏览器会提示证书不安全，点\"高级\"→\"继续访问\"即可\n")
+		fmt.Printf("\n")
+	}
 	fmt.Printf("  按 Ctrl+C 退出\n")
 	fmt.Printf("\n")
 
@@ -455,4 +496,80 @@ func qosMonitor(srv *webrtc.Server, bridge *rustbridge.Client, log *zap.Logger, 
 			log.Info("QoS monitor", zap.Int("activeSessions", count))
 		}
 	}
+}
+
+// ensureTLSCert 确保有 TLS 证书。如果 certFile/keyFile 为空，自动生成自签证书。
+// 自签证书包含本机所有网卡的 IP 作为 SAN，方便局域网联调。
+func ensureTLSCert(certFile, keyFile string, log *zap.Logger) (string, string, error) {
+	if certFile != "" && keyFile != "" {
+		return certFile, keyFile, nil
+	}
+
+	// 收集本机所有 IP
+	var ips []net.IP
+	addrs, err := net.InterfaceAddrs()
+	if err == nil {
+		for _, addr := range addrs {
+			if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+				ips = append(ips, ipNet.IP)
+			}
+		}
+	}
+	// 确保 127.0.0.1 在里面
+	ips = append(ips, net.IPv4(127, 0, 0, 1))
+
+	// 生成 ECDSA 私钥
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", fmt.Errorf("generate key: %w", err)
+	}
+
+	// 证书模板
+	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	tmpl := x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			Organization: []string{"LingVoice"},
+			CommonName:   "LingVoice Dev",
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		DNSNames:              []string{"localhost"},
+	}
+	for _, ip := range ips {
+		tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		return "", "", fmt.Errorf("create certificate: %w", err)
+	}
+
+	// 写入临时文件
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	keyBytes, _ := x509.MarshalECPrivateKey(key)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+
+	certFile = "certs/webrtc-dev.crt"
+	keyFile = "certs/webrtc-dev.key"
+	os.MkdirAll("certs", 0755)
+	if err := os.WriteFile(certFile, certPEM, 0644); err != nil {
+		return "", "", fmt.Errorf("write cert: %w", err)
+	}
+	if err := os.WriteFile(keyFile, keyPEM, 0600); err != nil {
+		return "", "", fmt.Errorf("write key: %w", err)
+	}
+
+	log.Info("self-signed TLS certificate generated",
+		zap.String("cert", certFile),
+		zap.Int("ipSANs", len(ips)))
+	for _, ip := range ips {
+		log.Info("  SAN IP", zap.String("ip", ip.String()))
+	}
+
+	return certFile, keyFile, nil
 }

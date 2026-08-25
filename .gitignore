@@ -14,3 +14,4 @@ webrtc-demo
 rust-media/target/
 **/*.rs.bk
 /ws-rust-demo
+certs/
