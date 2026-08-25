@@ -1,0 +1,17 @@
+[package]
+name = "media-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lm-core = { path = "../../crates/lm-core" }
+lm-control = { path = "../../crates/lm-control" }
+lm-telemetry = { path = "../../crates/lm-telemetry" }
+tonic.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+uuid.workspace = true
