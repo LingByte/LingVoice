@@ -209,7 +209,7 @@ func main() {
 	var (
 		addr     = flag.String("addr", ":8083", "WHEP 服务监听地址")
 		path     = flag.String("path", "/whep", "WHEP endpoint 路径")
-		rustAddr = flag.String("rust", "localhost:50051", "Rust 媒体节点 gRPC 地址")
+		rustAddr = flag.String("rust", "127.0.0.1:50051", "Rust 媒体节点 gRPC 地址")
 	)
 	flag.Parse()
 

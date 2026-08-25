@@ -293,7 +293,7 @@ func main() {
 	var (
 		addr      = flag.String("addr", ":8082", "WebSocket 服务监听地址")
 		path      = flag.String("path", "/ws/voice", "WebSocket 路径")
-		rustAddr  = flag.String("rust", "localhost:50051", "Rust 媒体节点 gRPC 地址")
+		rustAddr  = flag.String("rust", "127.0.0.1:50051", "Rust 媒体节点 gRPC 地址")
 		staticDir = flag.String("static", "cmd/ws-rust-demo/static", "静态文件目录")
 	)
 	flag.Parse()

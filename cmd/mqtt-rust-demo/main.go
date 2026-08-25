@@ -226,7 +226,7 @@ func main() {
 		broker   = flag.String("broker", "tcp://localhost:1883", "MQTT broker 地址")
 		clientID = flag.String("client-id", "lingvoice-mqtt-demo", "MQTT 客户端 ID")
 		prefix   = flag.String("prefix", "lingvoice", "MQTT topic 前缀")
-		rustAddr = flag.String("rust", "localhost:50051", "Rust 媒体节点 gRPC 地址")
+		rustAddr = flag.String("rust", "127.0.0.1:50051", "Rust 媒体节点 gRPC 地址")
 	)
 	flag.Parse()
 

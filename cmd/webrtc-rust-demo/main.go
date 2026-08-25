@@ -320,7 +320,7 @@ func main() {
 		addr       = flag.String("addr", ":8081", "WebRTC 信令监听地址")
 		path       = flag.String("path", "/webrtc/signal", "信令路径")
 		stun       = flag.String("stun", "stun:stun.l.google.com:19302", "STUN 服务器")
-		rustAddr   = flag.String("rust", "localhost:50051", "Rust 媒体节点 gRPC 地址")
+		rustAddr   = flag.String("rust", "127.0.0.1:50051", "Rust 媒体节点 gRPC 地址")
 		statsInt   = flag.Int("stats-interval", 5, "QoS 统计打印间隔（秒），0=禁用")
 	)
 	flag.Parse()
