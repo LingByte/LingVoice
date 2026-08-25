@@ -78,6 +78,10 @@ type trackState struct {
 	pullStarted bool
 	pullCancel  context.CancelFunc
 	subTrackID  common.TrackID // subscriber 侧对应的 track（用于写回）
+
+	// 按 SSRC 分流：每个远端参与者的 SSRC → 独立的 subscriber track
+	subTracksMu sync.Mutex
+	subTracks   map[uint32]common.TrackID // ssrc → subTrackID
 }
 
 func newRustHandler(log *zap.Logger, bridge *rustbridge.Client, srv *webrtc.Server) *rustHandler {
@@ -107,7 +111,11 @@ func (h *rustHandler) getOrCreateSession(sessionID string) *sessionState {
 func (h *rustHandler) getOrCreateTrack(ss *sessionState, trackID common.TrackID, kind common.TrackKind, codec common.CodecType) *trackState {
 	ts, ok := ss.tracks[trackID]
 	if !ok {
-		ts = &trackState{kind: kind, codec: codec}
+		ts = &trackState{
+			kind:      kind,
+			codec:     codec,
+			subTracks: make(map[uint32]common.TrackID),
+		}
 		ss.tracks[trackID] = ts
 	}
 	return ts
@@ -294,12 +302,14 @@ func (h *rustHandler) OnData(sessionID string, msg common.DataMessage) error {
 	return nil
 }
 
-// startPullLoop 为每个 track 启动 PullRtp 流，将 Rust 转发的其他 participant 媒体写回 subscriber。
+// startPullLoop 从 Rust 拉取同 room 其他 participant 的媒体，按 SSRC 分流到独立的 subscriber track。
 //
 // 流程：
-//  1. 给本 session 的 subscriber 添加一个同 kind 的 track（音频或视频）
-//  2. 从 Rust pull 自己的 publisher track（Rust 会把同 room 其他人的包转发到这里）
-//  3. 收到包后通过 SendMediaFrame 写到 subscriber track
+//  1. 从 Rust pull 自己的 publisher track（Rust 把同 room 其他人的包转发到这里）
+//  2. 收到包后按 SSRC 判断来自哪个 participant
+//  3. 每个 SSRC 对应一个独立的 subscriber track（首次见到时动态创建）
+//  4. 通过 SendMediaFrame 写到对应的 subscriber track
+//  5. 前端 ontrack 为每个 track 触发，动态创建媒体元素
 func (h *rustHandler) startPullLoop(sessionID string, pubTrackID common.TrackID, kind common.TrackKind, codec common.CodecType) {
 	if h.srv == nil {
 		h.log.Error("srv not set, cannot start pull loop")
@@ -312,52 +322,67 @@ func (h *rustHandler) startPullLoop(sessionID string, pubTrackID common.TrackID,
 		return
 	}
 
-	// 根据 kind 构造 subscriber track 配置
-	trackCfg := common.TrackConfig{
-		Kind:     kind,
-		Codec:    codec,
-		Label:    fmt.Sprintf("sub-%s-%s", kind.String(), pubTrackID),
-		StreamID: sessionID,
-	}
-	if kind == common.TrackAudio {
-		trackCfg.SampleRate = 48000
-		trackCfg.Channels = 2
-	} else {
-		// 视频固定 90kHz clock rate（所有标准 WebRTC 视频编解码器一致）
-		trackCfg.SampleRate = 90000
-	}
-
-	// 给 subscriber 添加一个 track（浏览器会收到这个 track 的媒体）
-	subTrackID, err := sess.AddTrack(trackCfg)
-	if err != nil {
-		h.log.Error("add subscriber track failed",
-			zap.String("session", sessionID),
-			zap.String("kind", kind.String()),
-			zap.Error(err))
-		return
-	}
-
-	// 记录 subTrackID
 	ss := h.getOrCreateSession(sessionID)
-	if ts, ok := ss.tracks[pubTrackID]; ok {
-		ts.subTrackID = subTrackID
-	}
-
-	h.log.Info("subscriber track added for pull",
-		zap.String("session", sessionID),
-		zap.String("kind", kind.String()),
-		zap.String("subTrackID", string(subTrackID)),
-		zap.String("pubTrackID", string(pubTrackID)))
 
 	// 从 Rust pull 自己的 publisher track
-	// Rust 把同 room 其他 session push 的包转发到本 session track 的 broadcast
 	ctx, cancel := context.WithCancel(context.Background())
 	if ts, ok := ss.tracks[pubTrackID]; ok {
 		ts.pullCancel = cancel
 	}
 
-	err = h.bridge.StartPullRtp(ctx, sessionID, pubTrackID, kind, codec, func(frame common.MediaFrame) error {
-		// 从 Rust 收到其他 participant 的 RTP，写到 subscriber track
+	err := h.bridge.StartPullRtp(ctx, sessionID, pubTrackID, kind, codec, func(frame common.MediaFrame) error {
+		// 按 SSRC 分流：每个远端参与者有独立的 SSRC
+		ssrc := frame.SSRC
+		if ssrc == 0 {
+			return nil
+		}
+
+		// 查找或创建该 SSRC 对应的 subscriber track
+		ts := ss.tracks[pubTrackID]
+		if ts == nil {
+			return fmt.Errorf("track state not found")
+		}
+
+		ts.subTracksMu.Lock()
+		subTrackID, exists := ts.subTracks[ssrc]
+		if !exists {
+			// 首次见到这个 SSRC，创建新的 subscriber track
+			trackCfg := common.TrackConfig{
+				Kind:     kind,
+				Codec:    codec,
+				Label:    fmt.Sprintf("sub-%s-ssrc-%d", kind.String(), ssrc),
+				StreamID: fmt.Sprintf("peer-%d", ssrc),
+			}
+			if kind == common.TrackAudio {
+				trackCfg.SampleRate = 48000
+				trackCfg.Channels = 2
+			} else {
+				trackCfg.SampleRate = 90000
+			}
+
+			newSubTrackID, err := sess.AddTrack(trackCfg)
+			if err != nil {
+				ts.subTracksMu.Unlock()
+				return fmt.Errorf("add subscriber track for ssrc %d: %w", ssrc, err)
+			}
+			ts.subTracks[ssrc] = newSubTrackID
+			ts.subTracksMu.Unlock()
+
+			h.log.Info(">> 新远端参与者 track 创建（按 SSRC 分流）",
+				zap.String("session", sessionID),
+				zap.String("kind", kind.String()),
+				zap.Uint32("ssrc", ssrc),
+				zap.String("subTrackID", string(newSubTrackID)))
+
+			// 通知前端有新参与者
+			peerJoinMsg := fmt.Sprintf(`{"type":"track_added","ssrc":%d,"kind":"%s","subTrackID":"%s"}`, ssrc, kind.String(), string(newSubTrackID))
+			_ = sess.SendData("reliable", []byte(peerJoinMsg))
+
+			return sess.SendMediaFrame(newSubTrackID, frame)
+		}
+		ts.subTracksMu.Unlock()
+
+		// 写到对应的 subscriber track
 		return sess.SendMediaFrame(subTrackID, frame)
 	})
 	if err != nil {

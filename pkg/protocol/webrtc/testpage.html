@@ -54,8 +54,9 @@ input[type="text"] { background: #0d1117; border: 1px solid #30363d; color: #eee
   <div class="col">
     <div class="panel">
       <h2>远端媒体</h2>
-      <video id="remoteVideo" autoplay playsinline></video>
-      <audio id="remoteAudio" autoplay></audio>
+      <div id="remoteMediaContainer" style="display:flex;flex-wrap:wrap;gap:8px">
+        <div class="log-line info" id="noRemoteHint">等待远端参与者加入...</div>
+      </div>
     </div>
   </div>
 </div>
@@ -146,11 +147,43 @@ async function connect() {
               if (e.candidate) sendSignal({type: 'candidate', target: 'subscriber', candidate: e.candidate.toJSON()});
             };
             subscriberPC.ontrack = (e) => {
-              log('收到远端 track: ' + e.track.kind, 'success');
+              log('收到远端 track: ' + e.track.kind + ' (stream=' + e.streams[0].id + ')', 'success');
+              // 隐藏"等待"提示
+              const hint = document.getElementById('noRemoteHint');
+              if (hint) hint.style.display = 'none';
+              // 按 stream ID 创建或复用媒体容器
+              const streamId = e.streams[0].id;
+              let container = document.getElementById('remote-' + streamId);
+              if (!container) {
+                container = document.createElement('div');
+                container.id = 'remote-' + streamId;
+                container.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px';
+                const label = document.createElement('div');
+                label.className = 'log-line info';
+                label.style.fontSize = '12px';
+                label.textContent = '👤 ' + streamId.substring(0, 12);
+                container.appendChild(label);
+                document.getElementById('remoteMediaContainer').appendChild(container);
+              }
               if (e.track.kind === 'video') {
-                document.getElementById('remoteVideo').srcObject = e.streams[0];
+                let video = container.querySelector('video');
+                if (!video) {
+                  video = document.createElement('video');
+                  video.autoplay = true;
+                  video.playsInline = true;
+                  video.style.cssText = 'width:240px;height:180px;background:#000;border-radius:4px';
+                  container.appendChild(video);
+                }
+                video.srcObject = e.streams[0];
               } else {
-                document.getElementById('remoteAudio').srcObject = e.streams[0];
+                let audio = container.querySelector('audio');
+                if (!audio) {
+                  audio = document.createElement('audio');
+                  audio.autoplay = true;
+                  audio.style.cssText = 'width:240px';
+                  container.appendChild(audio);
+                }
+                audio.srcObject = e.streams[0];
               }
             };
             subscriberPC.ondatachannel = (e) => {
@@ -338,19 +371,19 @@ function updateParticipantsUI() {
   }
 }
 
-// 对方离开时的本地清理：关闭 subscriber PC，停止远端媒体播放
+// 对方离开时的本地清理：关闭 subscriber PC，清理远端媒体
 function handlePeerLeft() {
   setStatus('对方已离开');
-  // 关闭 subscriber PC（停止接收远端媒体）
   if (subscriberPC) {
     subscriberPC.close();
     subscriberPC = null;
     log('已关闭 subscriber 连接', 'warn');
   }
-  // 清理远端媒体元素
-  document.getElementById('remoteVideo').srcObject = null;
-  document.getElementById('remoteAudio').srcObject = null;
-  // 停止 QoS 统计
+  // 清理远端媒体容器
+  const container = document.getElementById('remoteMediaContainer');
+  if (container) {
+    container.innerHTML = '<div class="log-line info" id="noRemoteHint">等待远端参与者加入...</div>';
+  }
   if (statsInterval) {
     clearInterval(statsInterval);
     statsInterval = null;
@@ -384,8 +417,11 @@ function disconnect() {
   if (ws) { ws.close(); ws = null; }
   if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
   document.getElementById('localVideo').srcObject = null;
-  document.getElementById('remoteVideo').srcObject = null;
-  document.getElementById('remoteAudio').srcObject = null;
+  // 清理远端媒体容器
+  const container = document.getElementById('remoteMediaContainer');
+  if (container) {
+    container.innerHTML = '<div class="log-line info" id="noRemoteHint">等待远端参与者加入...</div>';
+  }
   // 清理参与者列表
   participants.clear();
   updateParticipantsUI();
