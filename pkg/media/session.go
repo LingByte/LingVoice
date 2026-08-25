@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LingByte/ling-base/common/logger"
@@ -65,9 +66,13 @@ inputLoop:
 			continue
 		}
 
-		// Decode packet if decoder is configured
+		// Relay fast-path: when input and output codecs match, skip decoding.
+		// The raw codec payload is forwarded directly to the output loop,
+		// which also skips encoding. Filters and processors still run.
 		var decodedPackets []MediaPacket
-		if tl.session.decoder != nil {
+		if tl.session.relay != nil && tl.session.relay.IsActive() {
+			decodedPackets = []MediaPacket{packet}
+		} else if tl.session.decoder != nil {
 			decodedPackets, err = tl.session.decoder(packet)
 			if err != nil {
 				tl.session.CauseError(tl, err)
@@ -152,8 +157,11 @@ outputLoop:
 		}
 
 		// Encode packet if encoder is configured
+		// Relay fast-path: skip encoding when relay is active (same codec).
 		var encodedPackets []MediaPacket
-		if tl.session.encoder != nil {
+		if tl.session.relay != nil && tl.session.relay.IsActive() {
+			encodedPackets = []MediaPacket{packet}
+		} else if tl.session.encoder != nil {
 			encodedPackets, err = tl.session.encoder(packet)
 			if err != nil {
 				tl.session.CauseError(tl, err)
@@ -234,7 +242,7 @@ func (tl *TransportManager) trySendPacket(packet MediaPacket) {
 	select {
 	case tl.txqueue <- packet:
 	default:
-		log.With(logger.WithFields(map[string]interface{}{"sessionID": tl.session.ID, "packet": packet})...).Info("packet dropped")
+		tl.session.droppedPackets.Add(1)
 	}
 }
 
@@ -268,6 +276,12 @@ type MediaSession struct {
 	outputs      []*TransportManager
 	trace        MediaHandlerFunc
 	postHoooks   []SessionHook
+
+	// Relay fast-path: skip decode→encode when input and output codecs match.
+	relay *RelayState
+
+	// Dropped packet counter (atomic) for backpressure metrics.
+	droppedPackets atomic.Int64
 
 	// New event-driven architecture
 	eventBus          *EventBus
@@ -311,6 +325,7 @@ func NewDefaultSession() *MediaSession {
 	// Initialize new architecture components
 	session.processorRegistry = NewProcessorRegistry()
 	session.router = NewRouter(StrategyBroadcast)
+	session.relay = NewRelayState()
 	session.initEventBus()
 
 	return session
@@ -498,6 +513,38 @@ func (s *MediaSession) Decode(dec EncoderFunc) *MediaSession {
 	return s
 }
 
+// SetRelayEnabled enables/disables same-codec fast-path relay.
+// When enabled (default), packets bypass decode→encode if input and output
+// codecs match. Disable if processors need PCM-level access to all packets.
+func (s *MediaSession) SetRelayEnabled(enabled bool) *MediaSession {
+	if s.relay != nil {
+		s.relay.SetEnabled(enabled)
+	}
+	return s
+}
+
+// SetRelayCodecs configures the input and output codec names for relay
+// negotiation. Called automatically by AddInputTransport/AddOutputTransport
+// when the transport exposes a Codec(); can also be called manually.
+func (s *MediaSession) SetRelayCodecs(inputCodec, outputCodec string) *MediaSession {
+	if s.relay != nil {
+		s.relay.SetInputCodec(inputCodec)
+		s.relay.SetOutputCodec(outputCodec)
+	}
+	return s
+}
+
+// IsRelayActive returns whether the same-codec fast-path is currently running.
+func (s *MediaSession) IsRelayActive() bool {
+	return s.relay != nil && s.relay.IsActive()
+}
+
+// DroppedPackets returns the total number of packets dropped due to full
+// output queues (atomic snapshot).
+func (s *MediaSession) DroppedPackets() int64 {
+	return s.droppedPackets.Load()
+}
+
 // AddInputTransport registers input transport with different method name
 func (s *MediaSession) AddInputTransport(rx MediaTransport, filterFuncs ...PacketFilter) *MediaSession {
 	tl := &TransportManager{
@@ -512,6 +559,11 @@ func (s *MediaSession) AddInputTransport(rx MediaTransport, filterFuncs ...Packe
 	connectorID := fmt.Sprintf("input-%d", len(s.inputConnectors))
 	connector := NewTransportConnector(connectorID, rx, DirectionInput)
 	s.inputConnectors = append(s.inputConnectors, connector)
+
+	// Auto-configure relay codec from transport
+	if s.relay != nil {
+		s.relay.SetInputCodec(rx.Codec().Codec)
+	}
 
 	return s
 }
@@ -541,6 +593,11 @@ func (s *MediaSession) AddOutputTransport(tx MediaTransport, filterFuncs ...Pack
 	connectorID := fmt.Sprintf("output-%d", len(s.outputConnectors))
 	connector := NewTransportConnector(connectorID, tx, DirectionOutput)
 	s.outputConnectors = append(s.outputConnectors, connector)
+
+	// Auto-configure relay codec from transport
+	if s.relay != nil {
+		s.relay.SetOutputCodec(tx.Codec().Codec)
+	}
 
 	return s
 }
