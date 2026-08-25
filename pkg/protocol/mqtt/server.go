@@ -326,15 +326,37 @@ func (s *Server) handleStart(sessionID string) {
 		return
 	}
 
-	// 通知上层：媒体就绪
-	media := &common.MediaDescription{Audio: sess.audio, Video: sess.video}
-	s.handler.OnEvent(common.ProtocolEvent{
-		Type:      common.EventMediaReady,
-		Protocol:  common.ProtocolMQTT,
-		SessionID: sessionID,
-		Media:     media,
-		Timestamp: time.Now(),
-	})
+	// 通知上层：媒体轨道就绪
+	if sess.audio != nil {
+		s.handler.OnEvent(common.ProtocolEvent{
+			Type:      common.EventTrackAdded,
+			Protocol:  common.ProtocolMQTT,
+			SessionID: sessionID,
+			Track: &common.TrackInfo{
+				ID:         "audio",
+				Kind:       common.TrackAudio,
+				Direction:  common.TrackRecv,
+				Codec:      sess.audio.Codec,
+				SampleRate: sess.audio.SampleRate,
+				Channels:   sess.audio.Channels,
+			},
+			Timestamp: time.Now(),
+		})
+	}
+	if sess.video != nil {
+		s.handler.OnEvent(common.ProtocolEvent{
+			Type:      common.EventTrackAdded,
+			Protocol:  common.ProtocolMQTT,
+			SessionID: sessionID,
+			Track: &common.TrackInfo{
+				ID:        "video",
+				Kind:      common.TrackVideo,
+				Direction: common.TrackRecv,
+				Codec:     sess.video.Codec,
+			},
+			Timestamp: time.Now(),
+		})
+	}
 
 	// 回复 ready
 	s.publishSignal(sess, signalMessage{
@@ -378,7 +400,15 @@ func (s *Server) onMediaMessage(_ pahomqtt.Client, msg pahomqtt.Message) {
 		frame.Channels = sess.audio.Channels
 	}
 
-	s.handler.OnMediaFrame(sessionID, frame)
+	// 根据 frame 类型确定 trackID
+	var trackID common.TrackID
+	if frame.Type == common.FrameVideo {
+		trackID = "video"
+	} else {
+		trackID = "audio"
+	}
+
+	s.handler.OnMediaFrame(sessionID, trackID, frame)
 }
 
 // negotiateAudio 协商音频编解码
@@ -517,16 +547,54 @@ func (sess *Session) SendCommand(cmd common.ProtocolCommand) error {
 	}
 }
 
-// SendMediaFrame 向客户端发送媒体帧（发布到 media/out topic）
-func (sess *Session) SendMediaFrame(frame common.MediaFrame) error {
+// SendMediaFrame 向指定轨道发送媒体帧（发布到 media/out topic）
+func (sess *Session) SendMediaFrame(trackID common.TrackID, frame common.MediaFrame) error {
 	if sess.closed {
 		return fmt.Errorf("session closed")
 	}
+	// MQTT 只有单个 media/out topic，trackID 仅用于校验/路由
+	_ = trackID
 	data := encodeFrame(frame)
 	topic := fmt.Sprintf("%s/%s/media/out", sess.server.config.TopicPrefix, sess.id)
 	token := sess.server.client.Publish(topic, sess.server.config.QoS, false, data)
 	token.Wait()
 	return token.Error()
+}
+
+// Tracks 返回当前会话的所有轨道信息
+func (sess *Session) Tracks() []common.TrackInfo {
+	var tracks []common.TrackInfo
+	if sess.audio != nil {
+		tracks = append(tracks, common.TrackInfo{
+			ID:         "audio",
+			Kind:       common.TrackAudio,
+			Direction:  common.TrackRecv,
+			Codec:      sess.audio.Codec,
+			SampleRate: sess.audio.SampleRate,
+			Channels:   sess.audio.Channels,
+		})
+	}
+	if sess.video != nil {
+		tracks = append(tracks, common.TrackInfo{
+			ID:        "video",
+			Kind:      common.TrackVideo,
+			Direction: common.TrackRecv,
+			Codec:     sess.video.Codec,
+		})
+	}
+	return tracks
+}
+
+// MediaStats 返回所有轨道的统计信息
+func (sess *Session) MediaStats() map[common.TrackID]common.TrackStats {
+	stats := make(map[common.TrackID]common.TrackStats)
+	if sess.audio != nil {
+		stats["audio"] = common.TrackStats{}
+	}
+	if sess.video != nil {
+		stats["video"] = common.TrackStats{}
+	}
+	return stats
 }
 
 func (sess *Session) Close() error {

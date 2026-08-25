@@ -52,12 +52,14 @@ type Server struct {
 type Session struct {
 	id         string
 	pc         *webrtc.PeerConnection
-	audioTrack *webrtc.TrackLocalStaticRTP
-	videoTrack *webrtc.TrackLocalStaticRTP
 	handler    common.EventHandler
 	mu         sync.Mutex
 	closed     bool
 	createdAt  time.Time
+
+	// 轨道管理
+	tracksMu sync.Mutex
+	tracks   map[common.TrackID]*webrtc.TrackLocalStaticRTP
 }
 
 // NewServer 创建 WHEP 服务
@@ -123,10 +125,12 @@ func (s *Server) handleWHEP(w http.ResponseWriter, r *http.Request) {
 		pc:        pc,
 		handler:   s.handler,
 		createdAt: time.Now(),
+		tracks:    make(map[common.TrackID]*webrtc.TrackLocalStaticRTP),
 	}
 	s.sessions.Store(sessionID, session)
 
 	// 创建音频 Track（Opus，用于向客户端推音频）
+	audioTrackID := common.TrackID("audio")
 	audioTrack, err := webrtc.NewTrackLocalStaticRTP(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
 		"audio", "lingvoice",
@@ -145,16 +149,21 @@ func (s *Server) handleWHEP(w http.ResponseWriter, r *http.Request) {
 		s.sessions.Delete(sessionID)
 		return
 	}
-	session.audioTrack = audioTrack
+	session.tracksMu.Lock()
+	session.tracks[audioTrackID] = audioTrack
+	session.tracksMu.Unlock()
 
 	// 创建视频 Track（H264，可选）
+	videoTrackID := common.TrackID("video")
 	videoTrack, err := webrtc.NewTrackLocalStaticRTP(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000},
 		"video", "lingvoice",
 	)
 	if err == nil {
 		if _, err := pc.AddTrack(videoTrack); err == nil {
-			session.videoTrack = videoTrack
+			session.tracksMu.Lock()
+			session.tracks[videoTrackID] = videoTrack
+			session.tracksMu.Unlock()
 		}
 	}
 
@@ -218,11 +227,17 @@ func (s *Server) handleWHEP(w http.ResponseWriter, r *http.Request) {
 				Timestamp: time.Now(),
 			})
 			s.handler.OnEvent(common.ProtocolEvent{
-				Type:      common.EventMediaReady,
+				Type:      common.EventTrackAdded,
 				Protocol:  common.ProtocolWHEP,
 				SessionID: sessionID,
-				Media: &common.MediaDescription{
-					Audio: &common.AudioMedia{Codec: common.CodecOpus, SampleRate: 48000, Channels: 2, FrameDurationMs: 20},
+				Track: &common.TrackInfo{
+					ID:         common.TrackID("audio"),
+					Kind:       common.TrackAudio,
+					Direction:  common.TrackSend,
+					Codec:      common.CodecOpus,
+					SampleRate: 48000,
+					Channels:   2,
+					StreamID:   "lingvoice",
 				},
 				Timestamp: time.Now(),
 			})
@@ -282,16 +297,59 @@ func (sess *Session) SendCommand(cmd common.ProtocolCommand) error {
 }
 
 // SendMediaFrame 向拉流客户端发送音视频帧
-func (sess *Session) SendMediaFrame(frame common.MediaFrame) error {
-	if frame.Type == common.FrameAudio && sess.audioTrack != nil {
-		_, err := sess.audioTrack.Write(frame.Payload)
-		return err
+func (sess *Session) SendMediaFrame(trackID common.TrackID, frame common.MediaFrame) error {
+	sess.tracksMu.Lock()
+	t, ok := sess.tracks[trackID]
+	sess.tracksMu.Unlock()
+	if !ok {
+		return fmt.Errorf("whep: track %s not found", trackID)
 	}
-	if frame.Type == common.FrameVideo && sess.videoTrack != nil {
-		_, err := sess.videoTrack.Write(frame.Payload)
-		return err
+	_, err := t.Write(frame.Payload)
+	return err
+}
+
+// Tracks 返回当前所有轨道信息
+func (sess *Session) Tracks() []common.TrackInfo {
+	sess.tracksMu.Lock()
+	defer sess.tracksMu.Unlock()
+	result := make([]common.TrackInfo, 0, len(sess.tracks))
+	for id, t := range sess.tracks {
+		var kind common.TrackKind
+		var codec common.CodecType
+		var sampleRate uint32
+		var channels uint16
+		mt := t.Codec().MimeType
+		codec = codecFromMimeType(mt)
+		if t.Kind() == webrtc.RTPCodecTypeAudio {
+			kind = common.TrackAudio
+			sampleRate = t.Codec().ClockRate
+			channels = uint16(t.Codec().Channels)
+		} else {
+			kind = common.TrackVideo
+			sampleRate = t.Codec().ClockRate
+		}
+		result = append(result, common.TrackInfo{
+			ID:         id,
+			Kind:       kind,
+			Direction:  common.TrackSend,
+			Codec:      codec,
+			SampleRate: sampleRate,
+			Channels:   channels,
+			StreamID:   t.StreamID(),
+		})
 	}
-	return fmt.Errorf("whep: no matching track for frame type %d", frame.Type)
+	return result
+}
+
+// MediaStats 返回所有轨道的统计信息
+func (sess *Session) MediaStats() map[common.TrackID]common.TrackStats {
+	sess.tracksMu.Lock()
+	defer sess.tracksMu.Unlock()
+	stats := make(map[common.TrackID]common.TrackStats)
+	for id := range sess.tracks {
+		stats[id] = common.TrackStats{}
+	}
+	return stats
 }
 
 func (sess *Session) Close() error {
@@ -302,4 +360,23 @@ func (sess *Session) Close() error {
 	}
 	sess.closed = true
 	return sess.pc.Close()
+}
+
+// --- 辅助 ---
+
+func codecFromMimeType(mimeType string) common.CodecType {
+	switch mimeType {
+	case webrtc.MimeTypeOpus:
+		return common.CodecOpus
+	case webrtc.MimeTypePCMU:
+		return common.CodecPCMU
+	case webrtc.MimeTypePCMA:
+		return common.CodecPCMA
+	case webrtc.MimeTypeH264:
+		return common.CodecH264
+	case webrtc.MimeTypeVP8:
+		return common.CodecVP8
+	default:
+		return common.CodecOpus
+	}
 }

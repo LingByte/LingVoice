@@ -260,15 +260,37 @@ func (s *Server) handleStart(session *Session) error {
 		return s.sendError(session, "not-negotiated", "send offer first")
 	}
 
-	// 通知上层：媒体就绪
-	media := &common.MediaDescription{Audio: session.audio, Video: session.video}
-	s.handler.OnEvent(common.ProtocolEvent{
-		Type:      common.EventMediaReady,
-		Protocol:  common.ProtocolWS,
-		SessionID: session.id,
-		Media:     media,
-		Timestamp: time.Now(),
-	})
+	// 通知上层：媒体轨道就绪（WS 固定轨道，按协商结果逐条上报）
+	if session.audio != nil {
+		s.handler.OnEvent(common.ProtocolEvent{
+			Type:      common.EventTrackAdded,
+			Protocol:  common.ProtocolWS,
+			SessionID: session.id,
+			Track: &common.TrackInfo{
+				ID:         TrackIDAudio,
+				Kind:       common.TrackAudio,
+				Direction:  common.TrackSend,
+				Codec:      session.audio.Codec,
+				SampleRate: session.audio.SampleRate,
+				Channels:   session.audio.Channels,
+			},
+			Timestamp: time.Now(),
+		})
+	}
+	if session.video != nil {
+		s.handler.OnEvent(common.ProtocolEvent{
+			Type:      common.EventTrackAdded,
+			Protocol:  common.ProtocolWS,
+			SessionID: session.id,
+			Track: &common.TrackInfo{
+				ID:        TrackIDVideo,
+				Kind:      common.TrackVideo,
+				Direction: common.TrackSend,
+				Codec:     session.video.Codec,
+			},
+			Timestamp: time.Now(),
+		})
+	}
 
 	// 回复 ready
 	return session.sendJSON(ReadyMessage{
@@ -293,8 +315,14 @@ func (s *Server) handleBinaryMessage(session *Session, data []byte) error {
 		frame.Channels = session.audio.Channels
 	}
 
-	// 回调上层
-	return s.handler.OnMediaFrame(session.id, frame)
+	// 回调上层（按帧类型选择对应的固定轨道 ID）
+	var trackID common.TrackID
+	if frame.Type == common.FrameVideo {
+		trackID = TrackIDVideo
+	} else {
+		trackID = TrackIDAudio
+	}
+	return s.handler.OnMediaFrame(session.id, trackID, frame)
 }
 
 // negotiateAudio 从客户端提供的列表中选择服务端支持的编解码。

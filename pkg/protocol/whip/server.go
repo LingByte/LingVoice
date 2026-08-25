@@ -224,27 +224,32 @@ func (s *Server) setupPeerConnection(session *Session) {
 		)
 
 		codec := codecFromMimeType(track.Codec().MimeType)
-		var media *common.MediaDescription
+		trackID := common.TrackID(track.ID())
+		var kind common.TrackKind
+		var channels uint16
 		if track.Kind() == webrtc.RTPCodecTypeAudio {
-			media = &common.MediaDescription{
-				Audio: &common.AudioMedia{
-					Codec:           codec,
-					SampleRate:      track.Codec().ClockRate,
-					Channels:        uint16(track.Codec().Channels),
-					FrameDurationMs: 20,
-				},
-			}
+			kind = common.TrackAudio
+			channels = uint16(track.Codec().Channels)
 		} else {
-			media = &common.MediaDescription{
-				Video: &common.VideoMedia{Codec: codec, Width: 1920, Height: 1080, FPS: 30},
-			}
+			kind = common.TrackVideo
+		}
+
+		trackInfo := &common.TrackInfo{
+			ID:         trackID,
+			Kind:       kind,
+			Direction:  common.TrackRecv,
+			Codec:      codec,
+			SampleRate: track.Codec().ClockRate,
+			Channels:   channels,
+			SSRC:       uint32(track.SSRC()),
+			StreamID:   track.StreamID(),
 		}
 
 		s.handler.OnEvent(common.ProtocolEvent{
-			Type:      common.EventMediaReady,
+			Type:      common.EventTrackAdded,
 			Protocol:  common.ProtocolWHIP,
 			SessionID: session.id,
-			Media:     media,
+			Track:     trackInfo,
 			Timestamp: time.Now(),
 		})
 
@@ -264,8 +269,11 @@ func (s *Server) setupPeerConnection(session *Session) {
 				Timestamp:  rtp.Timestamp,
 				Sequence:   rtp.SequenceNumber,
 				SampleRate: track.Codec().ClockRate,
+				SSRC:       rtp.SSRC,
+				Marker:     rtp.Marker,
+				RID:        track.RID(),
 			}
-			s.handler.OnMediaFrame(session.id, frame)
+			s.handler.OnMediaFrame(session.id, trackID, frame)
 		}
 	})
 
@@ -305,11 +313,6 @@ func (sess *Session) SendCommand(cmd common.ProtocolCommand) error {
 	default:
 		return nil
 	}
-}
-
-// SendMediaFrame WHIP 是推流接收端，不向推流端发送媒体
-func (sess *Session) SendMediaFrame(frame common.MediaFrame) error {
-	return nil
 }
 
 func (sess *Session) Close() error {

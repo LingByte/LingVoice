@@ -223,13 +223,17 @@ func (m *Manager) SendCommand(sessionID string, cmd common.ProtocolCommand) erro
 	return sess.SendCommand(cmd)
 }
 
-// SendMediaFrame 向指定会话发送音视频帧
-func (m *Manager) SendMediaFrame(sessionID string, frame common.MediaFrame) error {
+// SendMediaFrame 向指定会话的指定轨道发送音视频帧
+func (m *Manager) SendMediaFrame(sessionID string, trackID common.TrackID, frame common.MediaFrame) error {
 	sess, ok := m.GetSession(sessionID)
 	if !ok {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
-	return sess.SendMediaFrame(frame)
+	ms, ok := sess.(common.MediaSession)
+	if !ok {
+		return fmt.Errorf("session %s does not support media", sessionID)
+	}
+	return ms.SendMediaFrame(trackID, frame)
 }
 
 // --- 实现 common.EventHandler ---
@@ -251,8 +255,12 @@ func (m *Manager) OnEvent(event common.ProtocolEvent) error {
 	return m.handler.OnEvent(event)
 }
 
-func (m *Manager) OnMediaFrame(sessionID string, frame common.MediaFrame) error {
-	return m.handler.OnMediaFrame(sessionID, frame)
+func (m *Manager) OnMediaFrame(sessionID string, trackID common.TrackID, frame common.MediaFrame) error {
+	return m.handler.OnMediaFrame(sessionID, trackID, frame)
+}
+
+func (m *Manager) OnData(sessionID string, msg common.DataMessage) error {
+	return m.handler.OnData(sessionID, msg)
 }
 
 // lookupSession 从对应协议 server 查找 session 对象

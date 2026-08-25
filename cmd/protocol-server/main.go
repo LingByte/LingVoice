@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -41,40 +42,52 @@ func (h *DemoEventHandler) OnEvent(event common.ProtocolEvent) error {
 		h.log.Info(">> 接听", zap.String("session", event.SessionID))
 	case common.EventHangup:
 		h.log.Info(">> 挂断", zap.String("session", event.SessionID))
-	case common.EventMediaReady:
-		if event.Media != nil && event.Media.Audio != nil {
-			h.log.Info(">> 媒体就绪",
+	case common.EventTrackAdded:
+		if event.Track != nil {
+			h.log.Info(">> 轨道就绪",
 				zap.String("session", event.SessionID),
-				zap.String("codec", event.Media.Audio.Codec.String()),
-				zap.Uint32("sampleRate", event.Media.Audio.SampleRate),
-				zap.Uint16("channels", event.Media.Audio.Channels),
-				zap.Uint16("frameMs", event.Media.Audio.FrameDurationMs),
-			)
-		} else if event.Media != nil && event.Media.Video != nil {
-			h.log.Info(">> 媒体就绪 (video)",
-				zap.String("session", event.SessionID),
-				zap.String("codec", event.Media.Video.Codec.String()),
-				zap.Uint16("width", event.Media.Video.Width),
-				zap.Uint16("height", event.Media.Video.Height),
+				zap.String("trackID", string(event.Track.ID)),
+				zap.String("kind", event.Track.Kind.String()),
+				zap.String("codec", event.Track.Codec.String()),
+				zap.Uint32("sampleRate", event.Track.SampleRate),
+				zap.Uint16("channels", event.Track.Channels),
+				zap.String("direction", fmt.Sprintf("%d", event.Track.Direction)),
 			)
 		} else {
-			h.log.Info(">> 媒体就绪", zap.String("session", event.SessionID))
+			h.log.Info(">> 轨道就绪", zap.String("session", event.SessionID))
 		}
+	case common.EventTrackRemoved:
+		h.log.Info(">> 轨道移除", zap.String("session", event.SessionID))
+	case common.EventDataChannel:
+		h.log.Info(">> 数据通道", zap.String("session", event.SessionID))
+	case common.EventReconnect:
+		h.log.Info(">> 重连", zap.String("session", event.SessionID))
 	case common.EventError:
 		h.log.Error(">> 错误", zap.String("session", event.SessionID), zap.Error(event.Err))
 	}
 	return nil
 }
 
-func (h *DemoEventHandler) OnMediaFrame(sessionID string, frame common.MediaFrame) error {
+func (h *DemoEventHandler) OnMediaFrame(sessionID string, trackID common.TrackID, frame common.MediaFrame) error {
 	// 只打印前几帧和统计，避免日志爆炸
 	h.log.Debug("<< 媒体帧",
 		zap.String("session", sessionID),
+		zap.String("trackID", string(trackID)),
 		zap.Uint8("type", uint8(frame.Type)),
 		zap.String("codec", frame.Codec.String()),
 		zap.Uint16("seq", frame.Sequence),
 		zap.Uint32("ts", frame.Timestamp),
 		zap.Int("payloadLen", len(frame.Payload)),
+	)
+	return nil
+}
+
+func (h *DemoEventHandler) OnData(sessionID string, msg common.DataMessage) error {
+	h.log.Info("<< 数据通道消息",
+		zap.String("session", sessionID),
+		zap.String("channel", msg.Channel),
+		zap.Int("len", len(msg.Data)),
+		zap.Bool("isString", msg.IsString),
 	)
 	return nil
 }

@@ -160,28 +160,83 @@ func (s *Server) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn) {
 		zap.String("stream", streamKey),
 	)
 
-	// 解析 Track 信息，构造 MediaDescription
-	var audio *common.AudioMedia
-	var video *common.VideoMedia
+	// 解析 Track 信息，构造 TrackInfo 列表
+	var tracks []common.TrackInfo
 	for _, track := range r.Tracks() {
 		switch codec := track.Codec.(type) {
 		case *codecs.MPEG4Audio:
-			audio = &common.AudioMedia{Codec: common.CodecOpus, SampleRate: 48000, Channels: 2, FrameDurationMs: 20}
+			tracks = append(tracks, common.TrackInfo{
+				ID:         "audio",
+				Kind:       common.TrackAudio,
+				Direction:  common.TrackRecv,
+				Codec:      common.CodecOpus,
+				SampleRate: 48000,
+				Channels:   2,
+				StreamID:   streamKey,
+			})
 			_ = codec
 		case *codecs.MPEG1Audio:
-			audio = &common.AudioMedia{Codec: common.CodecOpus, SampleRate: 48000, Channels: 2, FrameDurationMs: 20}
+			tracks = append(tracks, common.TrackInfo{
+				ID:         "audio",
+				Kind:       common.TrackAudio,
+				Direction:  common.TrackRecv,
+				Codec:      common.CodecOpus,
+				SampleRate: 48000,
+				Channels:   2,
+				StreamID:   streamKey,
+			})
 		case *codecs.G711:
-			audio = &common.AudioMedia{Codec: common.CodecPCMU, SampleRate: 8000, Channels: 1, FrameDurationMs: 20}
+			tracks = append(tracks, common.TrackInfo{
+				ID:         "audio",
+				Kind:       common.TrackAudio,
+				Direction:  common.TrackRecv,
+				Codec:      common.CodecPCMU,
+				SampleRate: 8000,
+				Channels:   1,
+				StreamID:   streamKey,
+			})
 		case *codecs.Opus:
-			audio = &common.AudioMedia{Codec: common.CodecOpus, SampleRate: 48000, Channels: 2, FrameDurationMs: 20}
+			tracks = append(tracks, common.TrackInfo{
+				ID:         "audio",
+				Kind:       common.TrackAudio,
+				Direction:  common.TrackRecv,
+				Codec:      common.CodecOpus,
+				SampleRate: 48000,
+				Channels:   2,
+				StreamID:   streamKey,
+			})
 		case *codecs.H264:
-			video = &common.VideoMedia{Codec: common.CodecH264, Width: 1920, Height: 1080, FPS: 30}
+			tracks = append(tracks, common.TrackInfo{
+				ID:        "video",
+				Kind:      common.TrackVideo,
+				Direction: common.TrackRecv,
+				Codec:     common.CodecH264,
+				StreamID:  streamKey,
+			})
 		case *codecs.H265:
-			video = &common.VideoMedia{Codec: common.CodecH264, Width: 1920, Height: 1080, FPS: 30}
+			tracks = append(tracks, common.TrackInfo{
+				ID:        "video",
+				Kind:      common.TrackVideo,
+				Direction: common.TrackRecv,
+				Codec:     common.CodecH264,
+				StreamID:  streamKey,
+			})
 		case *codecs.VP9:
-			video = &common.VideoMedia{Codec: common.CodecVP8, Width: 1920, Height: 1080, FPS: 30}
+			tracks = append(tracks, common.TrackInfo{
+				ID:        "video",
+				Kind:      common.TrackVideo,
+				Direction: common.TrackRecv,
+				Codec:     common.CodecVP8,
+				StreamID:  streamKey,
+			})
 		case *codecs.AV1:
-			video = &common.VideoMedia{Codec: common.CodecH264, Width: 1920, Height: 1080, FPS: 30}
+			tracks = append(tracks, common.TrackInfo{
+				ID:        "video",
+				Kind:      common.TrackVideo,
+				Direction: common.TrackRecv,
+				Codec:     common.CodecH264,
+				StreamID:  streamKey,
+			})
 		}
 	}
 
@@ -190,7 +245,7 @@ func (s *Server) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn) {
 		s.registerTrackCallback(sessionID, r, track)
 	}
 
-	// 通知上层：来电 + 媒体就绪
+	// 通知上层：来电 + 轨道就绪
 	s.handler.OnEvent(common.ProtocolEvent{
 		Type:      common.EventIncomingCall,
 		Protocol:  common.ProtocolRTMP,
@@ -199,13 +254,16 @@ func (s *Server) handlePublisher(sc *gortmplib.ServerConn, conn net.Conn) {
 		To:        streamKey,
 		Timestamp: time.Now(),
 	})
-	s.handler.OnEvent(common.ProtocolEvent{
-		Type:      common.EventMediaReady,
-		Protocol:  common.ProtocolRTMP,
-		SessionID: sessionID,
-		Media:     &common.MediaDescription{Audio: audio, Video: video},
-		Timestamp: time.Now(),
-	})
+	for _, ti := range tracks {
+		ti := ti
+		s.handler.OnEvent(common.ProtocolEvent{
+			Type:      common.EventTrackAdded,
+			Protocol:  common.ProtocolRTMP,
+			SessionID: sessionID,
+			Track:     &ti,
+			Timestamp: time.Now(),
+		})
+	}
 
 	// 读循环
 	for {
@@ -300,7 +358,7 @@ func (s *Server) registerTrackCallback(sessionID string, r *gortmplib.Reader, tr
 	case *codecs.H264:
 		r.OnDataH264(track, func(pts, dts time.Duration, au [][]byte) {
 			for _, nal := range au {
-				s.handler.OnMediaFrame(sessionID, common.MediaFrame{
+				s.handler.OnMediaFrame(sessionID, "video", common.MediaFrame{
 					Type:      common.FrameVideo,
 					Codec:     common.CodecH264,
 					Payload:   nal,
@@ -311,7 +369,7 @@ func (s *Server) registerTrackCallback(sessionID string, r *gortmplib.Reader, tr
 	case *codecs.H265:
 		r.OnDataH265(track, func(pts, dts time.Duration, au [][]byte) {
 			for _, nal := range au {
-				s.handler.OnMediaFrame(sessionID, common.MediaFrame{
+				s.handler.OnMediaFrame(sessionID, "video", common.MediaFrame{
 					Type:      common.FrameVideo,
 					Codec:     common.CodecH264,
 					Payload:   nal,
@@ -322,7 +380,7 @@ func (s *Server) registerTrackCallback(sessionID string, r *gortmplib.Reader, tr
 	case *codecs.AV1:
 		r.OnDataAV1(track, func(pts time.Duration, tu [][]byte) {
 			for _, obu := range tu {
-				s.handler.OnMediaFrame(sessionID, common.MediaFrame{
+				s.handler.OnMediaFrame(sessionID, "video", common.MediaFrame{
 					Type:      common.FrameVideo,
 					Codec:     common.CodecH264,
 					Payload:   obu,
@@ -332,7 +390,7 @@ func (s *Server) registerTrackCallback(sessionID string, r *gortmplib.Reader, tr
 		})
 	case *codecs.VP9:
 		r.OnDataVP9(track, func(pts time.Duration, frame []byte) {
-			s.handler.OnMediaFrame(sessionID, common.MediaFrame{
+			s.handler.OnMediaFrame(sessionID, "video", common.MediaFrame{
 				Type:      common.FrameVideo,
 				Codec:     common.CodecVP8,
 				Payload:   frame,
@@ -341,7 +399,7 @@ func (s *Server) registerTrackCallback(sessionID string, r *gortmplib.Reader, tr
 		})
 	case *codecs.Opus:
 		r.OnDataOpus(track, func(pts time.Duration, packet []byte) {
-			s.handler.OnMediaFrame(sessionID, common.MediaFrame{
+			s.handler.OnMediaFrame(sessionID, "audio", common.MediaFrame{
 				Type:       common.FrameAudio,
 				Codec:      common.CodecOpus,
 				Payload:    packet,
@@ -352,7 +410,7 @@ func (s *Server) registerTrackCallback(sessionID string, r *gortmplib.Reader, tr
 		})
 	case *codecs.G711:
 		r.OnDataG711(track, func(pts time.Duration, samples []byte) {
-			s.handler.OnMediaFrame(sessionID, common.MediaFrame{
+			s.handler.OnMediaFrame(sessionID, "audio", common.MediaFrame{
 				Type:       common.FrameAudio,
 				Codec:      common.CodecPCMU,
 				Payload:    samples,
@@ -363,7 +421,7 @@ func (s *Server) registerTrackCallback(sessionID string, r *gortmplib.Reader, tr
 		})
 	case *codecs.MPEG4Audio:
 		r.OnDataMPEG4Audio(track, func(pts time.Duration, au []byte) {
-			s.handler.OnMediaFrame(sessionID, common.MediaFrame{
+			s.handler.OnMediaFrame(sessionID, "audio", common.MediaFrame{
 				Type:       common.FrameAudio,
 				Codec:      common.CodecOpus,
 				Payload:    au,
@@ -374,7 +432,7 @@ func (s *Server) registerTrackCallback(sessionID string, r *gortmplib.Reader, tr
 		})
 	case *codecs.MPEG1Audio:
 		r.OnDataMPEG1Audio(track, func(pts time.Duration, frame []byte) {
-			s.handler.OnMediaFrame(sessionID, common.MediaFrame{
+			s.handler.OnMediaFrame(sessionID, "audio", common.MediaFrame{
 				Type:      common.FrameAudio,
 				Codec:     common.CodecOpus,
 				Payload:   frame,
@@ -383,7 +441,7 @@ func (s *Server) registerTrackCallback(sessionID string, r *gortmplib.Reader, tr
 		})
 	case *codecs.LPCM:
 		r.OnDataLPCM(track, func(pts time.Duration, samples []byte) {
-			s.handler.OnMediaFrame(sessionID, common.MediaFrame{
+			s.handler.OnMediaFrame(sessionID, "audio", common.MediaFrame{
 				Type:      common.FrameAudio,
 				Codec:     common.CodecPCM16,
 				Payload:   samples,
@@ -410,13 +468,75 @@ func (sess *Session) SendCommand(cmd common.ProtocolCommand) error {
 // SendMediaFrame 向 player 发送媒体帧。
 // publisher 端忽略（只接收）；player 端通过 writer 写出。
 // 注意：player 的 Writer 需要上层（媒体层）先通过 SetWriterTracks 初始化。
-func (sess *Session) SendMediaFrame(frame common.MediaFrame) error {
+func (sess *Session) SendMediaFrame(trackID common.TrackID, frame common.MediaFrame) error {
 	if !sess.isPlayer || sess.writer == nil {
 		return nil // publisher 端只接收；player 端未初始化 writer 时忽略
 	}
 	// 按 codec 类型写入（媒体层负责保证帧格式正确）
 	// 这里简化：直接写 payload，实际需要 track 引用
 	// 真正实现需要上层在初始化时传入 tracks 并创建 writer
+	_ = trackID
+	_ = frame
+	return nil
+}
+
+// Tracks 返回当前会话的轨道信息。
+// publisher 返回协商好的接收轨道；player 返回空（由上层喂帧）。
+func (sess *Session) Tracks() []common.TrackInfo {
+	if sess.isPlayer {
+		return nil
+	}
+	// publisher 的 tracks 在 handlePublisher 中解析，这里返回缓存的 tracks
+	// 简化：从 reader tracks 重建
+	if sess.reader == nil {
+		return nil
+	}
+	var tracks []common.TrackInfo
+	for _, track := range sess.reader.Tracks() {
+		switch track.Codec.(type) {
+		case *codecs.MPEG4Audio, *codecs.MPEG1Audio, *codecs.Opus:
+			tracks = append(tracks, common.TrackInfo{
+				ID:         "audio",
+				Kind:       common.TrackAudio,
+				Direction:  common.TrackRecv,
+				Codec:      common.CodecOpus,
+				SampleRate: 48000,
+				Channels:   2,
+				StreamID:   sess.streamKey,
+			})
+		case *codecs.G711:
+			tracks = append(tracks, common.TrackInfo{
+				ID:         "audio",
+				Kind:       common.TrackAudio,
+				Direction:  common.TrackRecv,
+				Codec:      common.CodecPCMU,
+				SampleRate: 8000,
+				Channels:   1,
+				StreamID:   sess.streamKey,
+			})
+		case *codecs.H264, *codecs.H265, *codecs.AV1:
+			tracks = append(tracks, common.TrackInfo{
+				ID:        "video",
+				Kind:      common.TrackVideo,
+				Direction: common.TrackRecv,
+				Codec:     common.CodecH264,
+				StreamID:  sess.streamKey,
+			})
+		case *codecs.VP9:
+			tracks = append(tracks, common.TrackInfo{
+				ID:        "video",
+				Kind:      common.TrackVideo,
+				Direction: common.TrackRecv,
+				Codec:     common.CodecVP8,
+				StreamID:  sess.streamKey,
+			})
+		}
+	}
+	return tracks
+}
+
+// MediaStats 返回所有轨道的统计信息。
+func (sess *Session) MediaStats() map[common.TrackID]common.TrackStats {
 	return nil
 }
 

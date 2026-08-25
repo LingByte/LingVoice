@@ -26,6 +26,12 @@ package ws
 
 import "github.com/LingByte/LingVoice/pkg/protocol/common"
 
+// WS 固定轨道 ID（协商时确定音频/视频，不需要动态 TrackManager）
+const (
+	TrackIDAudio common.TrackID = "audio"
+	TrackIDVideo common.TrackID = "video"
+)
+
 // 协议版本
 const ProtocolVersion = 1
 

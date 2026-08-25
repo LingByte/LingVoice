@@ -201,7 +201,6 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		SessionID: sessionID,
 		From:      from,
 		To:        to,
-		Media:     &common.MediaDescription{Audio: audio},
 		Timestamp: time.Now(),
 	})
 
@@ -317,18 +316,26 @@ func (sess *Session) answer() error {
 		Timestamp: time.Now(),
 	})
 	sess.handler.OnEvent(common.ProtocolEvent{
-		Type:      common.EventMediaReady,
+		Type:      common.EventTrackAdded,
 		Protocol:  common.ProtocolSIP,
 		SessionID: sess.id,
-		Media:     &common.MediaDescription{Audio: sess.audio},
+		Track: &common.TrackInfo{
+			ID:         common.TrackID(sess.id + "/audio"),
+			Kind:       common.TrackAudio,
+			Direction:  common.TrackRecv,
+			Codec:      sess.audio.Codec,
+			SampleRate: sess.audio.SampleRate,
+			Channels:   sess.audio.Channels,
+		},
 		Timestamp: time.Now(),
 	})
 	return nil
 }
 
-// SendMediaFrame SIP 不通过此接口发媒体帧，RTP 媒体由 Rust/媒体面处理
-func (sess *Session) SendMediaFrame(frame common.MediaFrame) error {
-	return nil // SIP 媒体走 RTP，不通过 Go 协议层
+// SendMediaFrame SIP 不通过此接口发媒体帧，RTP 媒体由外部处理。
+// 保留方法签名以兼容 MediaSession 接口，但始终返回错误。
+func (sess *Session) SendMediaFrame(trackID common.TrackID, frame common.MediaFrame) error {
+	return fmt.Errorf("SIP media handled externally")
 }
 
 func (sess *Session) Close() error {

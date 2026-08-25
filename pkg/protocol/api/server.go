@@ -45,7 +45,7 @@ type Server struct {
 type SessionManager interface {
 	GetSession(id string) (common.ProtocolSession, bool)
 	SendCommand(sessionID string, cmd common.ProtocolCommand) error
-	SendMediaFrame(sessionID string, frame common.MediaFrame) error
+	SendMediaFrame(sessionID string, trackID common.TrackID, frame common.MediaFrame) error
 }
 
 // NewServer 创建 REST API 服务
@@ -102,6 +102,7 @@ type commandRequest struct {
 }
 
 type mediaRequest struct {
+	TrackID   string `json:"trackId"`   // 轨道 ID
 	Type      string `json:"type"`      // audio/video
 	Codec     string `json:"codec"`     // opus/pcmu/pcma/pcm16/h264/vp8
 	Payload   []byte `json:"payload"`   // base64 encoded
@@ -250,7 +251,7 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request, sessionID s
 		Sequence:  req.Sequence,
 	}
 
-	if err := s.manager.SendMediaFrame(sessionID, frame); err != nil {
+	if err := s.manager.SendMediaFrame(sessionID, common.TrackID(req.TrackID), frame); err != nil {
 		s.writeJSON(w, http.StatusInternalServerError, apiResponse{Error: err.Error()})
 		return
 	}

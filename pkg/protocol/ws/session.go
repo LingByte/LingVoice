@@ -65,8 +65,9 @@ func (s *Session) SendCommand(cmd common.ProtocolCommand) error {
 	}
 }
 
-// SendMediaFrame 向客户端发送音视频帧（二进制）
-func (s *Session) SendMediaFrame(frame common.MediaFrame) error {
+// SendMediaFrame 向客户端发送音视频帧（二进制）。
+// WS 是固定轨道协议，trackID 应为 TrackIDAudio / TrackIDVideo。
+func (s *Session) SendMediaFrame(trackID common.TrackID, frame common.MediaFrame) error {
 	if s.closed.Load() {
 		return ErrSessionNotFound
 	}
@@ -76,6 +77,42 @@ func (s *Session) SendMediaFrame(frame common.MediaFrame) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conn.WriteMessage(websocket.BinaryMessage, data)
+}
+
+// Tracks 返回当前协商的轨道信息（实现 MediaSession 接口）
+func (s *Session) Tracks() []common.TrackInfo {
+	var tracks []common.TrackInfo
+	if s.audio != nil {
+		tracks = append(tracks, common.TrackInfo{
+			ID:         TrackIDAudio,
+			Kind:       common.TrackAudio,
+			Direction:  common.TrackSend,
+			Codec:      s.audio.Codec,
+			SampleRate: s.audio.SampleRate,
+			Channels:   s.audio.Channels,
+		})
+	}
+	if s.video != nil {
+		tracks = append(tracks, common.TrackInfo{
+			ID:        TrackIDVideo,
+			Kind:      common.TrackVideo,
+			Direction: common.TrackSend,
+			Codec:     s.video.Codec,
+		})
+	}
+	return tracks
+}
+
+// MediaStats 返回所有轨道的统计信息（实现 MediaSession 接口）
+func (s *Session) MediaStats() map[common.TrackID]common.TrackStats {
+	stats := make(map[common.TrackID]common.TrackStats)
+	if s.audio != nil {
+		stats[TrackIDAudio] = common.TrackStats{}
+	}
+	if s.video != nil {
+		stats[TrackIDVideo] = common.TrackStats{}
+	}
+	return stats
 }
 
 // sendJSON 发送文本 JSON 消息
