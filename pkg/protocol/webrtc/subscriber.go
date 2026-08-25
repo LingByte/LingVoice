@@ -84,11 +84,17 @@ func (s *subscriber) setupCallbacks() {
 		offer, err := s.pc.CreateOffer(nil)
 		if err != nil {
 			s.log.Error("subscriber create offer", zap.Error(err))
+			s.mu.Lock()
+			s.remoteAnswerPending = false
+			s.mu.Unlock()
 			return
 		}
 
 		if err := s.pc.SetLocalDescription(offer); err != nil {
 			s.log.Error("subscriber set local description", zap.Error(err))
+			s.mu.Lock()
+			s.remoteAnswerPending = false
+			s.mu.Unlock()
 			return
 		}
 
@@ -134,6 +140,12 @@ func (s *subscriber) addTrack(cfg common.TrackConfig) (common.TrackID, error) {
 
 	s.mu.Lock()
 	s.localTracks[id] = track
+	// 如果正在等待 answer，标记需要重协商。
+	// OnNegotiationNeeded 可能不会再次触发（Pion 在 pending 时会跳过），
+	// 所以 handleAnswer 完成后会检查这个标志并手动重新发起协商。
+	if s.remoteAnswerPending {
+		s.negotiationPending = true
+	}
 	s.mu.Unlock()
 
 	return id, nil
@@ -184,14 +196,29 @@ func (s *subscriber) handleAnswer(answer webrtc.SessionDescription) error {
 
 	s.mu.Lock()
 	s.remoteAnswerPending = false
-	if s.negotiationPending {
-		s.negotiationPending = false
-		s.mu.Unlock()
-		// 触发 OnNegotiationNeeded
-		// pion 会在状态变化时自动触发
-		return nil
-	}
+	pending := s.negotiationPending
+	s.negotiationPending = false
 	s.mu.Unlock()
+
+	// 如果有 pending 的 negotiation（AddTrack 在 answer 处理前调用），
+	// 手动重新触发协商，因为 SetRemoteDescription 不会自动触发 OnNegotiationNeeded
+	if pending {
+		offer, err := s.pc.CreateOffer(nil)
+		if err != nil {
+			s.log.Error("subscriber create offer (re-negotiation)", zap.Error(err))
+			return nil
+		}
+		if err := s.pc.SetLocalDescription(offer); err != nil {
+			s.log.Error("subscriber set local description (re-negotiation)", zap.Error(err))
+			return nil
+		}
+		s.mu.Lock()
+		s.remoteAnswerPending = true
+		s.mu.Unlock()
+		if s.onOfferNeeded != nil {
+			s.onOfferNeeded(offer)
+		}
+	}
 	return nil
 }
 
