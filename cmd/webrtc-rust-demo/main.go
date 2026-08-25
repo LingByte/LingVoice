@@ -219,7 +219,25 @@ func (h *rustHandler) OnData(sessionID string, msg common.DataMessage) error {
 	h.log.Info("<< 数据通道消息",
 		zap.String("session", sessionID),
 		zap.String("channel", msg.Channel),
-		zap.Int("len", len(msg.Data)))
+		zap.String("data", string(msg.Data)))
+
+	// echo 回发送者
+	if sess, ok := h.srv.GetSession(sessionID); ok {
+		_ = sess.SendData(msg.Channel, []byte(fmt.Sprintf("[echo] %s", string(msg.Data))))
+	}
+
+	// 广播给同 room 其他 session
+	h.mu.Lock()
+	for sid := range h.sessions {
+		if sid == sessionID {
+			continue
+		}
+		if sess, ok := h.srv.GetSession(sid); ok {
+			_ = sess.SendData(msg.Channel, []byte(fmt.Sprintf("[来自 %s] %s", sessionID[:8], string(msg.Data))))
+		}
+	}
+	h.mu.Unlock()
+
 	return nil
 }
 
