@@ -151,17 +151,28 @@ async function connect() {
               // 隐藏"等待"提示
               const hint = document.getElementById('noRemoteHint');
               if (hint) hint.style.display = 'none';
-              // 按 stream ID 创建或复用媒体容器
-              const streamId = e.streams[0].id;
-              let container = document.getElementById('remote-' + streamId);
+
+              // 尝试从 track settings 获取 SSRC，查找对应的 session
+              const receiver = e.receiver;
+              let sessionId = null;
+              if (receiver && receiver.getParameters) {
+                const params = receiver.getParameters();
+                if (params.encodings && params.encodings[0] && params.encodings[0].ssrc) {
+                  sessionId = ssrcToSession.get(params.encodings[0].ssrc);
+                }
+              }
+
+              // 按 session ID 分组（同一个人的音频和视频放一起）
+              const groupId = sessionId || e.streams[0].id;
+              let container = document.getElementById('remote-' + groupId);
               if (!container) {
                 container = document.createElement('div');
-                container.id = 'remote-' + streamId;
+                container.id = 'remote-' + groupId;
                 container.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px';
                 const label = document.createElement('div');
                 label.className = 'log-line info';
                 label.style.fontSize = '12px';
-                label.textContent = '👤 ' + streamId.substring(0, 12);
+                label.textContent = '👤 ' + (sessionId ? sessionId.substring(0, 8) : groupId.substring(0, 12));
                 container.appendChild(label);
                 document.getElementById('remoteMediaContainer').appendChild(container);
               }
@@ -304,6 +315,8 @@ async function startMedia() {
 
 // 参与者列表（本房间内除自己以外的 session）
 let participants = new Set();
+// SSRC → sessionID 映射（用于按 session 分组远端媒体）
+let ssrcToSession = new Map();
 
 function setupDataChannel(dc) {
   dc.onopen = () => log('数据通道已打开: ' + dc.label, 'success');
@@ -345,6 +358,14 @@ function setupDataChannel(dc) {
           });
           log('已请求关键帧（新参与者加入）', 'info');
         }
+      } else if (sysMsg.type === 'participant_ssrc') {
+        // 记录 SSRC → sessionID 映射，用于按 session 分组远端媒体
+        isSystem = true;
+        ssrcToSession.set(sysMsg.ssrc, sysMsg.session);
+        log(`SSRC ${sysMsg.ssrc} → ${sysMsg.session.substring(0, 8)} (${sysMsg.kind})`, 'info');
+      } else if (sysMsg.type === 'track_added') {
+        isSystem = true;
+        // Go 侧通知新 track 创建，ssrc 可用于查找 session
       }
     } catch {
       // 不是 JSON，按普通消息处理
@@ -435,6 +456,7 @@ function disconnect() {
   }
   // 清理参与者列表
   participants.clear();
+  ssrcToSession.clear();
   updateParticipantsUI();
   setStatus('未连接');
   log('已断开', 'warn');

@@ -185,6 +185,24 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 					zap.String("session", event.SessionID),
 					zap.Uint32("ssrc", event.Track.SSRC),
 					zap.String("kind", kind.String()))
+
+				// 通知同 room 的其他参与者：我的 track SSRC（用于前端按 session 分组媒体）
+				h.mu.Lock()
+				var peers []string
+				for sid, pss := range h.sessions {
+					if sid != event.SessionID && pss.roomID == ss.roomID && pss.created {
+						peers = append(peers, sid)
+					}
+				}
+				h.mu.Unlock()
+
+				ssrcMsg := fmt.Sprintf(`{"type":"participant_ssrc","session":"%s","ssrc":%d,"kind":"%s"}`,
+					event.SessionID, event.Track.SSRC, kind.String())
+				for _, peerID := range peers {
+					if peerSess, ok := h.srv.GetSession(peerID); ok {
+						_ = peerSess.SendData("reliable", []byte(ssrcMsg))
+					}
+				}
 			}
 
 			h.log.Info(">> 发布者轨道就绪",
