@@ -33,7 +33,12 @@ func newTrackLocal(id common.TrackID, cfg common.TrackConfig) (*trackLocal, erro
 		Channels:    cfg.Channels,
 	}
 	if cfg.Kind == common.TrackVideo {
-		capability.ClockRate = 90000 // 视频固定 90kHz
+		// 所有标准 WebRTC 视频编解码器（VP8/VP9/H264/AV1）均使用 90kHz。
+		// 上游 caller 应已在 TrackConfig.SampleRate 设为 90000，
+		// 此处作为防御性兜底，避免遗漏导致 SDP 协商失败。
+		if capability.ClockRate == 0 {
+			capability.ClockRate = 90000
+		}
 		capability.RTCPFeedback = videoRTCPFeedback
 	} else {
 		capability.RTCPFeedback = audioRTCPFeedback

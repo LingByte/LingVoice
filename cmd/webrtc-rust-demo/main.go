@@ -251,6 +251,9 @@ func (h *rustHandler) startPullLoop(sessionID string, pubTrackID common.TrackID,
 	if kind == common.TrackAudio {
 		trackCfg.SampleRate = 48000
 		trackCfg.Channels = 2
+	} else {
+		// 视频固定 90kHz clock rate（所有标准 WebRTC 视频编解码器一致）
+		trackCfg.SampleRate = 90000
 	}
 
 	// 给 subscriber 添加一个 track（浏览器会收到这个 track 的媒体）
