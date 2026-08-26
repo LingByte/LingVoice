@@ -1,4 +1,6 @@
-# 08 — RustPBX 调研与架构选型
+# 08 — RustPBX 调研与架构选型（历史档案）
+
+> **⚠️ 已废弃**：本文档为早期选型调研记录。最终实现未采用 RustPBX 作为底座，而是从零自研 Rust 媒体面（`lm-core` / `lm-stream` / `lm-depacketizer` / `lm-protocol` / `lm-recorder` 等 crate），参考 Xiu、atm0s-media-server、Waterbus 的架构思想。本文档保留作为决策档案，仅供历史参考。当前架构以 [14-streaming-media-redesign.md](./14-streaming-media-redesign.md) 为准。
 
 本文档记录对 RustPBX 开源项目的实地调研、架构对比分析、钢人论证过程，以及最终的核心架构决策：**混合模型——RustPBX 的 ptime 节奏器 + RewriteRelay 零拷贝 + pub/sub 的多订阅者 fan-out**。
 

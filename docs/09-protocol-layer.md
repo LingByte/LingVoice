@@ -276,12 +276,12 @@ func (h *SipHandler) OnSipEvent(ctx context.Context, ev *SipEvent) (*SipDecision
 
 - RTMP/WHIP 推流会话
 - SIP REFER/Replaces 转接
-- SIP 注册位置管理（Phase 1 用 RustPBX 内置的）
+- SIP 注册位置管理
 - 多租户协议隔离
 
 ### 验证方式
 
-1. RustPBX 收到 SIP INVITE → gRPC 上报 Go
+1. Go 层 sipgo 收到 SIP INVITE → gRPC 上报控制面
 2. Go 鉴权 + 路由 → 返回决策（接受/拒绝/转 AI）
-3. RustPBX 执行决策 → 建立媒体
+3. Go 层执行决策 → 建立媒体
 4. 两个 SIP 软电话互拨，验证 Go 协议层介入决策链路

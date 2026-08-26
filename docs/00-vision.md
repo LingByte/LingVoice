@@ -36,7 +36,7 @@ Go 在语音中台里有一个真实痛点：**音频处理与传输**。
 ### Rust 的长板
 
 - 零拷贝、无 GC、确定性延迟
-- `rustrtc` 成熟的纯 Rust WebRTC/RTP（RustPBX 已验证 800 并发 0 丢包）
+- 成熟的纯 Rust WebRTC/RTP 生态（webrtc-rs、str0m 等）
 - `audio-codec` 编解码生态（Opus/G711/G722/G729 + 重采样）原生
 - 内存安全 + 高并发（tokio）
 
@@ -80,6 +80,6 @@ Rust 实时媒体面                   Go 控制面 + 中台层
 
 ## 与参考项目的关系
 
-**RustPBX** 是实时媒体面的底座来源——我们 fork 其 `rustpbx-media` + `rsipstack` + `rustrtc` + `audio-codec`（约 18000 行生产级代码），改造 `EgressSource` 互斥枚举为多订阅者，补 VAD 和 RTMP。RustPBX 的 IVR/队列/路由/用户/数据库/Console/API/CDR/Transcription/TTS 等业务层全部不要，由 Go 中台层自建。详见 [08-rustpbx-research.md](./08-rustpbx-research.md)。
+**Rust 媒体面从零自研**，参考 Xiu（协议转换与流媒体枢纽）、atm0s-media-server（分布式 SFU）、Waterbus（会议 SFU + HLS 输出）三个开源项目的架构思想，构建 `lm-core` / `lm-stream` / `lm-depacketizer` / `lm-protocol` / `lm-recorder` 等 crate。核心抽象：`MediaFrame`（帧级）+ `Depacketizer`（RTP→Frame）+ `StreamSink`（订阅者）+ `Remuxer`（帧→协议输出）。详见 [14-streaming-media-redesign.md](./14-streaming-media-redesign.md)。
 
 参考 LiveKit（SFU + Agent）、LiveKit SIP、Eino（编排）、LiveKit Agents 的思路，**不直接集成其代码**。LiveKit 的 Rust SFU 和 Agents 的 Go/Python plugin 模型是分层的重要参考。

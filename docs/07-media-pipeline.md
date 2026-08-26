@@ -1,27 +1,29 @@
 # 07 — 媒体管线：ptime 节奏器 + 多订阅者出口
 
-> **架构变更说明**：本文档原为"pub/sub Track 推拉流架构"，经 RustPBX 调研（见 [08-rustpbx-research.md](./08-rustpbx-research.md)）后修订为**混合模型**——RustPBX 的 ptime 节奏器 + RewriteRelay 零拷贝 + pub/sub 的多订阅者 fan-out。原 pub/sub Track 设计作为参考保留在附录中。
+> **架构变更说明**：本文档原为"pub/sub Track 推拉流架构"，后修订为**混合模型**——ptime 节奏器 + 零拷贝 RTP 直转 + pub/sub 的多订阅者 fan-out。原 pub/sub Track 设计作为参考保留在附录中。
+>
+> **实施状态**：当前实现采用 `MediaStream` + `StreamSink` 抽象（见 [14-streaming-media-redesign.md](./14-streaming-media-redesign.md)），源流订阅者收到 `MediaFrame`，转发流订阅者收到裸 `RtpPacket`，两者完全分离。
 
 ## 设计决策
 
-经对 RustPBX 源码的实地调研和钢人论证（详见 [08](./08-rustpbx-research.md)），媒体管线架构确定为**混合模型**：
+媒体管线架构确定为**混合模型**：
 
 | 来源 | 保留/吸收 | 理由 |
 |------|-----------|------|
-| RustPBX ptime 节奏器 | ✅ 保留 | 电话音频是连续流，20ms tick 必出帧（静音兜底），远端解码器不断流 |
-| RustPBX RewriteRelay 零拷贝 | ✅ 保留 | 同 codec 直转，改 RTP header 不进 PCM 域，0.14% core/call |
-| RustPBX EgressSource 互斥 | ❌ 改造 | 一条腿同一时刻只能一种模式，不能同时中继+录音+ASR |
+| ptime 节奏器 | ✅ 保留 | 电话音频是连续流，20ms tick 必出帧（静音兜底），远端解码器不断流 |
+| RewriteRelay 零拷贝 | ✅ 保留 | 同 codec 直转，改 RTP header 不进 PCM 域 |
+| 互斥单出口 | ❌ 改造 | 一条腿同一时刻只能一种模式，不能同时中继+录音+ASR |
 | pub/sub 多订阅者 fan-out | ✅ 吸收 | 同时中继+录音+ASR+推流 |
 | pub/sub 动态加/减订阅者 | ✅ 吸收 | subscribe/unsubscribe 热变，不中断当前路径 |
 | pub/sub 各自背压 | ✅ 吸收 | 录音 Block（不丢），ASR/混音 DropOldest（实时优先） |
 | pub/sub 数据流驱动 | ❌ 不采用 | ptime 定时器驱动的强节奏保证更适合电话音频 |
 
-**核心结论：定时器驱动（RustPBX 的方式）+ 多订阅者出口（pub/sub 的方式）。**
+**核心结论：定时器驱动 + 多订阅者出口（pub/sub 的方式）。**
 
 ## 改造后的 EgressPipeline
 
 ```
-ptime 节奏器 (20ms tick, 必出帧, 静音兜底)  ← 保留 RustPBX 的强节奏保证
+ptime 节奏器 (20ms tick, 必出帧, 静音兜底)  ← 强节奏保证
     │
     ▼
 当前帧 (PCM 或 RTP)
@@ -33,14 +35,14 @@ ptime 节奏器 (20ms tick, 必出帧, 静音兜底)  ← 保留 RustPBX 的强�
     └──▶ StreamSubscriber    (推流 RTMP/WHIP, DropOldest)
 ```
 
-### 与原 RustPBX EgressSource 的对比
+### 互斥单出口 vs 多订阅者
 
 ```
-原 RustPBX (互斥, 同一时刻一种):
+互斥单出口 (同一时刻一种):
   Leg ──▶ EgressPipeline ──▶ [RewriteRelay | TranscodePeer | Media | Inject | Silence]
   // 一条腿只能做一件事
 
-改造后 (多订阅者, 同时):
+多订阅者 (同时):
   Leg ──▶ EgressPipeline ──┬──▶ RelaySubscriber     (零拷贝直转)
                            ├──▶ TranscodeSubscriber (异 codec 转码)
                            ├──▶ RecorderSubscriber  (录音)
@@ -53,7 +55,7 @@ ptime 节奏器 (20ms tick, 必出帧, 静音兜底)  ← 保留 RustPBX 的强�
 
 ```rust
 /// Egress 订阅者：每 tick 收到一帧，各自处理。
-/// 改造自 RustPBX 的 EgressSource 互斥枚举 → 订阅者列表。
+/// 互斥单出口 → 订阅者列表。
 pub trait EgressSubscriber: Send + Sync {
     /// 每个 tick 调用一次。frame 可能是 RTP（RelaySubscriber 用）或 PCM（其他用）。
     fn on_frame(&mut self, frame: &EgressFrame) -> Result<()>;
@@ -93,17 +95,17 @@ pub enum SubscriberKind {
 
 **RelaySubscriber 是特殊的——它收到的 `EgressFrame::Rtp`，直接在 RTP 层 rewrite header 转发，不解码不进 PCM 域。** 其他订阅者收到 `EgressFrame::Pcm`，从解码后的 PCM 帧消费。
 
-这样 2-party 同 codec 的热路径仍然是零拷贝（RustPBX 的 RewriteRelay 性能），不被 pub/sub 的 channel 开销拖累。只有需要多订阅者的场景（录音+ASR+推流同时）才进 PCM 域。
+这样 2-party 同 codec 的热路径仍然是零拷贝（RewriteRelay 性能），不被 pub/sub 的 channel 开销拖累。只有需要多订阅者的场景（录音+ASR+推流同时）才进 PCM 域。
 
 ## 节奏器逻辑
 
 ```rust
 /// 改造后的 EgressPipeline 节奏器。
-/// 保留 RustPBX 的 ptime tick + 静音兜底，出口从互斥改为多订阅者。
+/// 保留 ptime tick + 静音兜底，出口从互斥改为多订阅者。
 pub struct EgressPipeline {
     subscribers: Vec<Box<dyn EgressSubscriber>>,
     ptime_ms: u32,
-    // ... 保留 RustPBX 的 pacing 逻辑
+    // ... pacing 逻辑
 }
 
 impl EgressPipeline {
@@ -234,7 +236,7 @@ Node B: [IngressRpc] ──▶ EgressPipeline ──▶ [其他订阅者]
 - 节奏器是主动的（定时器驱动），不是被动的（等源产生帧才推）
 - 这保证了远端听到的音频是连续的，不会有"卡顿"
 
-纯 pub/sub 的数据流驱动（源产生帧才 publish）在网络抖动时会断流，需要额外补 jitter buffer 或静音填充——而 RustPBX 的 ptime 节奏器已经内置了这个保证。
+纯 pub/sub 的数据流驱动（源产生帧才 publish）在网络抖动时会断流，需要额外补 jitter buffer 或静音填充——而 ptime 节奏器已经内置了这个保证。
 
 ## 附录：原 pub/sub Track 设计（参考）
 

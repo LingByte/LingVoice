@@ -252,7 +252,7 @@ pub trait AudioCodec: Send + Sync {
 }
 
 // === 媒体管线订阅者 ===
-// 参考: LingVoice docs/07 + RustPBX EgressSubscriber
+// 参考: LingVoice docs/07
 pub trait EgressSubscriber: Send + Sync {
     fn on_frame(&mut self, frame: &EgressFrame) -> Result<()>;
     fn backpressure(&self) -> Backpressure;

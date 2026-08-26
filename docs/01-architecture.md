@@ -10,13 +10,14 @@
 
 | 类别 | 具体内容 | 来源 |
 |------|----------|------|
-| 媒体传输协议 | RTP/SRTP/WebRTC/WS-media(voip_bridge)/RTMP/WHIP | rustrtc + 新增 |
-| SIP 收发 + SDP 协商 | SIP UDP/TCP/TLS/WS 收发 + SDP 解析/组装/协商 | rsipstack + negotiate.rs |
-| 编解码 | Opus/PCMU/PCMA/G722/G729 + 重采样 | audio-codec |
-| 媒体处理 | 转码/混音/VAD/comfort noise | rustpbx-media + 新增 VAD |
-| 媒体管线 | ptime 节奏器/EgressPipeline/IngressTap | rustpbx-media（改造 egress） |
-| 媒体持久化 | 录音/录像（WAV 写文件） | Recorder + WavWriter |
-| 媒体监控 | jitter/RTT/丢包/RTCP 统计 | leg_stats + telemetry |
+| 媒体传输协议 | RTP/SRTP/WebRTC/WS-media(voip_bridge)/RTMP/WHIP | 自研 lm-transport |
+| SIP 收发 + SDP 协商 | SIP UDP/TCP/TLS/WS 收发 + SDP 解析/组装/协商 | Go 层 sipgo + negotiate |
+| 编解码 | Opus/PCMU/PCMA/G722/G729 + 重采样 | audio-codec + lm-codecs |
+| 媒体处理 | 转码/混音/VAD/comfort noise | 自研 lm-mixer + lm-dsp |
+| 媒体管线 | ptime 节奏器/MediaStream/Depacketizer/GOP 缓存 | 自研 lm-stream + lm-depacketizer |
+| 媒体持久化 | 录音/录像（WAV/IVF/H.264/分段 MP4） | 自研 lm-recorder |
+| 协议转封装 | WebRTC→HLS/HTTP-FLV/RTMP/RTSP/SRT/GB28181 | 自研 lm-protocol |
+| 媒体监控 | jitter/RTT/丢包/RTCP 统计 | lm-telemetry |
 
 ### Go 层 = 控制面 + 中台层
 
@@ -131,71 +132,63 @@ Rust 执行 SIP 动作: 发 INVITE / 发 BYE / REFER / 透传 SDP
 6. 媒体流在 media node 内路由；ASR/TTS 音频经 egress 直连插件
 7. 会话结束，media node 释放资源，etcd 清理路由
 
-## RustPBX 底座：要什么和不要什么
+## Rust 媒体面：自研 crate 结构
 
-RustPBX 是一个完整的 PBX 产品，我们只要它的**媒体底座**，其余由 Go 中台层自建。
+Rust 流媒体层从零自研，参考 Xiu、atm0s-media-server、Waterbus 的架构思想，构建以下 crate：
 
-### ✅ 我们要的（实时媒体面，约 18000 行）
+### ✅ Rust 媒体面 crate（自研）
 
-| 模块 | crate/路径 | 作用 |
-|------|-----------|------|
-| 媒体处理 | `rustpbx-media` | Leg/Bridge/EgressPipeline/IngressTap/Mixer/Recorder |
-| SIP 收发 | `rsipstack` | SIP UDP/TCP/TLS/WS 收发 + SDP 协商 |
-| WebRTC/RTP | `rustrtc` | DTLS-SRTP/ICE/STUN/TURN/RTP/RTCP |
-| 编解码 | `audio-codec` | Opus/PCMU/PCMA/G722/G729 + 重采样 |
-| DTMF | `telephone_event` | RFC 4733 |
-| WAV 读写 | `wav_reader`/`wav_writer` | 录音文件 |
-| 媒体监控 | `leg_stats`/`telemetry` | jitter/RTT/丢包/RTCP 统计 |
+| 模块 | crate | 作用 |
+|------|-------|------|
+| 核心类型 | `lm-core` | MediaFrame / Depacketizer / Packetizer / StreamSink trait |
+| 编解码 | `lm-codecs` + `audio-codec` | Opus/PCMU/PCMA/G722 + 重采样，codec 类型映射 |
+| 传输 | `lm-transport` | RTP 收发抽象 |
+| 解包器 | `lm-depacketizer` | VP8/VP9/H264/Opus RTP→Frame 组装 |
+| 流抽象 | `lm-stream` | MediaStream + StreamSink + GopCache + Simulcast 路由 |
+| 协议转封装 | `lm-protocol` | HLS/HTTP-FLV/RTMP/RTSP/SRT/GB28181/WHIP/WHEP remuxer |
+| 混音 | `lm-mixer` | 音频混音（MCU） |
+| 录制 | `lm-recorder` | 分段录制 + MP4 合并 + 录制状态机 |
+| DSP | `lm-dsp` | VAD/resample/AEC/AGC |
+| gRPC 服务 | `lm-control` | session/room/track CRUD + push/pull RTP + 录制控制 |
+| 遥测 | `lm-telemetry` | jitter/RTT/丢包/RTCP 统计 |
 
-### ❌ 我们不要的（属于 Go 中台层或控制面）
+### ❌ 不在 Rust 的（属于 Go 中台层或控制面）
 
-| 模块 | 路径 | 为什么不要 | 归属 |
-|------|------|-----------|------|
-| IVR 系统 | `src/call/app/ivr/` | 业务逻辑（菜单/收集/转接） | Go 中台层 |
-| 队列系统 | `src/proxy/queue/` | 业务逻辑（排队/分配/坐席） | Go 中台层 |
-| 路由系统 | `src/proxy/data/` (routes/trunks/acl) | 业务决策（路由表/中继/ACL） | Go 控制面 |
-| 用户管理 | `src/proxy/user/` | 业务概念（分机/密码/注册位置） | Go 控制面 |
-| 数据库 | `crates/rustpbx-storage/` + sea-orm | 控制面状态存储，我们用 etcd + Go 侧存储 | Go 控制面 |
-| Web Console | `src/console/` | 管理界面，中台层自己做 | Go 控制面 |
-| AMI HTTP API | `src/handler/ami.rs` | 控制面 API，中台层自己做 | Go 控制面 |
-| RWI WebSocket | `src/rwi/` | 控制面 WebSocket，我们用 gRPC 替代 | Go 控制面 |
-| 通话记录 | `src/callrecord/` | 业务数据（CDR） | Go 中台层 |
-| Transcription | `src/call/transcription/` | AI 能力（接 Deepgram），我们插件化 | Go 中台层插件 |
-| TTS | `src/call/tts/` | AI 能力（HTTP/CLI driver），我们插件化 | Go 中台层插件 |
-| ACME/SSL | `src/addons/ssl/` | 运维 | Go 控制面或网关 |
-| Cluster 同步 | `src/handler/ami.rs` cluster 部分 | 分布式协调，我们用 etcd | Go 控制面 |
+| 模块 | 归属 | 理由 |
+|------|------|------|
+| IVR / 队列 / 路由 / 用户管理 | Go 中台层 | 业务逻辑 |
+| 数据库 / Web Console / API | Go 控制面 | 控制面存储与管理 |
+| CDR / 通话记录 | Go 中台层 | 业务数据 |
+| ASR / TTS / LLM | Go 中台层插件 | AI 能力，插件化 |
+| 分布式协调 | Go 控制面 | etcd / 调度 / 多租户 |
 
 ### ⚠️ 模糊地带（已决策）
 
 | 模块 | 决策 | 理由 |
 |------|------|------|
-| 录音管理 | 媒体处理留 Rust，CDR 业务留 Go | 写 WAV 是媒体处理，CDR 元数据是业务 |
+| 录音管理 | 媒体处理留 Rust，CDR 业务留 Go | 写文件是媒体处理，CDR 元数据是业务 |
 | 会议管理 | 混音留 Rust，会议状态留 Go | MCU 混音是媒体处理，会议状态是控制 |
-| SIP 注册 | 收发留 Rust，注册位置存储留 Go | registrar 收发在 Rust，位置表通过 gRPC 同步到 Go |
+| SIP 注册 | 收发留 Go，注册位置存储留 Go | SIP 信令在 Go 层用 sipgo 处理 |
 | Prometheus 媒体指标 | 保留在 Rust | 媒体面自己的 jitter/丢包/RTCP 指标 |
 
-### 一张图看清
+### 协议边界
 
 ```
-RustPBX 完整产品:
-┌─────────────────────────────────────────────────┐
-│  Web Console / AMI / RWI          ❌ 不要       │  控制面 API
-│  IVR / Queue / Routing / User     ❌ 不要       │  业务逻辑
-│  Storage / Database               ❌ 不要       │  控制面存储
-│  Transcription / TTS              ❌ 不要       │  AI 能力
-│  CallRecord / CDR                 ❌ 不要       │  业务数据
-│  ACME/SSL / Cluster sync          ❌ 不要       │  运维/分布式
-├─────────────────────────────────────────────────┤
-│  rustpbx-media                    ✅ 要         │  媒体处理
-│  rsipstack                        ✅ 要         │  SIP 收发
-│  rustrtc                          ✅ 要         │  WebRTC/RTP
-│  audio-codec                      ✅ 要         │  编解码
-│  telemetry (媒体指标)             ✅ 要         │  媒体监控
-└─────────────────────────────────────────────────┘
-        │
-        │  我们只取下面这层, 上面全部由 Go 中台层自建
-        ▼
-我们的 Rust 实时媒体面 = RustPBX 的媒体底座 + 改造 egress + 新增 VAD/RTMP
+Go 控制面（信令/协议监听/握手）
+  │  WebRTC SDP/ICE, SIP INVITE, RTMP handshake, WHIP/WHEP HTTP, SRT/GB28181 信令
+  │
+  │  gRPC PushRtp（明文 RTP）
+  ▼
+Rust 媒体面（帧级处理）
+  │  Depacketizer → MediaFrame → StreamSink
+  │  ├─ SFU 转发（peer RTP 直转）
+  │  ├─ 混音（MCU）
+  │  ├─ 录制（分段 MP4）
+  │  └─ 转封装输出（HLS / HTTP-FLV）
+  │
+  │  HTTP 输出（Rust 直接对外）
+  ▼
+客户端 / 播放器
 ```
 
 ## 分层总览
@@ -243,33 +236,31 @@ LingVoice/
 │   │   └── plugins/           # 官方插件子命令 (可选独立进程)
 │   └── proto/                 # gRPC 契约 (与 media 共享)
 │
-├── media/                     # Rust: 流媒体层 (基于 RustPBX 底座改造)
+├── rust-media/                # Rust: 流媒体层 (自研)
 │   ├── Cargo.toml
 │   ├── crates/
-│   │   ├── rustpbx-media/     # ← fork 自 RustPBX, 改造 EgressSource→多订阅者
-│   │   │   ├── egress.rs      # 改造: 互斥枚举→订阅者列表 (核心改造点)
-│   │   │   ├── ingress_tap.rs # 保留: lock-free 双向 RTP 观察
-│   │   │   ├── recorder.rs    # 保留: 录音
-│   │   │   ├── conference_mixer.rs  # 保留+补: mute 接通
-│   │   │   ├── negotiate.rs   # 保留: SDP 协商
-│   │   │   ├── leg.rs         # 保留: 单腿 PeerConnection
-│   │   │   ├── media_bridge.rs # 保留: 2-party B2BUA
-│   │   │   └── ...
-│   │   ├── audio-codec/       # ← 直接用 RustPBX 依赖: Opus/G711/G722/G729 + resample
-│   │   ├── vad/               # 新增: VAD 模块 (作为 IngressTap 附加观察者)
-│   │   ├── transport-rtmp/    # 新增: RTMP/WHIP/WHEP (直播补齐)
-│   │   ├── media-node/        # 新增: 节点进程 gRPC server + 管线编排
-│   │   └── media-proto/       # gRPC 契约 (从 proto 生成)
-│   ├── deps/
-│   │   ├── rustrtc/           # ← RustPBX 依赖: WebRTC/RTP (直接用)
-│   │   └── rsipstack/         # ← RustPBX 依赖: SIP 栈 (直接用)
+│   │   ├── lm-core/           # 核心类型: MediaFrame / Depacketizer / StreamSink
+│   │   ├── lm-codecs/         # 编解码类型映射
+│   │   ├── audio-codec/       # 音频编解码: Opus/G711/G722 + resample
+│   │   ├── lm-transport/      # RTP 传输抽象
+│   │   ├── lm-depacketizer/   # RTP→Frame 解包: VP8/VP9/H264/Opus
+│   │   ├── lm-stream/         # 流抽象 + GOP 缓存 + Simulcast 路由
+│   │   ├── lm-protocol/       # 协议转封装: HLS/FLV/RTMP/RTSP/SRT/GB28181/WHIP/WHEP
+│   │   ├── lm-mixer/          # 音频混音 (MCU)
+│   │   ├── lm-recorder/       # 分段录制 + MP4 合并 + 状态机
+│   │   ├── lm-dsp/            # VAD / resample / AEC / AGC
+│   │   ├── lm-router/         # 路由表
+│   │   ├── lm-pipeline/       # Ingress/Egress 管线
+│   │   ├── lm-control/        # gRPC 服务: session/room/track + push/pull RTP
+│   │   └── lm-telemetry/      # 媒体监控: jitter/RTT/丢包
+│   ├── proto/
+│   │   └── media_node.proto   # gRPC 契约
 │   └── bin/
-│       └── media-node/        # 数据面二进制
+│       └── media-node/        # 数据面二进制 (gRPC :50051 + HTTP :8082)
 │
 └── proto/                     # 共享 protobuf (Rust↔Go 契约)
-    ├── media.proto            # MediaNode service
-    ├── audio.proto            # AudioFrame / TrackRef / SinkConfig
-    └── signal.proto           # 信令透传
+    └── media/
+        └── media_node.proto   # MediaNode service
 ```
 
 ### 为什么 monorepo 而非两仓库

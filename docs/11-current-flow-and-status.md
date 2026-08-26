@@ -1,6 +1,6 @@
 # 当前流转状态与后续路线
 
-> 本文档记录截至 2026-08-25 的实际实现状态、媒体流转路径、各协议接入情况，以及后续开发路线。
+> 本文档记录截至 2026-08-26 的实际实现状态、媒体流转路径、各协议接入情况，以及后续开发路线。
 
 ---
 
@@ -198,14 +198,14 @@ graph TD
 ## 6. 当前完成度 vs 计划
 
 ```mermaid
-pie title Phase 1 完成度（约 65%）
-    "已完成" : 65
-    "未完成" : 35
+pie title 总体完成度（约 75%）
+    "已完成" : 75
+    "未完成" : 25
 ```
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
-| Rust 媒体基础 (10 crates) | ✅ | core/transport/codecs/router/pipeline/mixer/recorder/dsp/control/telemetry |
+| Rust 媒体基础 (10+ crates) | ✅ | core/transport/codecs/router/pipeline/mixer/recorder/dsp/control/telemetry |
 | gRPC 控制面 (lm-control) | ✅ | session/room/track CRUD + push/pull RTP + kind-aware 路由 |
 | Go 协议层 (信令) | ✅ | 7 种协议 adapter 全部实现 |
 | Go↔Rust 桥接 (rustbridge) | ✅ | per-track push/pull，已修复 pull stream map 泄漏 |
@@ -217,10 +217,14 @@ pie title Phase 1 完成度（约 65%）
 | MQTT 端到端 demo | ✅ | 双向音频，cmd/mqtt-rust-demo（需 MQTT broker） |
 | SIP 端到端 demo | ✅ | 信令+RTP bridge 框架，cmd/sip-rust-demo（SDP answer 待完善） |
 | audio-codec vendor | ✅ | 源码内嵌，不再依赖 crates.io |
-| 单元测试 | ✅ | Rust 18 + Go 40 = 58 tests |
+| 单元测试 | ✅ | Rust 97 + Go 40 = 137 tests |
+| **流媒体层重构** | ✅ | MediaFrame + Depacketizer + Stream + GOP + Simulcast |
+| **分段录制 + MP4 合并** | ✅ | 录制状态机 + FFmpeg 合并 |
+| **协议转封装框架** | ✅ | HLS/HTTP-FLV/RTMP/RTSP/SRT/GB28181/WHIP/WHEP remuxer |
+| **media-node HTTP 输出** | ✅ | HLS playlist + TS 分段 + HTTP-FLV chunked stream |
+| **端到端 HLS 转封装** | ✅ | gRPC PushRtp → MediaStream → HlsRemuxer → HLS playlist |
 | **Go 控制面 `control/`** | ❌ | 无 AgentSession/TurnManager/AgentLoop |
 | **插件系统** | ❌ | 无 ASR/TTS/LLM 接口、无 registry、无 mock 插件 |
-| **EgressSubscriber fan-out** | ❌ | trait 定义了但无具体实现 |
 | **协议业务逻辑** | ❌ | 无 auth/router/transfer |
 | **SIP SDP answer** | ❌ | answer 未带本地 RTP 端口，对端不知往哪发 RTP |
 
@@ -228,16 +232,27 @@ pie title Phase 1 完成度（约 65%）
 
 ## 7. 后续路线
 
-### Phase 1 收尾（近期）
+### 流媒体层重构（已完成 ✅）
+
+详见 [14-streaming-media-redesign.md](./14-streaming-media-redesign.md)：
+
+- ✅ Phase 1：MediaFrame 抽象 + Depacketizer + Stream 重构
+- ✅ Phase 2：GOP 缓存 + 快速首屏
+- ✅ Phase 3：分段录制 + MP4 合并 + 录制状态机
+- ✅ Phase 4：Simulcast（RID 路由 + 层选择 + Dynacast）
+- ✅ Phase 5：协议转封装（WebRTC→HLS/HTTP-FLV/RTMP remuxer）
+- ✅ Phase 6-10：RTMP/RTSP/SRT/GB28181/WHIP/WHEP remuxer 框架
+- ✅ media-node HTTP 输出服务（HLS + HTTP-FLV）
+- ✅ 端到端 HLS 转封装验证
+
+### 近期（Phase 3 收尾）
 
 ```mermaid
 graph LR
-    subgraph P1["Phase 1 收尾"]
+    subgraph P3["Phase 3 收尾"]
         direction TB
         A1["1. Go 控制面<br/>control/"] --> A2["2. 插件系统<br/>capability + mock"]
-        A2 --> A3["3. 协议→Rust 集成<br/>WS/SIP/WHIP/WHEP"]
-        A3 --> A4["4. EgressSubscriber<br/>Relay/Recorder/ASR"]
-        A4 --> A5["5. 端到端 demo<br/>browser→Rust→ASR→LLM→TTS→playback"]
+        A2 --> A3["3. 端到端 demo<br/>browser→Rust→ASR→LLM→TTS→playback"]
     end
 ```
 
@@ -260,15 +275,17 @@ graph LR
    - ✅ MQTT → rustbridge
    - ✅ SIP → rustbridge（信令+RTP bridge 框架，SDP answer 待完善）
 
-4. **EgressSubscriber 实现** — P1
-   - RelaySubscriber — 零拷贝 RTP 转发（当前 demo 的 Rust 路由是雏形）
-   - RecorderSubscriber — 接 lm-recorder
-   - AsrSubscriber — 接插件 ASR
+4. ~~**流媒体层重构**~~ — ✅ 已完成
+   - ✅ MediaFrame + Depacketizer + Stream + GOP + Simulcast
+   - ✅ 分段录制 + MP4 合并 + 录制状态机
+   - ✅ 协议转封装（HLS/HTTP-FLV/RTMP/RTSP/SRT/GB28181/WHIP/WHEP）
+   - ✅ media-node HTTP 输出服务
+   - ✅ 端到端 HLS 转封装验证
 
 5. **端到端 demo** — P1
    - browser → Go/Pion → Rust → VAD → mock ASR → mock LLM → mock TTS → playback + barge-in
 
-### Phase 2（中期）
+### 中期
 
 | 项目 | 说明 |
 |------|------|
@@ -276,15 +293,14 @@ graph LR
 | SRTP/DTLS | Rust 侧原生 WebRTC 媒体面（或继续依赖 Pion） |
 | Jitter buffer | lm-pipeline 中加自适应抖动缓冲 |
 | SIP 通话 | SIP INVITE → Rust RTP → WebRTC 混音 |
-| 录制 | RecorderSubscriber → WAV/MP4 落盘 |
-| 会议混音 | lm-mixer 接入 EgressPipeline |
+| 会议混音 | lm-mixer 接入 MediaStream |
+| 协议监听层 | Go 层实现 RTMP/RTSP/SRT/GB28181 网络监听 |
 
-### Phase 3+（远期）
+### 远期
 
 | 项目 | 说明 |
 |------|------|
 | 分布式 | etcd 注册 + 多节点调度 + SFU 级联 |
-| RTMP 推流 | RTMP ingest → Rust → WebRTC 播放 |
 | 多租户 | tenant 隔离 + 配额 + 计费 |
 | 进程外插件 | gRPC sidecar 插件框架 |
 | 真实 AI 插件 | OpenAI ASR/TTS、其他 LLM 接入 |

@@ -2,37 +2,38 @@
 
 分布式从第一天**设计**，但交付分阶段。每阶段都是一条**端到端可演示**的纵切，不横向铺所有模块。
 
-## Phase 1 — RustPBX 底座接入 + Egress 改造 + 单节点语音 Agent 纵切
+> **注**：原 Phase 1 的 RustPBX 底座方案已废弃，改为自研 Rust 媒体面。实际实施进度见下方"实际实施记录"。
 
-**目标**：以 RustPBX 媒体层为底座，改造 EgressSource 为多订阅者，补 VAD，上面建 Go 中台层。浏览器 WebSocket/WebRTC 接入 → VAD → Mock ASR → Mock LLM → Mock TTS → 播放，支持打断。验证底座改造与双语言分层。
+## 实际实施记录
 
-### Rust 侧（media/）— 基于 RustPBX 底座
-- **fork `rustpbx-media` crate**：作为 `media/crates/rustpbx-media/`
-- **核心改造 `egress.rs`**：`EgressSource` 互斥枚举 → `EgressSubscriber` 订阅者列表（保留 ptime 节奏器 + RewriteRelay 零拷贝路径）
-- **保留不动**：`ingress_tap.rs` / `recorder.rs` / `negotiate.rs` / `leg.rs` / `media_bridge.rs` / `conference_mixer.rs` / `audio-codec` / `rustrtc` / `rsipstack`
-- **新增 VAD 模块**：`media/crates/vad/`，作为 `IngressTap` 的附加观察者
-- **新增 `media-node`**：gRPC server，实现 `MediaNode` service 的 `CreateSession`/`AddTrack`/`PublishAudio`/`SubscribeAudio`/`HandleSignaling`，复用 RustPBX 的 Leg/Bridge
-- `bin/media-node`：可独立启动
+### Phase 1 — Rust 媒体基础 + gRPC 控制面 + WebRTC/WS demo ✅
 
-### Go 侧（control/）
-- `proto/`：定义全部契约（即使 Phase 1 只用一部分）
-- `session`：`AgentSession` + `TurnManager`（端点检测、barge-in）
-- `capability`：`ASR`/`TTS`/`LLM` 接口
-- `plugin`：进程内 registry + loader（YAML 配置）
-- `orchestrate`：`AgentLoop`（listen→ASR→LLM→TTS→speak，含打断）
-- `control`：最小 API server（HTTP/WS 信令）+ 本地 media node 调度（同进程或 localhost）
-- `cmd/server`：Go 进程 fork Rust media-node 子进程，localhost gRPC
-- mock 插件：`mock-asr`（回显固定文本）、`mock-tts`（生成正弦波）、`mock-llm`（回显）
+**目标**：自研 Rust 媒体面基础 crate，gRPC 控制面，WebRTC + WebSocket 端到端 demo。
 
-### 交付演示
-浏览器 WS 连 `cmd/server`，推 opus 音频 → RustPBX 底座接收 → VAD 检测说话结束 → Go AgentLoop 调 mock ASR/LLM/TTS → Rust 播放 TTS 音频回浏览器。说话中打断 TTS 播放。
+**已完成**：
+- Rust 媒体面 10+ crate：`lm-core` / `lm-codecs` / `lm-transport` / `lm-control` / `lm-mixer` / `lm-recorder` / `lm-dsp` / `lm-router` / `lm-pipeline` / `lm-telemetry`
+- gRPC 控制面：session/room/track CRUD + push/pull RTP + kind-aware 路由
+- Go 协议层：7 种协议 adapter（WebRTC/WS/SIP/RTMP/WHIP/WHEP/MQTT）
+- Go↔Rust 桥接：rustbridge per-track push/pull
+- WebRTC 端到端 demo：音频+视频双向 room 路由
+- WebSocket 端到端 demo：音频+文本
+- WHIP/WHEP/RTMP/MQTT/SIP 端到端 demo
 
-### 不做
-- etcd、多节点、SIP 通话（底座有但 Phase 1 不接）、RTMP、会议混音、真实 ASR/TTS、进程外插件、录制
+### Phase 2 — 流媒体层重构 ✅
 
----
+**目标**：参考 Xiu/atm0s/Waterbus，重构流媒体层为帧级抽象。
 
-## Phase 2 — 控制面/数据面分离 + 多节点 + 真实插件
+**已完成**（详见 [14-streaming-media-redesign.md](./14-streaming-media-redesign.md)）：
+- Phase 1：`MediaFrame` 抽象 + `Depacketizer`（VP8/H264/Opus）+ `MediaStream` 重构
+- Phase 2：GOP 缓存 + 快速首屏
+- Phase 3：分段录制 + MP4 合并 + 录制状态机
+- Phase 4：Simulcast（RID 路由 + 层选择 + Dynacast）
+- Phase 5：协议转封装（WebRTC→HLS/HTTP-FLV/RTMP remuxer）
+- Phase 6-10：RTMP/RTSP/SRT/GB28181/WHIP/WHEP remuxer 框架
+- media-node HTTP 输出服务：HLS playlist + TS 分段 + HTTP-FLV chunked stream
+- 端到端验证：gRPC PushRtp → MediaStream → Depacketizer → MediaFrame → HlsRemuxer → HLS playlist
+
+### Phase 3 — 控制面/数据面分离 + 多节点 + 真实插件（待实施）
 
 **目标**：control-node 与 media-node 分离部署，etcd 协调，多 media node 水平扩展。接 OpenAI 真实 ASR/TTS/LLM。文件录制。
 
