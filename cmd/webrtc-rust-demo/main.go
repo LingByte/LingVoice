@@ -65,6 +65,7 @@ type rustHandler struct {
 	mixThreshold int   // 超过此人数自动启用混音（0=禁用自动切换）
 	forceMix     bool  // 强制启用混音模式（所有人从一开始就用混音）
 	maxSpeakers  int   // Top-K 最大发言者数（0=混所有人，5=只混Top5）
+	outputCodec  string // 混音输出编码：opus（浏览器）或 pcmu（SIP/极致性能）
 	roomMixes    map[string]string // roomID → mixID
 }
 
@@ -96,7 +97,7 @@ type trackState struct {
 	subTracks   map[uint32]common.TrackID // ssrc → subTrackID
 }
 
-func newRustHandler(log *zap.Logger, bridge *rustbridge.Client, srv *webrtc.Server, mixThreshold int, forceMix bool, maxSpeakers int) *rustHandler {
+func newRustHandler(log *zap.Logger, bridge *rustbridge.Client, srv *webrtc.Server, mixThreshold int, forceMix bool, maxSpeakers int, outputCodec string) *rustHandler {
 	return &rustHandler{
 		log:          log,
 		bridge:       bridge,
@@ -105,6 +106,7 @@ func newRustHandler(log *zap.Logger, bridge *rustbridge.Client, srv *webrtc.Serv
 		mixThreshold: mixThreshold,
 		forceMix:     forceMix,
 		maxSpeakers:  maxSpeakers,
+		outputCodec:  outputCodec,
 		roomMixes:    make(map[string]string),
 	}
 }
@@ -184,7 +186,7 @@ func (h *rustHandler) ensureMixStarted(roomID string) (string, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	mixID, err := h.bridge.StartMix(ctx, roomID, 48000, 960, uint32(h.maxSpeakers))
+	mixID, err := h.bridge.StartMix(ctx, roomID, 48000, 960, uint32(h.maxSpeakers), h.outputCodec)
 	if err != nil {
 		return "", fmt.Errorf("start mix for room %s: %w", roomID, err)
 	}
@@ -701,6 +703,7 @@ func main() {
 		mixThresh  = flag.Int("mix-threshold", 0, "音频混音人数阈值（超过此人数自动启用混音，0=禁用自动切换）")
 		forceMix   = flag.Bool("mix", false, "强制启用音频混音模式（所有人从一开始就用 MCU 混音而非 SFU 转发）")
 		maxSpeak   = flag.Int("max-speakers", 0, "Top-K 最大发言者数（0=混所有人，5=只混能量最高的5路）")
+		outCodec   = flag.String("output-codec", "opus", "混音输出编码：opus（浏览器兼容）或 pcmu（SIP/极致性能）")
 	)
 	flag.Parse()
 
@@ -731,7 +734,7 @@ func main() {
 
 	// 2. 创建 WebRTC 服务器
 	// 注意：handler 和 srv 循环依赖，先创建 handler 再回填 srv
-	handler := newRustHandler(log, bridge, nil, *mixThresh, *forceMix, *maxSpeak)
+	handler := newRustHandler(log, bridge, nil, *mixThresh, *forceMix, *maxSpeak, *outCodec)
 
 	cfg := webrtc.DefaultConfig()
 	cfg.Addr = *addr
@@ -805,6 +808,7 @@ func main() {
 	if *maxSpeak > 0 {
 		fmt.Printf("  Top-K:       只混能量最高的 %d 路音频\n", *maxSpeak)
 	}
+	fmt.Printf("  输出编码:    %s\n", *outCodec)
 	if *tls {
 		fmt.Printf("  TLS:         已启用（自签证书，浏览器需点\"继续访问\"）\n")
 	}

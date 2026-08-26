@@ -76,6 +76,12 @@ fn decode_mu_law(mu_law_sample: u8) -> i16 {
     MULAW_DECODE_TABLE[mu_law_sample as usize]
 }
 
+/// Encodes a single linear 16-bit PCM sample to μ-law byte (lookup table, zero-cost)
+pub fn linear_to_ulaw(sample: i16) -> u8 {
+    let index = (sample as i32 + 32768) as usize;
+    MULAW_ENCODE_TABLE[index]
+}
+
 /// Decoder for μ-law (PCMU) format
 #[derive(Default)]
 pub struct PcmuDecoder {}

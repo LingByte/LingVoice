@@ -203,6 +203,7 @@ message StartMixRequest {
   uint32 sample_rate = 2;    // 混音采样率（通常 48000）
   uint32 frame_size = 3;     // 每帧样本数（960 = 20ms@48k）
   uint32 max_speakers = 4;   // Top-K 最大发言者数（0=混所有人，5=只混Top5）
+  string output_codec = 5;   // 输出编码：opus（默认,浏览器）或 pcmu（SIP/极致性能）
 }
 
 message StartMixResponse {

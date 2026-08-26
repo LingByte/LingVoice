@@ -34,6 +34,8 @@ pub struct MixState {
     pub mixer: Arc<ConferenceMixer>,
     /// 混音采样率（用于 egress bridge 创建编码器）
     pub sample_rate: u32,
+    /// 输出编码：opus（浏览器）或 pcmu（SIP/极致性能）
+    pub output_codec: String,
     /// session_id → 参与者混音状态
     pub participants: DashMap<SessionId, ParticipantMixState>,
 }
@@ -83,6 +85,7 @@ impl MixManager {
         room_id: &str,
         sample_rate: u32,
         max_speakers: usize,
+        output_codec: &str,
     ) -> Arc<MixState> {
         let mix_id = uuid::Uuid::new_v4().to_string();
         let mixer = Arc::new(ConferenceMixer::with_max_speakers(&mix_id, sample_rate, max_speakers));
@@ -93,11 +96,12 @@ impl MixManager {
             room_id: room_id.to_string(),
             mixer,
             sample_rate,
+            output_codec: output_codec.to_string(),
             participants: DashMap::new(),
         });
 
         self.mixes.insert(mix_id.clone(), state.clone());
-        info!(mix_id = %mix_id, room = %room_id, sample_rate, "mix started");
+        info!(mix_id = %mix_id, room = %room_id, sample_rate, output_codec, "mix started");
         state
     }
 
@@ -138,6 +142,7 @@ impl MixManager {
         session: &Arc<MediaSession>,
         source_track_id: &TrackId,
         sample_rate: u32,
+        output_codec: &str,
     ) -> Result<TrackId, String> {
         let mix_state = self
             .mixes
@@ -156,11 +161,16 @@ impl MixManager {
 
         // 2. 创建 mix-output track（broadcast channel）
         let mix_track_id = TrackId(format!("mix-{}", session_id.0));
+        let track_codec = if output_codec == "pcmu" {
+            CodecType::PcmU
+        } else {
+            CodecType::Opus
+        };
         let mix_track = TrackState::new(
             mix_track_id.clone(),
             lm_core::EndpointId(format!("mix-ep-{}", session_id.0)),
             session_id.clone(),
-            CodecType::Opus,
+            track_codec,
             TrackKind::Audio,
             0,
         );
@@ -172,12 +182,14 @@ impl MixManager {
         let stopped_clone = stopped.clone();
         let mix_id_for_task = mix_id.to_string();
         let session_id_for_task = session_id.0.clone();
+        let codec_for_task = output_codec.to_string();
 
         tokio::spawn(async move {
             run_egress_bridge(
                 mixer_output_rx,
                 broadcast_tx,
                 sample_rate,
+                codec_for_task,
                 stopped_clone,
                 mix_id_for_task,
                 session_id_for_task,
@@ -300,33 +312,63 @@ impl MixManager {
     pub fn mix_sample_rate(&self, mix_id: &str) -> Option<u32> {
         self.mixes.get(mix_id).map(|m| m.sample_rate)
     }
+
+    /// 获取 mix 的输出编码
+    pub fn mix_output_codec(&self, mix_id: &str) -> Option<String> {
+        self.mixes.get(mix_id).map(|m| m.output_codec.clone())
+    }
 }
 
 /// Egress bridge：mixer output → 编码 → track broadcast
 ///
 /// 从 ConferenceMixer 的 output_rx 接收混音后的 PCM 帧，
-/// 编码为 Opus，包装成 RtpPacketOut 发送到 mix-output track 的 broadcast channel。
+/// 根据 output_codec 编码为 Opus 或 PCMU，包装成 RtpPacketOut 发送到 broadcast channel。
+///
+/// 优化：
+/// - 静音跳过：如果混音帧全为 0（无 active speaker），不编码不发送
+/// - PCMU 模式：µ-law 查表编码，无状态、零成本
+/// - Opus 模式：per-bridge 独立编码器（保留帧间预测状态）
 async fn run_egress_bridge(
     mut mixer_output_rx: mpsc::Receiver<lm_core::AudioFrame>,
     broadcast_tx: tokio::sync::broadcast::Sender<RtpPacketOut>,
     sample_rate: u32,
+    output_codec: String,
     stopped: Arc<AtomicBool>,
     mix_id: String,
     session_id: String,
 ) {
-    // 创建 mono Opus 编码器（mixer 输出的是单声道 PCM）
-    let mut encoder = audio_codec::create_opus_encoder(sample_rate, 1, audio_codec::opus::OpusApplication::Voip);
+    // 根据输出 codec 创建编码器
+    let is_opus = output_codec != "pcmu";
+    let mut opus_encoder: Option<Box<dyn audio_codec::Encoder>> = if is_opus {
+        Some(audio_codec::create_opus_encoder(
+            sample_rate,
+            1,
+            audio_codec::opus::OpusApplication::Voip,
+        ))
+    } else {
+        None
+    };
+    let pcmu_encoder = if !is_opus {
+        Some(audio_codec::pcmu::PcmuEncoder::new())
+    } else {
+        None
+    };
 
+    let payload_type: u32 = if is_opus { 111 } else { 0 }; // Opus=111, PCMU=0
     let mut rtp_seq: u32 = 0;
     let mut rtp_ts: u32 = 0;
     let frame_samples = (sample_rate as usize * 20) / 1000;
     let clock_increment = frame_samples as u32;
     let mix_ssrc: u32 = 0x4D495800; // "MIX\0"
 
+    // 静音检测阈值：RMS 能量低于此值则跳过编码
+    const SILENCE_THRESHOLD: f32 = 50.0; // i16 RMS
+
     info!(
         mix_id = %mix_id,
         session = %session_id,
         sample_rate,
+        output_codec = %output_codec,
         "egress bridge started"
     );
 
@@ -338,15 +380,35 @@ async fn run_egress_bridge(
 
         match mixer_output_rx.recv().await {
             Some(frame) => {
-                // 编码 PCM → Opus
-                let encoded = encoder.encode(&frame.samples);
+                // 静音跳过：计算 RMS，低于阈值则不编码
+                let rms = rms_energy_fast(&frame.samples);
+                if rms < SILENCE_THRESHOLD {
+                    // 仍然推进时间戳，但不发送数据包
+                    rtp_seq = rtp_seq.wrapping_add(1);
+                    rtp_ts = rtp_ts.wrapping_add(clock_increment);
+                    continue;
+                }
+
+                let encoded = if let Some(ref mut enc) = opus_encoder {
+                    enc.encode(&frame.samples)
+                } else if pcmu_encoder.is_some() {
+                    // PCMU: 直接查表编码
+                    let mut buf = vec![0u8; frame.samples.len()];
+                    for (i, &s) in frame.samples.iter().enumerate() {
+                        buf[i] = audio_codec::pcmu::linear_to_ulaw(s);
+                    }
+                    buf
+                } else {
+                    continue;
+                };
+
                 if encoded.is_empty() {
                     continue;
                 }
 
                 let pkt = RtpPacketOut {
                     ssrc: mix_ssrc,
-                    payload_type: 111, // Opus PT
+                    payload_type,
                     sequence_number: rtp_seq,
                     timestamp: rtp_ts,
                     marker: rtp_seq == 0,
@@ -370,4 +432,13 @@ async fn run_egress_bridge(
             }
         }
     }
+}
+
+/// 快速 RMS 能量计算（用于静音检测）
+fn rms_energy_fast(samples: &[i16]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum: i64 = samples.iter().map(|s| (*s as i64) * (*s as i64)).sum();
+    ((sum as f64 / samples.len() as f64).sqrt()) as f32
 }

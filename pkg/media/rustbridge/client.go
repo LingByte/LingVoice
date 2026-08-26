@@ -388,13 +388,15 @@ func (c *Client) GetStats(ctx context.Context, sessionID string) (*mediav1.GetSt
 // StartMix starts an audio mixer for a room.
 // sampleRate is typically 48000, frameSize is typically 960 (20ms@48k).
 // maxSpeakers: Top-K active speaker limit (0=mix all, 5=only top 5 by energy).
+// outputCodec: "opus" (browser) or "pcmu" (SIP/extreme performance).
 // Returns the mix_id.
-func (c *Client) StartMix(ctx context.Context, roomID string, sampleRate uint32, frameSize uint32, maxSpeakers uint32) (string, error) {
+func (c *Client) StartMix(ctx context.Context, roomID string, sampleRate uint32, frameSize uint32, maxSpeakers uint32, outputCodec string) (string, error) {
 	resp, err := c.stub.StartMix(ctx, &mediav1.StartMixRequest{
 		RoomId:       roomID,
 		SampleRate:   sampleRate,
 		FrameSize:    frameSize,
 		MaxSpeakers:  maxSpeakers,
+		OutputCodec:  outputCodec,
 	})
 	if err != nil {
 		return "", fmt.Errorf("start mix: %w", err)

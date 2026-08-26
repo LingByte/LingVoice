@@ -492,8 +492,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
         let req = request.into_inner();
         let sample_rate = if req.sample_rate > 0 { req.sample_rate } else { 48000 };
         let max_speakers = req.max_speakers as usize;
+        let output_codec = if req.output_codec.is_empty() { "opus" } else { req.output_codec.as_str() };
 
-        let state = self.mixes.start_mix(&req.room_id, sample_rate, max_speakers);
+        let state = self.mixes.start_mix(&req.room_id, sample_rate, max_speakers, output_codec);
         let mix_id = state.mix_id.clone();
 
         info!(
@@ -501,6 +502,7 @@ impl media_node_server::MediaNode for MediaNodeServer {
             mix_id = %mix_id,
             sample_rate,
             max_speakers,
+            output_codec,
             "gRPC start_mix"
         );
 
@@ -537,15 +539,19 @@ impl media_node_server::MediaNode for MediaNodeServer {
         // 通常是 AddTrack 创建的音频 track，track_id 由 Go 侧传入
         let source_track_id = TrackId(req.track_id.clone());
 
-        // 获取采样率（从 mix state）
+        // 获取采样率和输出编码（从 mix state）
         let sample_rate = self
             .mixes
             .mix_sample_rate(&req.mix_id)
             .unwrap_or(48000);
+        let output_codec = self
+            .mixes
+            .mix_output_codec(&req.mix_id)
+            .unwrap_or_else(|| "opus".to_string());
 
         let mix_track_id = self
             .mixes
-            .add_participant(&req.mix_id, &session, &source_track_id, sample_rate)
+            .add_participant(&req.mix_id, &session, &source_track_id, sample_rate, &output_codec)
             .await
             .map_err(|e| Status::internal(e))?;
 

@@ -1546,6 +1546,7 @@ type StartMixRequest struct {
 	SampleRate    uint32                 `protobuf:"varint,2,opt,name=sample_rate,json=sampleRate,proto3" json:"sample_rate,omitempty"`    // 混音采样率（通常 48000）
 	FrameSize     uint32                 `protobuf:"varint,3,opt,name=frame_size,json=frameSize,proto3" json:"frame_size,omitempty"`       // 每帧样本数（960 = 20ms@48k）
 	MaxSpeakers   uint32                 `protobuf:"varint,4,opt,name=max_speakers,json=maxSpeakers,proto3" json:"max_speakers,omitempty"` // Top-K 最大发言者数（0=混所有人，5=只混Top5）
+	OutputCodec   string                 `protobuf:"bytes,5,opt,name=output_codec,json=outputCodec,proto3" json:"output_codec,omitempty"`  // 输出编码：opus（默认,浏览器）或 pcmu（SIP/极致性能）
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1606,6 +1607,13 @@ func (x *StartMixRequest) GetMaxSpeakers() uint32 {
 		return x.MaxSpeakers
 	}
 	return 0
+}
+
+func (x *StartMixRequest) GetOutputCodec() string {
+	if x != nil {
+		return x.OutputCodec
+	}
+	return ""
 }
 
 type StartMixResponse struct {
@@ -3725,14 +3733,15 @@ const file_media_node_proto_rawDesc = "" +
 	"\tfile_path\x18\x01 \x01(\tR\bfilePath\x12\x1f\n" +
 	"\vduration_ms\x18\x02 \x01(\x04R\n" +
 	"durationMs\x12\x1b\n" +
-	"\tfile_size\x18\x03 \x01(\x04R\bfileSize\"\x8d\x01\n" +
+	"\tfile_size\x18\x03 \x01(\x04R\bfileSize\"\xb0\x01\n" +
 	"\x0fStartMixRequest\x12\x17\n" +
 	"\aroom_id\x18\x01 \x01(\tR\x06roomId\x12\x1f\n" +
 	"\vsample_rate\x18\x02 \x01(\rR\n" +
 	"sampleRate\x12\x1d\n" +
 	"\n" +
 	"frame_size\x18\x03 \x01(\rR\tframeSize\x12!\n" +
-	"\fmax_speakers\x18\x04 \x01(\rR\vmaxSpeakers\")\n" +
+	"\fmax_speakers\x18\x04 \x01(\rR\vmaxSpeakers\x12!\n" +
+	"\foutput_codec\x18\x05 \x01(\tR\voutputCodec\")\n" +
 	"\x10StartMixResponse\x12\x15\n" +
 	"\x06mix_id\x18\x01 \x01(\tR\x05mixId\"'\n" +
 	"\x0eStopMixRequest\x12\x15\n" +

@@ -420,12 +420,16 @@ impl ConferenceMixer {
             };
 
             // 3. 为每个参与者生成 N-1 混音（只混 active_speakers）
+            // 优化：直接用引用混音，避免 clone 每路 PCM
             let participant_ids: Vec<ParticipantId> =
                 ctx.participants.iter().map(|e| e.key().clone()).collect();
 
+            // 预分配混音输出 buffer（复用，减少分配）
+            let mut mix_buffer: Vec<i16> = vec![0i16; ctx.frame_size];
+
             for output_pid in &participant_ids {
-                let mut input_frames = Vec::new();
-                let mut gains = Vec::new();
+                // 收集 (input_ref, gain) 对，不 clone
+                let mut inputs: Vec<(&[i16], f32)> = Vec::new();
 
                 for (input_pid, frame) in &participant_audio {
                     if input_pid == output_pid {
@@ -444,29 +448,26 @@ impl ConferenceMixer {
                         .unwrap_or(1.0);
 
                     if gain > 0.0 {
-                        input_frames.push(frame.samples.clone());
-                        gains.push(gain);
+                        inputs.push((&frame.samples, gain));
                     }
                 }
 
-                if input_frames.is_empty() {
+                if inputs.is_empty() {
                     continue;
                 }
 
-                // 归一化帧长度
-                let mut normalized = Vec::with_capacity(input_frames.len());
-                for mut f in input_frames {
-                    if f.len() < ctx.frame_size {
-                        f.resize(ctx.frame_size, 0);
-                    } else if f.len() > ctx.frame_size {
-                        f.truncate(ctx.frame_size);
+                // 直接混音到预分配 buffer（零 clone）
+                mix_buffer.iter_mut().for_each(|s| *s = 0);
+                for (samples, gain) in &inputs {
+                    let len = samples.len().min(ctx.frame_size);
+                    for i in 0..len {
+                        let mixed = (mix_buffer[i] as f32 + (*samples)[i] as f32 * gain) as i16;
+                        mix_buffer[i] = mixed.clamp(i16::MIN, i16::MAX);
                     }
-                    normalized.push(f);
                 }
 
-                let mixed_samples = AudioMixer::mix(normalized, &gains);
                 let output_frame = AudioFrame {
-                    samples: mixed_samples,
+                    samples: mix_buffer.clone(),
                     sample_rate: ctx.sample_rate,
                     timestamp: 0,
                 };
