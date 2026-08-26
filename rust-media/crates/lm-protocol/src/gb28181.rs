@@ -192,5 +192,116 @@ mod tests {
             ssrc: 0x12345678,
         };
         assert_eq!(session.device_id.len(), 20);
+        assert_eq!(session.media_port, 9000);
+        assert_eq!(session.ssrc, 0x12345678);
+    }
+
+    #[test]
+    fn test_gb28181_session_clone() {
+        let session = Gb28181Session {
+            device_id: "34020000001320000001".into(),
+            sip_server: "127.0.0.1:5060".into(),
+            media_port: 9000,
+            ssrc: 0x12345678,
+        };
+        let cloned = session.clone();
+        assert_eq!(session.device_id, cloned.device_id);
+        assert_eq!(session.ssrc, cloned.ssrc);
+    }
+
+    #[test]
+    fn test_gb28181_demuxer_new() {
+        let demuxer = Gb28181Demuxer::new();
+        assert_eq!(demuxer.protocol(), Protocol::Gb28181);
+        assert_eq!(demuxer.ssrc, 0);
+    }
+
+    #[test]
+    fn test_gb28181_demuxer_set_ssrc() {
+        let mut demuxer = Gb28181Demuxer::new();
+        demuxer.set_ssrc(0xAABBCCDD);
+        assert_eq!(demuxer.ssrc, 0xAABBCCDD);
+    }
+
+    #[test]
+    fn test_gb28181_demuxer_short_data() {
+        let mut demuxer = Gb28181Demuxer::new();
+        // Too short for RTP header (< 12 bytes)
+        let frames = demuxer.push_data(&[0, 1, 2, 3]);
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn test_gb28181_demuxer_no_marker() {
+        let mut demuxer = Gb28181Demuxer::new();
+        // RTP header with marker=0 → should buffer, not produce frames
+        let mut rtp = vec![0x80, 0x60]; // V=2, M=0, PT=96
+        rtp.extend_from_slice(&0u16.to_be_bytes()); // seq
+        rtp.extend_from_slice(&9000u32.to_be_bytes()); // timestamp
+        rtp.extend_from_slice(&0x12345678u32.to_be_bytes()); // ssrc
+        rtp.extend_from_slice(&[0xAB, 0xCD]); // payload
+        let frames = demuxer.push_data(&rtp);
+        assert!(frames.is_empty()); // no marker → no frames yet
+    }
+
+    #[test]
+    fn test_gb28181_demuxer_with_marker_empty_ps() {
+        let mut demuxer = Gb28181Demuxer::new();
+        // RTP with marker=1 but empty PS payload
+        let mut rtp = vec![0x80, 0xE0]; // V=2, M=1, PT=96
+        rtp.extend_from_slice(&0u16.to_be_bytes());
+        rtp.extend_from_slice(&9000u32.to_be_bytes());
+        rtp.extend_from_slice(&0u32.to_be_bytes());
+        // no payload
+        let frames = demuxer.push_data(&rtp);
+        // Empty PS → no frames
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn test_gb28181_demuxer_reset() {
+        let mut demuxer = Gb28181Demuxer::new();
+        demuxer.set_ssrc(0x12345678);
+
+        // Push some data to fill buffer
+        let mut rtp = vec![0x80, 0x60]; // M=0
+        rtp.extend_from_slice(&0u16.to_be_bytes());
+        rtp.extend_from_slice(&0u32.to_be_bytes());
+        rtp.extend_from_slice(&0u32.to_be_bytes());
+        rtp.extend_from_slice(&[0xFF; 10]);
+        demuxer.push_data(&rtp);
+
+        demuxer.reset();
+        assert_eq!(demuxer.ssrc, 0);
+        assert!(demuxer.ps_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_gb28181_demuxer_ssrc_learning() {
+        let mut demuxer = Gb28181Demuxer::new();
+        assert_eq!(demuxer.ssrc, 0);
+
+        // Push RTP packet with ssrc=12345, marker=0
+        let mut rtp = vec![0x80, 0x60];
+        rtp.extend_from_slice(&0u16.to_be_bytes());
+        rtp.extend_from_slice(&0u32.to_be_bytes());
+        rtp.extend_from_slice(&12345u32.to_be_bytes());
+        rtp.extend_from_slice(&[0xFF]);
+        demuxer.push_data(&rtp);
+
+        // SSRC should be learned
+        assert_eq!(demuxer.ssrc, 12345);
+    }
+
+    #[test]
+    fn test_gb28181_protocol() {
+        let demuxer = Gb28181Demuxer::new();
+        assert_eq!(demuxer.protocol(), Protocol::Gb28181);
+    }
+
+    #[test]
+    fn test_gb28181_demuxer_default() {
+        let demuxer = Gb28181Demuxer::default();
+        assert_eq!(demuxer.protocol(), Protocol::Gb28181);
     }
 }

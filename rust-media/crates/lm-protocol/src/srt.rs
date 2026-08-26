@@ -167,4 +167,103 @@ mod tests {
         let output = remuxer.push_frame(&frame);
         assert!(output.len() > 16); // header + payload
     }
+
+    #[test]
+    fn test_srt_remuxer_header_fields() {
+        let mut remuxer = SrtRemuxer::new();
+
+        let frame = MediaFrame::video(
+            CodecType::H264,
+            9000, // 90kHz → 100ms → 100000μs
+            bytes::Bytes::from(vec![0xAB, 0xCD]),
+            1,
+            true,
+        );
+
+        let output = remuxer.push_frame(&frame);
+        assert_eq!(output.len(), 16 + 2); // 16 header + 2 payload
+
+        // sequence number = 0 (first packet)
+        let seq = u32::from_be_bytes([output[0], output[1], output[2], output[3]]);
+        assert_eq!(seq, 0);
+
+        // message number = 1
+        let msg = u32::from_be_bytes([output[4], output[5], output[6], output[7]]);
+        assert_eq!(msg, 1);
+
+        // timestamp = 9000 * 1000000 / 90000 = 100000μs
+        let ts = u32::from_be_bytes([output[8], output[9], output[10], output[11]]);
+        assert_eq!(ts, 100000);
+
+        // dst socket id = 0
+        let dst = u32::from_be_bytes([output[12], output[13], output[14], output[15]]);
+        assert_eq!(dst, 0);
+
+        // payload
+        assert_eq!(&output[16..], &[0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn test_srt_remuxer_sequence_increment() {
+        let mut remuxer = SrtRemuxer::new();
+
+        let frame = MediaFrame::audio(
+            CodecType::Opus,
+            4800,
+            bytes::Bytes::from(vec![0x01]),
+            1,
+        );
+
+        remuxer.push_frame(&frame);
+        let output2 = remuxer.push_frame(&frame);
+
+        // Second packet should have sequence = 1
+        let seq = u32::from_be_bytes([output2[0], output2[1], output2[2], output2[3]]);
+        assert_eq!(seq, 1);
+    }
+
+    #[test]
+    fn test_srt_remuxer_reset() {
+        let mut remuxer = SrtRemuxer::new();
+
+        let frame = MediaFrame::audio(
+            CodecType::Opus,
+            4800,
+            bytes::Bytes::from(vec![0x01]),
+            1,
+        );
+
+        remuxer.push_frame(&frame);
+        remuxer.reset();
+
+        let output = remuxer.push_frame(&frame);
+        let seq = u32::from_be_bytes([output[0], output[1], output[2], output[3]]);
+        assert_eq!(seq, 0); // reset → seq starts at 0
+    }
+
+    #[test]
+    fn test_srt_demuxer_short_data() {
+        let mut demuxer = SrtDemuxer::new(CodecType::H264, CodecType::Opus);
+        // Too short for SRT header (< 16 bytes)
+        let frames = demuxer.push_data(&[0, 1, 2, 3]);
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn test_srt_demuxer_short_payload() {
+        let mut demuxer = SrtDemuxer::new(CodecType::H264, CodecType::Opus);
+        // 16 bytes header but payload too short for RTP (< 12 bytes)
+        let data = vec![0u8; 20]; // 16 header + 4 payload
+        let frames = demuxer.push_data(&data);
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn test_srt_protocol() {
+        let remuxer = SrtRemuxer::new();
+        assert_eq!(remuxer.protocol(), Protocol::Srt);
+
+        let demuxer = SrtDemuxer::new(CodecType::H264, CodecType::Opus);
+        assert_eq!(demuxer.protocol(), Protocol::Srt);
+    }
 }

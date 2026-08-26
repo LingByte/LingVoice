@@ -367,3 +367,248 @@ pub trait StreamSink: Send + Sync {
         Backpressure::DropOldest
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+
+    // ─── ID newtype 测试 ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_session_id_equality() {
+        let a = SessionId("s1".into());
+        let b = SessionId("s1".into());
+        let c = SessionId("s2".into());
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_id_hash_and_clone() {
+        let room = RoomId("room-1".into());
+        let cloned = room.clone();
+        let mut set = std::collections::HashSet::new();
+        set.insert(room);
+        assert!(set.contains(&cloned));
+    }
+
+    // ─── CodecType 测试 ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_codec_is_audio() {
+        assert!(CodecType::Opus.is_audio());
+        assert!(CodecType::PcmU.is_audio());
+        assert!(CodecType::PcmA.is_audio());
+        assert!(CodecType::G722.is_audio());
+        assert!(CodecType::Pcm.is_audio());
+        assert!(CodecType::Aac.is_audio());
+        assert!(CodecType::Mp3.is_audio());
+    }
+
+    #[test]
+    fn test_codec_is_video() {
+        assert!(CodecType::H264.is_video());
+        assert!(CodecType::H265.is_video());
+        assert!(CodecType::Vp8.is_video());
+        assert!(CodecType::Vp9.is_video());
+        assert!(CodecType::Av1.is_video());
+    }
+
+    #[test]
+    fn test_codec_audio_not_video() {
+        for codec in [CodecType::Opus, CodecType::PcmU, CodecType::Aac, CodecType::Mp3] {
+            assert!(codec.is_audio());
+            assert!(!codec.is_video());
+        }
+    }
+
+    #[test]
+    fn test_codec_video_not_audio() {
+        for codec in [CodecType::H264, CodecType::Vp8, CodecType::Av1] {
+            assert!(codec.is_video());
+            assert!(!codec.is_audio());
+        }
+    }
+
+    // ─── TrackKind 测试 ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_track_kind() {
+        assert!(TrackKind::Audio.is_audio());
+        assert!(!TrackKind::Audio.is_video());
+        assert!(TrackKind::Video.is_video());
+        assert!(!TrackKind::Video.is_audio());
+    }
+
+    // ─── AudioFrame 测试 ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_audio_frame() {
+        let frame = AudioFrame {
+            samples: vec![100i16, 200, 300],
+            sample_rate: 48000,
+            timestamp: 960,
+        };
+        assert_eq!(frame.samples.len(), 3);
+        assert_eq!(frame.sample_rate, 48000);
+        assert_eq!(frame.timestamp, 960);
+    }
+
+    // ─── MediaFrame 测试 ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_media_frame_audio() {
+        let frame = MediaFrame::audio(
+            CodecType::Opus,
+            4800,
+            Bytes::from_static(&[0x4f, 0x61]),
+            12345,
+        );
+        assert_eq!(frame.kind, TrackKind::Audio);
+        assert_eq!(frame.codec, CodecType::Opus);
+        assert_eq!(frame.timestamp, 4800);
+        assert!(!frame.keyframe);
+        assert_eq!(frame.ssrc, 12345);
+        assert_eq!(frame.len(), 2);
+        assert!(!frame.is_empty());
+    }
+
+    #[test]
+    fn test_media_frame_video() {
+        let frame = MediaFrame::video(
+            CodecType::H264,
+            9000,
+            Bytes::from_static(&[0, 0, 0, 1, 0x65]),
+            999,
+            true,
+        );
+        assert_eq!(frame.kind, TrackKind::Video);
+        assert_eq!(frame.codec, CodecType::H264);
+        assert_eq!(frame.timestamp, 9000);
+        assert!(frame.keyframe);
+        assert_eq!(frame.ssrc, 999);
+        assert_eq!(frame.len(), 5);
+    }
+
+    #[test]
+    fn test_media_frame_empty() {
+        let frame = MediaFrame::audio(CodecType::Opus, 0, Bytes::new(), 0);
+        assert!(frame.is_empty());
+        assert_eq!(frame.len(), 0);
+    }
+
+    // ─── Direction 测试 ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_direction_variants() {
+        let dirs = [Direction::SendRecv, Direction::SendOnly, Direction::RecvOnly, Direction::Inactive];
+        assert_eq!(dirs.len(), 4);
+        assert_eq!(Direction::SendRecv, Direction::SendRecv);
+        assert_ne!(Direction::SendOnly, Direction::RecvOnly);
+    }
+
+    // ─── Backpressure 测试 ────────────────────────────────────────────────
+
+    #[test]
+    fn test_backpressure_variants() {
+        let bp = Backpressure::Block;
+        assert_eq!(bp, Backpressure::Block);
+        assert_ne!(Backpressure::DropOldest, Backpressure::DropNewest);
+    }
+
+    // ─── DepacketizeResult 测试 ───────────────────────────────────────────
+
+    #[test]
+    fn test_depacketize_result() {
+        assert_eq!(DepacketizeResult::NeedMore, DepacketizeResult::NeedMore);
+        assert_eq!(DepacketizeResult::FrameComplete, DepacketizeResult::FrameComplete);
+        assert_eq!(
+            DepacketizeResult::Error("test".into()),
+            DepacketizeResult::Error("test".into())
+        );
+        assert_ne!(DepacketizeResult::NeedMore, DepacketizeResult::FrameComplete);
+    }
+
+    // ─── PacketizeParams 测试 ─────────────────────────────────────────────
+
+    #[test]
+    fn test_packetize_params() {
+        let params = PacketizeParams {
+            ssrc: 12345,
+            payload_type: 96,
+            start_sequence: 0,
+            start_timestamp: 160,
+            clock_rate: 8000,
+        };
+        assert_eq!(params.ssrc, 12345);
+        assert_eq!(params.payload_type, 96);
+        assert_eq!(params.clock_rate, 8000);
+    }
+
+    // ─── StreamSink 默认背压 ──────────────────────────────────────────────
+
+    #[test]
+    fn test_stream_sink_default_backpressure() {
+        struct DummySink;
+        impl StreamSink for DummySink {
+            fn on_frame(&self, _frame: &MediaFrame) {}
+        }
+        let sink = DummySink;
+        assert_eq!(sink.backpressure(), Backpressure::DropOldest);
+    }
+
+    // ─── Transport trait（简单 mock 实现） ─────────────────────────────────
+
+    #[test]
+    fn test_transport_trait() {
+        struct EchoTransport {
+            buf: Vec<u8>,
+        }
+        impl Transport for EchoTransport {
+            fn on_input(&mut self, input: &[u8]) {
+                self.buf.extend_from_slice(input);
+            }
+            fn on_tick(&mut self, _now_ms: u64) {}
+            fn poll_output(&mut self) -> Option<Vec<u8>> {
+                if self.buf.is_empty() {
+                    None
+                } else {
+                    Some(std::mem::take(&mut self.buf))
+                }
+            }
+        }
+        let mut t = EchoTransport { buf: Vec::new() };
+        t.on_input(&[1, 2, 3]);
+        let out = t.poll_output();
+        assert!(out.is_some());
+        assert_eq!(out.unwrap(), vec![1, 2, 3]);
+        assert!(t.poll_output().is_none());
+    }
+
+    // ─── Serialization 测试 ───────────────────────────────────────────────
+
+    #[test]
+    fn test_codec_type_serde() {
+        let codec = CodecType::Opus;
+        let json = serde_json::to_string(&codec).unwrap();
+        let deserialized: CodecType = serde_json::from_str(&json).unwrap();
+        assert_eq!(codec, deserialized);
+    }
+
+    #[test]
+    fn test_session_id_serde() {
+        let id = SessionId("test-session".into());
+        let json = serde_json::to_string(&id).unwrap();
+        let deserialized: SessionId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn test_track_kind_serde() {
+        let kind = TrackKind::Video;
+        let json = serde_json::to_string(&kind).unwrap();
+        let deserialized: TrackKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, deserialized);
+    }
+}

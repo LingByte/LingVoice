@@ -329,4 +329,87 @@ mod tests {
         let output = remuxer.push_frame(&frame);
         assert!(!output.is_empty());
     }
+
+    #[test]
+    fn test_rtmp_audio_chunk() {
+        let mut remuxer = RtmpRemuxer::new();
+
+        let frame = MediaFrame::audio(
+            CodecType::Opus,
+            4800,
+            bytes::Bytes::from(vec![0x4F, 0x61]),
+            12345,
+        );
+
+        let output = remuxer.push_frame(&frame);
+        assert!(!output.is_empty());
+    }
+
+    #[test]
+    fn test_rtmp_set_chunk_size() {
+        let mut remuxer = RtmpRemuxer::new();
+        assert_eq!(remuxer.chunk_size, 4096);
+        remuxer.set_chunk_size(8192);
+        assert_eq!(remuxer.chunk_size, 8192);
+    }
+
+    #[test]
+    fn test_rtmp_metadata_sent_on_first_frame() {
+        let mut remuxer = RtmpRemuxer::new();
+        assert!(!remuxer.metadata_sent);
+
+        let frame = MediaFrame::video(
+            CodecType::H264,
+            9000,
+            bytes::Bytes::from(vec![0x01]),
+            1,
+            true,
+        );
+        remuxer.push_frame(&frame);
+        assert!(remuxer.metadata_sent);
+    }
+
+    #[test]
+    fn test_rtmp_reset() {
+        let mut remuxer = RtmpRemuxer::new();
+        let frame = MediaFrame::video(
+            CodecType::H264,
+            9000,
+            bytes::Bytes::from(vec![0x01]),
+            1,
+            true,
+        );
+        remuxer.push_frame(&frame);
+        assert!(remuxer.metadata_sent);
+
+        remuxer.reset();
+        assert!(!remuxer.metadata_sent);
+        assert!(remuxer.first_timestamp.is_none());
+    }
+
+    #[test]
+    fn test_rtmp_protocol() {
+        let remuxer = RtmpRemuxer::new();
+        assert_eq!(remuxer.protocol(), Protocol::Rtmp);
+    }
+
+    #[test]
+    fn test_rtmp_handshake_states() {
+        let states = [
+            RtmpHandshake::Uninitialized,
+            RtmpHandshake::WaitC0C1,
+            RtmpHandshake::WaitC2,
+            RtmpHandshake::Done,
+        ];
+        assert_eq!(states.len(), 4);
+        assert_ne!(RtmpHandshake::Uninitialized, RtmpHandshake::Done);
+    }
+
+    #[test]
+    fn test_rtmp_metadata_contains_codec_info() {
+        let remuxer = RtmpRemuxer::new();
+        let metadata = remuxer.generate_metadata(CodecType::H264, CodecType::Opus);
+        // Should contain "onMetaData" string
+        assert!(metadata.windows(10).any(|w| w == b"onMetaData"));
+    }
 }

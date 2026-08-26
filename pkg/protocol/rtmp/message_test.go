@@ -1,7 +1,6 @@
 package rtmp
 
 import (
-	"bytes"
 	"testing"
 )
 

@@ -238,4 +238,94 @@ mod tests {
         assert_eq!(output[0], b'$'); // interleaved marker
         assert_eq!(output[1], 0); // video channel
     }
+
+    #[test]
+    fn test_rtsp_interleaved_format() {
+        let data = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let interleaved = RtspRemuxer::create_interleaved(2, &data);
+        assert_eq!(interleaved[0], b'$');
+        assert_eq!(interleaved[1], 2);
+        // length = 4 in big-endian
+        assert_eq!(interleaved[2], 0);
+        assert_eq!(interleaved[3], 4);
+        // payload
+        assert_eq!(&interleaved[4..], &[0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn test_rtsp_rtp_packet() {
+        let payload = vec![0x01, 0x02, 0x03];
+        let rtp = RtspRemuxer::create_rtp_packet(96, true, 100, 9000, 12345, &payload);
+
+        // V=2 → first byte = 0x80
+        assert_eq!(rtp[0], 0x80);
+        // M=1, PT=96 → 0x80 | 96 = 0xE0
+        assert_eq!(rtp[1], 0xE0);
+        // sequence = 100
+        assert_eq!(u16::from_be_bytes([rtp[2], rtp[3]]), 100);
+        // timestamp = 9000
+        assert_eq!(u32::from_be_bytes([rtp[4], rtp[5], rtp[6], rtp[7]]), 9000);
+        // ssrc = 12345
+        assert_eq!(u32::from_be_bytes([rtp[8], rtp[9], rtp[10], rtp[11]]), 12345);
+        // payload
+        assert_eq!(&rtp[12..], &[0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn test_rtsp_audio_channel() {
+        let mut remuxer = RtspRemuxer::new();
+        let frame = MediaFrame::audio(
+            CodecType::Opus,
+            4800,
+            bytes::Bytes::from(vec![0x4F]),
+            999,
+        );
+        let output = remuxer.push_frame(&frame);
+        assert_eq!(output[0], b'$');
+        assert_eq!(output[1], 1); // audio channel = 1
+    }
+
+    #[test]
+    fn test_rtsp_seq_increment() {
+        let mut remuxer = RtspRemuxer::new();
+        let frame = MediaFrame::video(
+            CodecType::H264,
+            9000,
+            bytes::Bytes::from(vec![0x01]),
+            1,
+            true,
+        );
+        let out1 = remuxer.push_frame(&frame);
+        let out2 = remuxer.push_frame(&frame);
+
+        // Parse interleaved → RTP → seq
+        let seq1 = u16::from_be_bytes([out1[6], out1[7]]); // $+ch+len(2)+rtp[2:4]
+        let seq2 = u16::from_be_bytes([out2[6], out2[7]]);
+        assert_eq!(seq1, 0);
+        assert_eq!(seq2, 1);
+    }
+
+    #[test]
+    fn test_rtsp_reset() {
+        let mut remuxer = RtspRemuxer::new();
+        let frame = MediaFrame::video(
+            CodecType::H264,
+            9000,
+            bytes::Bytes::from(vec![0x01]),
+            1,
+            true,
+        );
+        remuxer.push_frame(&frame);
+        remuxer.reset();
+
+        let out = remuxer.push_frame(&frame);
+        let seq = u16::from_be_bytes([out[6], out[7]]);
+        assert_eq!(seq, 0); // reset → seq = 0
+    }
+
+    #[test]
+    fn test_rtsp_protocol() {
+        let remuxer = RtspRemuxer::new();
+        assert_eq!(remuxer.protocol(), Protocol::Rtsp);
+    }
 }

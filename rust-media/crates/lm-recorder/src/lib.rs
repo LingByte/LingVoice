@@ -659,4 +659,92 @@ mod tests {
         let metadata = tokio::fs::metadata(path).await.unwrap();
         assert!(metadata.len() > 44);
     }
+
+    #[test]
+    fn test_wav_header_stereo() {
+        let h = wav_header_pcm16(48000, 2, 192000);
+        assert_eq!(h.len(), 44);
+        // 验证 fmt chunk 的 channels 字段 (offset 22, 2 bytes LE)
+        assert_eq!(u16::from_le_bytes([h[22], h[23]]), 2);
+        // 验证 sample_rate 字段 (offset 24, 4 bytes LE)
+        assert_eq!(u32::from_le_bytes([h[24], h[25], h[26], h[27]]), 48000);
+        // byte_rate = sample_rate * channels * 2 = 48000 * 2 * 2 = 192000
+        assert_eq!(u32::from_le_bytes([h[28], h[29], h[30], h[31]]), 192000);
+        // block_align = channels * 2 = 4
+        assert_eq!(u16::from_le_bytes([h[32], h[33]]), 4);
+        // bits_per_sample = 16
+        assert_eq!(u16::from_le_bytes([h[34], h[35]]), 16);
+    }
+
+    #[test]
+    fn test_samples_to_le_bytes_negative() {
+        let bytes = samples_to_le_bytes(&[-32768i16, 32767, 0]);
+        // -32768 = 0x8000 LE = [0x00, 0x80]
+        // 32767 = 0x7FFF LE = [0xFF, 0x7F]
+        // 0 = [0x00, 0x00]
+        assert_eq!(bytes, vec![0x00, 0x80, 0xFF, 0x7F, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_ivf_frame_header() {
+        let h = ivf_frame_header(1024, 123456);
+        assert_eq!(h.len(), 12);
+        // size = 1024 = 0x400 LE
+        assert_eq!(u32::from_le_bytes([h[0], h[1], h[2], h[3]]), 1024);
+        // timestamp = 123456 LE
+        assert_eq!(u64::from_le_bytes([
+            h[4], h[5], h[6], h[7], h[8], h[9], h[10], h[11]
+        ]), 123456);
+    }
+
+    #[test]
+    fn test_recording_state_active() {
+        assert!(!RecordingState::Requested.is_active());
+        assert!(!RecordingState::Starting.is_active());
+        assert!(RecordingState::Active.is_active());
+        assert!(!RecordingState::Stopping.is_active());
+        assert!(!RecordingState::Finalizing.is_active());
+        assert!(!RecordingState::Completed.is_active());
+    }
+
+    #[test]
+    fn test_recording_state_terminal() {
+        assert!(!RecordingState::Requested.is_terminal());
+        assert!(!RecordingState::Starting.is_terminal());
+        assert!(!RecordingState::Active.is_terminal());
+        assert!(RecordingState::Completed.is_terminal());
+        assert!(RecordingState::Failed("test".into()).is_terminal());
+    }
+
+    #[tokio::test]
+    async fn test_wav_recorder_multiple_frames() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        let mut rec = WavRecorder::create(path, 16000, 1).await.unwrap();
+        // 写入多帧
+        for i in 0..5u32 {
+            rec.write_frame(&AudioFrame {
+                samples: vec![(i as i16) * 100; 320],
+                sample_rate: 16000,
+                timestamp: (i as u64) * 320,
+            })
+            .await
+            .unwrap();
+        }
+        let result = rec.finalize().await.unwrap();
+        // 5 frames * 320 samples * 2 bytes = 3200 bytes data + 44 header
+        assert!(result.file_size >= 44 + 3200);
+    }
+
+    #[tokio::test]
+    async fn test_wav_recorder_empty() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        let rec = WavRecorder::create(path, 8000, 1).await.unwrap();
+        let result = rec.finalize().await.unwrap();
+        // 只有 header，没有数据
+        assert_eq!(result.file_size, 44);
+    }
 }
