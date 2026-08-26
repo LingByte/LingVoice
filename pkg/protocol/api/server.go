@@ -11,6 +11,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -35,17 +36,34 @@ func DefaultConfig() Config {
 
 // Server REST API 服务
 type Server struct {
-	config    Config
-	manager   SessionManager
-	log       *zap.Logger
-	protocols []common.ProtocolType // 已启用的协议列表
+	config              Config
+	manager             SessionManager
+	log                 *zap.Logger
+	protocols           []common.ProtocolType // 已启用的协议列表
+	recordingController RecordingController
+	transcodeController TranscodeController
 }
 
 // SessionManager 会话管理接口（由 protocol.Manager 实现）
 type SessionManager interface {
 	GetSession(id string) (common.ProtocolSession, bool)
+	ListSessions() []common.ProtocolSession
 	SendCommand(sessionID string, cmd common.ProtocolCommand) error
 	SendMediaFrame(sessionID string, trackID common.TrackID, frame common.MediaFrame) error
+}
+
+// RecordingController 录制控制接口（由 rustbridge.Client 实现）
+type RecordingController interface {
+	StartRecording(ctx context.Context, sessionID, format, path string, channels uint8) (string, error)
+	StopRecording(ctx context.Context, sessionID, recordingID string) (any, error)
+}
+
+// TranscodeController 转码控制接口
+type TranscodeController interface {
+	// SetTranscodeConfig 配置会话的转码规则
+	SetTranscodeConfig(ctx context.Context, sessionID string, srcCodec, dstCodec string) error
+	// GetTranscodeConfig 查询会话的转码配置
+	GetTranscodeConfig(ctx context.Context, sessionID string) (map[string]string, error)
 }
 
 // NewServer 创建 REST API 服务
@@ -58,6 +76,16 @@ func NewServer(config Config, manager SessionManager, log *zap.Logger) *Server {
 		manager: manager,
 		log:     log.With(zap.String("component", "api-server")),
 	}
+}
+
+// SetRecordingController 设置录制控制器
+func (s *Server) SetRecordingController(rc RecordingController) {
+	s.recordingController = rc
+}
+
+// SetTranscodeController 设置转码控制器
+func (s *Server) SetTranscodeController(tc TranscodeController) {
+	s.transcodeController = tc
 }
 
 // SetProtocols 设置已启用的协议列表
@@ -73,6 +101,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(base+"/protocols", s.handleProtocols)
 	mux.HandleFunc(base+"/sessions", s.handleSessions)
 	mux.HandleFunc(base+"/sessions/", s.handleSessionByID)
+	mux.HandleFunc(base+"/recordings", s.handleRecordings)
+	mux.HandleFunc(base+"/recordings/", s.handleRecordingByID)
+	mux.HandleFunc(base+"/transcode", s.handleTranscode)
+	mux.HandleFunc(base+"/transcode/", s.handleTranscodeByID)
+	mux.HandleFunc(base+"/streams", s.handleStreams)
 	return mux
 }
 
@@ -136,11 +169,22 @@ func (s *Server) handleProtocols(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	// GET /api/sessions — 列出所有会话
-	// 注意：这里需要 manager 提供列表接口，暂返回空列表
-	// 后续在 Manager 中加 ListSessions 方法
+	if r.Method != http.MethodGet {
+		s.writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Error: "use GET"})
+		return
+	}
+
+	sessions := s.manager.ListSessions()
+	list := make([]sessionInfo, 0, len(sessions))
+	for _, sess := range sessions {
+		list = append(list, sessionInfo{
+			ID:       sess.ID(),
+			Protocol: string(sess.Protocol()),
+		})
+	}
 	s.writeJSON(w, http.StatusOK, apiResponse{
 		Success: true,
-		Data:    []sessionInfo{},
+		Data:    list,
 	})
 }
 
@@ -284,4 +328,197 @@ func (s *Server) writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// ============================================================================
+// 录制控制 API
+// ============================================================================
+//
+//	POST   /api/recordings              开始录制 {sessionId, format, path, channels}
+//	DELETE /api/recordings/{id}         停止录制 ?sessionId=xxx
+//	GET    /api/recordings              列出活跃录制（需 controller 支持）
+
+type recordingRequest struct {
+	SessionID string `json:"sessionId"`
+	Format    string `json:"format"`  // wav/opus/pcap/mp4
+	Path      string `json:"path"`    // 输出路径
+	Channels  uint8  `json:"channels"`
+}
+
+type recordingResponse struct {
+	RecordingID string `json:"recordingId"`
+}
+
+func (s *Server) handleRecordings(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		s.handleRecordingStart(w, r)
+		return
+	}
+	if r.Method == http.MethodGet {
+		// 列出活跃录制（简化：返回空列表，需 controller 扩展）
+		s.writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: []any{}})
+		return
+	}
+	s.writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Error: "use POST or GET"})
+}
+
+func (s *Server) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
+	if s.recordingController == nil {
+		s.writeJSON(w, http.StatusServiceUnavailable, apiResponse{Error: "recording controller not configured"})
+		return
+	}
+
+	var req recordingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, apiResponse{Error: "invalid JSON: " + err.Error()})
+		return
+	}
+
+	if req.SessionID == "" {
+		s.writeJSON(w, http.StatusBadRequest, apiResponse{Error: "sessionId is required"})
+		return
+	}
+
+	if req.Format == "" {
+		req.Format = "wav"
+	}
+	if req.Channels == 0 {
+		req.Channels = 1
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	recordingID, err := s.recordingController.StartRecording(ctx, req.SessionID, req.Format, req.Path, req.Channels)
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, apiResponse{Error: err.Error()})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, apiResponse{
+		Success: true,
+		Data:    recordingResponse{RecordingID: recordingID},
+	})
+}
+
+func (s *Server) handleRecordingByID(w http.ResponseWriter, r *http.Request) {
+	// DELETE /api/recordings/{id}?sessionId=xxx
+	if r.Method != http.MethodDelete {
+		s.writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Error: "use DELETE"})
+		return
+	}
+
+	if s.recordingController == nil {
+		s.writeJSON(w, http.StatusServiceUnavailable, apiResponse{Error: "recording controller not configured"})
+		return
+	}
+
+	recordingID := strings.TrimPrefix(r.URL.Path, s.config.Path+"/recordings/")
+	recordingID = strings.TrimSuffix(recordingID, "/")
+	if recordingID == "" {
+		s.writeJSON(w, http.StatusBadRequest, apiResponse{Error: "missing recording id"})
+		return
+	}
+
+	sessionID := r.URL.Query().Get("sessionId")
+	if sessionID == "" {
+		s.writeJSON(w, http.StatusBadRequest, apiResponse{Error: "sessionId query param is required"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if _, err := s.recordingController.StopRecording(ctx, sessionID, recordingID); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, apiResponse{Error: err.Error()})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, apiResponse{Success: true})
+}
+
+// ============================================================================
+// 转码控制 API
+// ============================================================================
+//
+//	POST /api/transcode/{sessionId}   设置转码 {srcCodec, dstCodec}
+//	GET  /api/transcode/{sessionId}   查询转码配置
+
+type transcodeRequest struct {
+	SrcCodec string `json:"srcCodec"` // vp8/h264/opus/pcmu...
+	DstCodec string `json:"dstCodec"` // vp8/h264/opus/pcmu...
+}
+
+func (s *Server) handleTranscode(w http.ResponseWriter, r *http.Request) {
+	s.writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: "use /api/transcode/{sessionId}"})
+}
+
+func (s *Server) handleTranscodeByID(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimPrefix(r.URL.Path, s.config.Path+"/transcode/")
+	sessionID = strings.TrimSuffix(sessionID, "/")
+	if sessionID == "" {
+		s.writeJSON(w, http.StatusBadRequest, apiResponse{Error: "missing session id"})
+		return
+	}
+
+	if s.transcodeController == nil {
+		s.writeJSON(w, http.StatusServiceUnavailable, apiResponse{Error: "transcode controller not configured"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	switch r.Method {
+	case http.MethodPost:
+		var req transcodeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.writeJSON(w, http.StatusBadRequest, apiResponse{Error: "invalid JSON: " + err.Error()})
+			return
+		}
+		if req.SrcCodec == "" || req.DstCodec == "" {
+			s.writeJSON(w, http.StatusBadRequest, apiResponse{Error: "srcCodec and dstCodec are required"})
+			return
+		}
+		if err := s.transcodeController.SetTranscodeConfig(ctx, sessionID, req.SrcCodec, req.DstCodec); err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, apiResponse{Error: err.Error()})
+			return
+		}
+		s.writeJSON(w, http.StatusOK, apiResponse{Success: true})
+
+	case http.MethodGet:
+		config, err := s.transcodeController.GetTranscodeConfig(ctx, sessionID)
+		if err != nil {
+			s.writeJSON(w, http.StatusInternalServerError, apiResponse{Error: err.Error()})
+			return
+		}
+		s.writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: config})
+
+	default:
+		s.writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Error: "use POST or GET"})
+	}
+}
+
+// ============================================================================
+// 流管理 API
+// ============================================================================
+//
+//	GET /api/streams — 列出所有活跃流（等同于 sessions 的流视角）
+
+func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Error: "use GET"})
+		return
+	}
+
+	sessions := s.manager.ListSessions()
+	streams := make([]map[string]any, 0, len(sessions))
+	for _, sess := range sessions {
+		streams = append(streams, map[string]any{
+			"streamId": sess.ID(),
+			"protocol": string(sess.Protocol()),
+			"state":    "active",
+		})
+	}
+	s.writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: streams})
 }

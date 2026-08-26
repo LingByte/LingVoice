@@ -891,6 +891,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lm-playback"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lm-core",
+ "lm-stream",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lm-protocol"
 version = "0.1.0"
 dependencies = [
@@ -952,6 +963,16 @@ version = "0.1.0"
 dependencies = [
  "lm-core",
  "serde",
+]
+
+[[package]]
+name = "lm-thumbnail"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tokio",
+ "tracing",
+ "video-codec",
 ]
 
 [[package]]

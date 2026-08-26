@@ -1,0 +1,13 @@
+[package]
+name = "lm-playback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lm-core = { path = "../lm-core" }
+lm-stream = { path = "../lm-stream" }
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

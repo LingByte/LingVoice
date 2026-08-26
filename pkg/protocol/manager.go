@@ -107,6 +107,20 @@ func (m *Manager) WithAPI(config api.Config) *Manager {
 	return m
 }
 
+// SetRecordingController 设置录制控制器（rustbridge.Client）
+func (m *Manager) SetRecordingController(rc api.RecordingController) {
+	if m.apiServer != nil {
+		m.apiServer.SetRecordingController(rc)
+	}
+}
+
+// SetTranscodeController 设置转码控制器
+func (m *Manager) SetTranscodeController(tc api.TranscodeController) {
+	if m.apiServer != nil {
+		m.apiServer.SetTranscodeController(tc)
+	}
+}
+
 // EnabledProtocols 返回已启用的协议列表
 func (m *Manager) EnabledProtocols() []common.ProtocolType {
 	return m.enabledProtos
@@ -212,6 +226,18 @@ func (m *Manager) GetSession(id string) (common.ProtocolSession, bool) {
 		return v.(common.ProtocolSession), true
 	}
 	return nil, false
+}
+
+// ListSessions 列出所有活跃会话
+func (m *Manager) ListSessions() []common.ProtocolSession {
+	var list []common.ProtocolSession
+	m.sessions.Range(func(key, value any) bool {
+		if sess, ok := value.(common.ProtocolSession); ok {
+			list = append(list, sess)
+		}
+		return true
+	})
+	return list
 }
 
 // SendCommand 向指定会话下发指令

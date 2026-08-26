@@ -251,3 +251,19 @@ pub use gb28181::{Gb28181Demuxer, Gb28181Session};
 
 mod whip_whep;
 pub use whip_whep::{WhipHandler, WhepHandler, WhipWhepConfig};
+
+// ============================================================================
+// 协议输出客户端（完整握手 + 信令 + 数据推送）
+// ============================================================================
+
+mod rtmp_client;
+pub use rtmp_client::RtmpClient;
+
+mod rtsp_client;
+pub use rtsp_client::RtspClient;
+
+mod srt_client;
+pub use srt_client::SrtClient;
+
+mod gb28181_push;
+pub use gb28181_push::Gb28181Pusher;

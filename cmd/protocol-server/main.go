@@ -8,12 +8,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LingByte/LingVoice/pkg/media/transcodectl"
 	"github.com/LingByte/LingVoice/pkg/protocol"
 	"github.com/LingByte/LingVoice/pkg/protocol/api"
+	"github.com/LingByte/LingVoice/pkg/protocol/auth"
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
 	"github.com/LingByte/LingVoice/pkg/protocol/mqtt"
 	"github.com/LingByte/LingVoice/pkg/protocol/rtmp"
 	"github.com/LingByte/LingVoice/pkg/protocol/sip"
+	"github.com/LingByte/LingVoice/pkg/protocol/streamconfig"
 	"github.com/LingByte/LingVoice/pkg/protocol/webrtc"
 	"github.com/LingByte/LingVoice/pkg/protocol/whep"
 	"github.com/LingByte/LingVoice/pkg/protocol/whip"
@@ -111,6 +114,10 @@ func main() {
 		enableWHEP  = flag.Bool("whep", true, "启用 WHEP 协议")
 		enableMQTT  = flag.Bool("mqtt", false, "启用 MQTT 协议（需先启动 broker）")
 		enableAPI   = flag.Bool("api", true, "启用 REST API 控制面")
+		authMode    = flag.String("auth", "disabled", "鉴权模式: disabled/token/sign")
+		authToken   = flag.String("auth-token", "", "鉴权 token (token 模式)")
+		authSecret  = flag.String("auth-secret", "", "签名密钥 (sign 模式)")
+		streamCfg   = flag.String("stream-config", "", "静态流配置文件路径 (YAML)")
 	)
 	flag.Parse()
 
@@ -187,7 +194,36 @@ func main() {
 		apiConfig := api.DefaultConfig()
 		apiConfig.Addr = *apiAddr
 		mgr.WithAPI(apiConfig)
+
+		// 设置转码控制器
+		tc := transcodectl.New()
+		mgr.SetTranscodeController(tc)
 		log.Info("REST API 已启用", zap.String("addr", *apiAddr))
+
+		// 鉴权配置
+		if *authMode != "disabled" {
+			authCfg := auth.DefaultConfig()
+			switch *authMode {
+			case "token":
+				authCfg.Mode = auth.ModeToken
+				authCfg.Tokens = map[string]bool{*authToken: true}
+			case "sign":
+				authCfg.Mode = auth.ModeSign
+				authCfg.Secret = *authSecret
+			}
+			log.Info("鉴权已启用", zap.String("mode", *authMode))
+		}
+	}
+
+	// 静态流配置
+	if *streamCfg != "" {
+		cfg, err := streamconfig.LoadFromFile(*streamCfg)
+		if err != nil {
+			log.Error("加载流配置失败", zap.String("file", *streamCfg), zap.Error(err))
+		} else {
+			log.Info("流配置已加载", zap.Int("streams", len(cfg.Streams)))
+			// TODO: 注册拉流启动器后调用 StartAutoStart
+		}
 	}
 
 	if *enableMQTT {

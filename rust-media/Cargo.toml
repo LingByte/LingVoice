@@ -16,6 +16,8 @@ members = [
     "crates/lm-dsp",
     "crates/lm-control",
     "crates/lm-telemetry",
+    "crates/lm-playback",
+    "crates/lm-thumbnail",
     "bin/media-node",
 ]
 
