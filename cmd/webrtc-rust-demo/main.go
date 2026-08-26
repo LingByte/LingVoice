@@ -64,6 +64,7 @@ type rustHandler struct {
 	// 混音模式
 	mixThreshold int   // 超过此人数自动启用混音（0=禁用自动切换）
 	forceMix     bool  // 强制启用混音模式（所有人从一开始就用混音）
+	maxSpeakers  int   // Top-K 最大发言者数（0=混所有人，5=只混Top5）
 	roomMixes    map[string]string // roomID → mixID
 }
 
@@ -95,7 +96,7 @@ type trackState struct {
 	subTracks   map[uint32]common.TrackID // ssrc → subTrackID
 }
 
-func newRustHandler(log *zap.Logger, bridge *rustbridge.Client, srv *webrtc.Server, mixThreshold int, forceMix bool) *rustHandler {
+func newRustHandler(log *zap.Logger, bridge *rustbridge.Client, srv *webrtc.Server, mixThreshold int, forceMix bool, maxSpeakers int) *rustHandler {
 	return &rustHandler{
 		log:          log,
 		bridge:       bridge,
@@ -103,6 +104,7 @@ func newRustHandler(log *zap.Logger, bridge *rustbridge.Client, srv *webrtc.Serv
 		sessions:     make(map[string]*sessionState),
 		mixThreshold: mixThreshold,
 		forceMix:     forceMix,
+		maxSpeakers:  maxSpeakers,
 		roomMixes:    make(map[string]string),
 	}
 }
@@ -182,7 +184,7 @@ func (h *rustHandler) ensureMixStarted(roomID string) (string, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	mixID, err := h.bridge.StartMix(ctx, roomID, 48000, 960)
+	mixID, err := h.bridge.StartMix(ctx, roomID, 48000, 960, uint32(h.maxSpeakers))
 	if err != nil {
 		return "", fmt.Errorf("start mix for room %s: %w", roomID, err)
 	}
@@ -698,6 +700,7 @@ func main() {
 		tlsKey     = flag.String("tls-key", "", "TLS 私钥文件（为空且 --tls 时自动生成）")
 		mixThresh  = flag.Int("mix-threshold", 0, "音频混音人数阈值（超过此人数自动启用混音，0=禁用自动切换）")
 		forceMix   = flag.Bool("mix", false, "强制启用音频混音模式（所有人从一开始就用 MCU 混音而非 SFU 转发）")
+		maxSpeak   = flag.Int("max-speakers", 0, "Top-K 最大发言者数（0=混所有人，5=只混能量最高的5路）")
 	)
 	flag.Parse()
 
@@ -728,7 +731,7 @@ func main() {
 
 	// 2. 创建 WebRTC 服务器
 	// 注意：handler 和 srv 循环依赖，先创建 handler 再回填 srv
-	handler := newRustHandler(log, bridge, nil, *mixThresh, *forceMix)
+	handler := newRustHandler(log, bridge, nil, *mixThresh, *forceMix, *maxSpeak)
 
 	cfg := webrtc.DefaultConfig()
 	cfg.Addr = *addr
@@ -798,6 +801,9 @@ func main() {
 		fmt.Printf("  混音模式:    自动切换（≥%d 人启用 MCU 混音）\n", *mixThresh)
 	} else {
 		fmt.Printf("  混音模式:    禁用（纯 SFU 转发）\n")
+	}
+	if *maxSpeak > 0 {
+		fmt.Printf("  Top-K:       只混能量最高的 %d 路音频\n", *maxSpeak)
 	}
 	if *tls {
 		fmt.Printf("  TLS:         已启用（自签证书，浏览器需点\"继续访问\"）\n")

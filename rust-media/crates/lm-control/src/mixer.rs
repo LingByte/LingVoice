@@ -74,13 +74,16 @@ impl MixManager {
     }
 
     /// 启动混音（per room）
+    ///
+    /// max_speakers: Top-K 最大发言者数（0=混所有人，5=只混Top5）
     pub fn start_mix(
         &self,
         room_id: &str,
         sample_rate: u32,
+        max_speakers: usize,
     ) -> Arc<MixState> {
         let mix_id = uuid::Uuid::new_v4().to_string();
-        let mixer = Arc::new(ConferenceMixer::new(&mix_id, sample_rate));
+        let mixer = Arc::new(ConferenceMixer::with_max_speakers(&mix_id, sample_rate, max_speakers));
         mixer.start();
 
         let state = Arc::new(MixState {

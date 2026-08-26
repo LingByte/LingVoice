@@ -491,14 +491,16 @@ impl media_node_server::MediaNode for MediaNodeServer {
     ) -> Result<Response<StartMixResponse>, Status> {
         let req = request.into_inner();
         let sample_rate = if req.sample_rate > 0 { req.sample_rate } else { 48000 };
+        let max_speakers = req.max_speakers as usize;
 
-        let state = self.mixes.start_mix(&req.room_id, sample_rate);
+        let state = self.mixes.start_mix(&req.room_id, sample_rate, max_speakers);
         let mix_id = state.mix_id.clone();
 
         info!(
             room_id = %req.room_id,
             mix_id = %mix_id,
             sample_rate,
+            max_speakers,
             "gRPC start_mix"
         );
 

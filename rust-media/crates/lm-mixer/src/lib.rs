@@ -10,6 +10,7 @@
 use dashmap::DashMap;
 use lm_core::AudioFrame;
 use parking_lot::Mutex;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -101,6 +102,8 @@ pub struct ConferenceMixer {
     /// Per-(src, dst) 增益覆盖（监听模式）
     /// Key: (src_id, dst_id), Value: gain (0.0=静音, 1.0=正常)
     route_gains: Arc<DashMap<(ParticipantId, ParticipantId), f32>>,
+    /// Top-K 最大发言者数（0 = 混所有人，无 Top-K 限制）
+    max_speakers: usize,
 }
 
 impl std::fmt::Debug for ConferenceMixer {
@@ -125,7 +128,20 @@ impl ConferenceMixer {
     ///
     /// sample_rate 通常为 48000（Opus）或 8000（G.711）
     /// frame_size = sample_rate * 20 / 1000（20ms 帧）
+    /// max_speakers: Top-K 最大发言者数（0 = 混所有人，N-1 模式）
     pub fn new(mix_id: impl Into<String>, sample_rate: u32) -> Self {
+        Self::with_max_speakers(mix_id, sample_rate, 0)
+    }
+
+    /// 创建带 Top-K 发言者限制的混音器
+    ///
+    /// max_speakers > 0 时，每 tick 只混能量最高的 K 路音频，
+    /// CPU 从 O(N) 降到 O(K) 恒定。带 300ms hold hysteresis 避免频繁切换。
+    pub fn with_max_speakers(
+        mix_id: impl Into<String>,
+        sample_rate: u32,
+        max_speakers: usize,
+    ) -> Self {
         let frame_size = (sample_rate as usize * 20) / 1000; // 20ms frames
         Self {
             mix_id: mix_id.into(),
@@ -136,7 +152,18 @@ impl ConferenceMixer {
             stopped: Arc::new(AtomicBool::new(false)),
             mixing_task: Arc::new(Mutex::new(None)),
             route_gains: Arc::new(DashMap::new()),
+            max_speakers,
         }
+    }
+
+    /// 设置 Top-K 最大发言者数（0 = 混所有人）
+    pub fn set_max_speakers(&mut self, k: usize) {
+        self.max_speakers = k;
+    }
+
+    /// 当前 Top-K 配置
+    pub fn max_speakers(&self) -> usize {
+        self.max_speakers
     }
 
     /// 添加参与者
@@ -222,6 +249,7 @@ impl ConferenceMixer {
             frame_size: self.frame_size,
             sample_rate: self.sample_rate,
             route_gains: self.route_gains.clone(),
+            max_speakers: self.max_speakers,
         };
 
         let task = tokio::spawn(async move {
@@ -229,7 +257,11 @@ impl ConferenceMixer {
         });
 
         *self.mixing_task.lock() = Some(task);
-        info!(mix_id = %self.mix_id, "conference mixer started");
+        info!(
+            mix_id = %self.mix_id,
+            max_speakers = self.max_speakers,
+            "conference mixer started"
+        );
     }
 
     /// 停止混音
@@ -259,21 +291,32 @@ impl ConferenceMixer {
         self.frame_size
     }
 
-    /// 混音主循环（参考 RustPBX mixing_loop）
+    /// 混音主循环（参考 RustPBX mixing_loop + atm0s Top-K 选择）
     ///
     /// 每 20ms tick：
     /// 1. 从所有参与者拉取 PCM 帧（try_recv，非阻塞）
-    /// 2. 为每个参与者生成 N-1 混音（排除自己 + 静音的）
-    /// 3. try_send 到每个参与者的 output channel
+    /// 2. 计算每路 RMS 能量
+    /// 3. 如果 max_speakers > 0，选 Top-K 能量最高的路（带 hysteresis hold）
+    /// 4. 为每个参与者生成 N-1 混音（排除自己 + 只混 selected speakers）
+    /// 5. try_send 到每个参与者的 output channel
     async fn mixing_loop(ctx: MixingLoopContext) {
         let interval_ms = (ctx.frame_size as f64 / ctx.sample_rate as f64 * 1000.0) as u64;
         let interval = tokio::time::Duration::from_millis(interval_ms.max(1));
+
+        // Top-K hysteresis 状态
+        // current_speakers: 当前选中的发言者集合（带 hold time）
+        // speaker_hold: 每个发言者剩余的 hold 帧数
+        // hold_frames = 15 (300ms @ 20ms tick)，避免说话间隙频繁切换
+        let hold_frames: u32 = 15;
+        let mut current_speakers: HashSet<ParticipantId> = HashSet::new();
+        let mut speaker_hold: HashMap<ParticipantId, u32> = HashMap::new();
 
         info!(
             mix_id = %ctx.mix_id,
             frame_size = ctx.frame_size,
             sample_rate = ctx.sample_rate,
             interval_ms,
+            max_speakers = ctx.max_speakers,
             "mixing loop started"
         );
 
@@ -285,12 +328,11 @@ impl ConferenceMixer {
 
             tokio::time::sleep(interval).await;
 
-            // 1. 收集所有参与者的音频帧
-            let mut participant_audio: std::collections::HashMap<ParticipantId, AudioFrame> =
-                std::collections::HashMap::new();
+            // 1. 收集所有参与者的音频帧 + 计算 RMS 能量
+            let mut participant_audio: HashMap<ParticipantId, AudioFrame> = HashMap::new();
+            let mut energies: Vec<(ParticipantId, f32)> = Vec::new();
 
             for mut entry in ctx.participants.iter_mut() {
-                // try_recv 所有可用帧，取最后一帧
                 let mut last_frame = None;
                 loop {
                     match entry.input_rx.try_recv() {
@@ -301,6 +343,8 @@ impl ConferenceMixer {
                 }
                 if let Some(frame) = last_frame {
                     if !entry.muted.load(Ordering::Relaxed) {
+                        let energy = rms_energy(&frame.samples);
+                        energies.push((entry.key().clone(), energy));
                         participant_audio.insert(entry.key().clone(), frame);
                     }
                 }
@@ -310,7 +354,72 @@ impl ConferenceMixer {
                 continue;
             }
 
-            // 2. 为每个参与者生成 N-1 混音
+            // 2. Top-K 发言者选择（如果启用）
+            let active_speakers: HashSet<ParticipantId> = if ctx.max_speakers > 0 {
+                // 按 energy 降序排序
+                energies.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                // 取 Top-K 新候选
+                let new_candidates: HashSet<ParticipantId> = energies
+                    .iter()
+                    .take(ctx.max_speakers)
+                    .map(|(pid, _)| pid.clone())
+                    .collect();
+
+                // Hysteresis: 当前发言者保留 hold_frames 帧，即使能量下降
+                // 新候选直接加入
+                for pid in &new_candidates {
+                    speaker_hold.insert(pid.clone(), hold_frames);
+                    current_speakers.insert(pid.clone());
+                }
+
+                // 衰减非新候选的 hold 计数，移除 hold 归零的
+                let to_decay: Vec<ParticipantId> = speaker_hold
+                    .keys()
+                    .filter(|pid| !new_candidates.contains(*pid))
+                    .cloned()
+                    .collect();
+                for pid in &to_decay {
+                    let h = speaker_hold.get(pid).copied().unwrap_or(0).saturating_sub(1);
+                    if h == 0 {
+                        speaker_hold.remove(pid);
+                        current_speakers.remove(pid);
+                    } else {
+                        speaker_hold.insert(pid.clone(), h);
+                    }
+                }
+
+                // 限制不超过 max_speakers（hysteresis 可能临时超过）
+                // 如果超过，优先保留能量最高的
+                if current_speakers.len() > ctx.max_speakers {
+                    let mut kept: Vec<(ParticipantId, f32)> = current_speakers
+                        .iter()
+                        .map(|pid| {
+                            let e = energies
+                                .iter()
+                                .find(|(p, _)| p == pid)
+                                .map(|(_, e)| *e)
+                                .unwrap_or(0.0);
+                            (pid.clone(), e)
+                        })
+                        .collect();
+                    kept.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    current_speakers = kept
+                        .iter()
+                        .take(ctx.max_speakers)
+                        .map(|(pid, _)| pid.clone())
+                        .collect();
+                    // 清理被移除的 hold
+                    speaker_hold.retain(|pid, _| current_speakers.contains(pid));
+                }
+
+                current_speakers.clone()
+            } else {
+                // 无 Top-K：混所有人
+                participant_audio.keys().cloned().collect()
+            };
+
+            // 3. 为每个参与者生成 N-1 混音（只混 active_speakers）
             let participant_ids: Vec<ParticipantId> =
                 ctx.participants.iter().map(|e| e.key().clone()).collect();
 
@@ -321,6 +430,11 @@ impl ConferenceMixer {
                 for (input_pid, frame) in &participant_audio {
                     if input_pid == output_pid {
                         continue; // N-1: 排除自己
+                    }
+
+                    // Top-K: 只混被选中的发言者
+                    if ctx.max_speakers > 0 && !active_speakers.contains(input_pid) {
+                        continue;
                     }
 
                     let gain = ctx
@@ -354,10 +468,9 @@ impl ConferenceMixer {
                 let output_frame = AudioFrame {
                     samples: mixed_samples,
                     sample_rate: ctx.sample_rate,
-                    timestamp: 0, // 由 egress pacer 填充
+                    timestamp: 0,
                 };
 
-                // try_send: 慢消费者丢帧，不阻塞整个房间
                 if let Some(p) = ctx.participants.get(output_pid) {
                     let _ = p.output_tx.try_send(output_frame);
                 }
@@ -374,6 +487,21 @@ struct MixingLoopContext {
     frame_size: usize,
     sample_rate: u32,
     route_gains: Arc<DashMap<(ParticipantId, ParticipantId), f32>>,
+    /// Top-K 最大发言者数（0 = 混所有人）
+    max_speakers: usize,
+}
+
+// ============================================================================
+// 辅助函数
+// ============================================================================
+
+/// 计算 RMS 能量（参考 lm-dsp rms_energy）
+fn rms_energy(samples: &[i16]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = samples.iter().map(|s| (*s as f64).powi(2)).sum();
+    (sum / samples.len() as f64).sqrt() as f32
 }
 
 // ============================================================================
@@ -465,5 +593,40 @@ mod tests {
         assert!(!mixed.samples.is_empty());
 
         mixer.stop();
+    }
+
+    #[tokio::test]
+    async fn test_topk_mixing() {
+        // Top-K=1: 3 个参与者，只有能量最高的被混入
+        let mixer = Arc::new(ConferenceMixer::with_max_speakers("test-topk", 8000, 1));
+        mixer.start();
+
+        let (tx1, mut rx1) = mixer.add_participant("p1").await.unwrap();
+        let (tx2, _rx2) = mixer.add_participant("p2").await.unwrap();
+        let (tx3, _rx3) = mixer.add_participant("p3").await.unwrap();
+
+        // p2 发大声（高能量），p3 发小声（低能量）
+        tx2.send(AudioFrame { samples: vec![30000i16; 160], sample_rate: 8000, timestamp: 0 }).await.unwrap();
+        tx3.send(AudioFrame { samples: vec![100i16; 160], sample_rate: 8000, timestamp: 0 }).await.unwrap();
+
+        // 等待几个 tick 让 Top-K 选择生效（需要超过 hold_frames 才会切换）
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // p1 应该收到混音（只有 p2，因为 p2 能量最高）
+        let received = rx1.try_recv();
+        assert!(received.is_ok(), "p1 should receive mixed audio");
+        let mixed = received.unwrap();
+        assert!(!mixed.samples.is_empty());
+        // 混音应该接近 p2 的值（30000），因为 p3 没被选中
+        assert!(mixed.samples.iter().all(|&s| s > 20000), "mixed should be dominated by p2 (high energy)");
+
+        mixer.stop();
+    }
+
+    #[test]
+    fn test_rms_energy() {
+        assert_eq!(rms_energy(&[0i16; 160]), 0.0);
+        assert!(rms_energy(&[1000i16; 160]) > 0.0);
+        assert!(rms_energy(&[30000i16; 160]) > rms_energy(&[1000i16; 160]));
     }
 }

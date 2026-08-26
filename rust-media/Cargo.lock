@@ -755,6 +755,7 @@ dependencies = [
  "anyhow",
  "dashmap",
  "lm-core",
+ "lm-dsp",
  "parking_lot",
  "tokio",
  "tracing",
