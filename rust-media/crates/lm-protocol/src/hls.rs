@@ -380,4 +380,132 @@ mod tests {
         // 应该输出第一个分段的数据
         assert!(!output.is_empty() || remuxer.playlist().segment_count() >= 1);
     }
+
+    /// 端到端 HLS 测试：真实 H.264 → HlsRemuxer → TS 分段 → ffprobe 验证
+    #[test]
+    fn test_hls_e2e_real_h264_ffprobe() {
+        let h264_data = match std::fs::read("/tmp/test_h264_raw.h264") {
+            Ok(d) => d,
+            Err(_) => {
+                eprintln!("WARNING: /tmp/test_h264_raw.h264 not found, skipping HLS e2e test");
+                return;
+            }
+        };
+        if h264_data.is_empty() {
+            eprintln!("WARNING: empty H.264 file, skipping");
+            return;
+        }
+
+        // 解析 NALU，按帧分组
+        let mut frames: Vec<(Vec<u8>, bool, u32)> = Vec::new();
+        let mut current_au: Vec<u8> = Vec::new();
+        let mut frame_idx = 0u32;
+
+        let mut nalus: Vec<(usize, usize)> = Vec::new();
+        let mut i = 0;
+        while i + 3 < h264_data.len() {
+            if h264_data[i..i + 4] == [0, 0, 0, 1] {
+                nalus.push((i, 4));
+                i += 4;
+            } else if h264_data[i..i + 3] == [0, 0, 1] {
+                nalus.push((i, 3));
+                i += 3;
+            } else {
+                i += 1;
+            }
+        }
+
+        for (j, &(pos, sc_len)) in nalus.iter().enumerate() {
+            let nal_type = h264_data[pos + sc_len] & 0x1F;
+            let end = if j + 1 < nalus.len() { nalus[j + 1].0 } else { h264_data.len() };
+            let nal_data = &h264_data[pos..end];
+
+            match nal_type {
+                7 | 8 | 9 | 6 => {
+                    current_au.extend_from_slice(nal_data);
+                }
+                5 => {
+                    current_au.extend_from_slice(nal_data);
+                    let ts = frame_idx * 3000; // 90kHz, 30fps
+                    frames.push((std::mem::take(&mut current_au), true, ts));
+                    frame_idx += 1;
+                }
+                1 => {
+                    current_au.extend_from_slice(nal_data);
+                    let ts = frame_idx * 3000;
+                    frames.push((std::mem::take(&mut current_au), false, ts));
+                    frame_idx += 1;
+                }
+                _ => {
+                    current_au.extend_from_slice(nal_data);
+                }
+            }
+        }
+
+        // 用 HlsRemuxer 封装（1 秒分段）
+        let config = HlsConfig {
+            segment_duration: 1.0,
+            window_size: 5,
+            stream_name: "e2e".into(),
+            ..Default::default()
+        };
+        let mut remuxer = HlsRemuxer::new(config, CodecType::H264, CodecType::Opus);
+
+        let mut segments: Vec<(String, Vec<u8>)> = Vec::new();
+        for (frame_data, keyframe, ts) in &frames {
+            let frame = MediaFrame::video(
+                CodecType::H264,
+                *ts,
+                bytes::Bytes::from(frame_data.clone()),
+                1,
+                *keyframe,
+            );
+            let output = remuxer.push_frame(&frame);
+            if !output.is_empty() {
+                // output 包含 TS 数据 + playlist 文本
+                // 简化：直接存整个 output 作为分段
+                let seg_name = format!("seg{:04}.ts", segments.len());
+                segments.push((seg_name, output));
+            }
+        }
+        // flush 最后一个分段
+        let final_output = remuxer.flush();
+        if !final_output.is_empty() {
+            let seg_name = format!("seg{:04}.ts", segments.len());
+            segments.push((seg_name, final_output));
+        }
+
+        assert!(!segments.is_empty(), "no segments generated");
+
+        // 验证每个分段用 ffprobe
+        let mut all_ok = true;
+        for (name, data) in &segments {
+            let path = format!("/tmp/test_hls_e2e_{}", name);
+            std::fs::write(&path, data).unwrap();
+
+            let output = std::process::Command::new("ffprobe")
+                .args(&["-v", "error", "-show_streams", "-show_format", &path])
+                .output()
+                .unwrap();
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            if output.status.success() && (stdout.contains("h264") || stdout.contains("H264")) {
+                println!("✓ {} — h264 detected", name);
+            } else {
+                println!("✗ {} — ffprobe failed: {}", name, stderr);
+                all_ok = false;
+            }
+        }
+
+        // 验证 playlist
+        let playlist = remuxer.playlist();
+        let playlist_content = playlist.content();
+        println!("\nPlaylist:\n{}", playlist_content);
+        assert!(playlist_content.contains("#EXTM3U"), "invalid playlist");
+        assert!(playlist_content.contains(".ts"), "no .ts segments in playlist");
+
+        assert!(all_ok, "some segments failed ffprobe validation");
+    }
 }

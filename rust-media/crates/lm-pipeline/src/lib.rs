@@ -257,6 +257,215 @@ impl EgressPipeline {
 }
 
 // ============================================================================
+// JitterBuffer — RTP 包重排序/去抖动（Sans-IO）
+// ============================================================================
+
+/// JitterBuffer — RTP 包重排序与去抖动
+///
+/// Sans-IO 版本：由外部驱动调用 `push` 和 `pop`。
+///
+/// 功能：
+/// - 按 sequence number 重排序乱序包
+/// - 去重复包
+/// - 缓冲 `capacity` 个包后开始输出
+/// - 检测丢包（seq gap），跳过缺失包避免长时间阻塞
+/// - 处理 seq 回绕（u16 溢出）
+///
+/// 典型用法：
+/// ```ignore
+/// let mut jb = JitterBuffer::new(10, 5); // capacity=10, threshold=5
+/// jb.push(rtp_packet);
+/// while let Some(pkt) = jb.pop() {
+///     // 处理有序包
+/// }
+/// ```
+pub struct JitterBuffer {
+    /// 缓冲区容量（包数）
+    capacity: usize,
+    /// 开始输出前需要的最小包数
+    threshold: usize,
+    /// 缓冲包：按 sequence number 索引
+    buffer: std::collections::HashMap<u16, RtpPacket>,
+    /// 期望的下一个 sequence number
+    next_seq: Option<u16>,
+    /// 第一个到达的包的 seq（用于初始化 next_seq）
+    first_seq: Option<u16>,
+    /// 统计
+    stats: JitterStats,
+}
+
+/// JitterBuffer 统计
+#[derive(Debug, Default, Clone)]
+pub struct JitterStats {
+    pub packets_pushed: u64,
+    pub packets_popped: u64,
+    pub packets_dropped_duplicate: u64,
+    pub packets_dropped_overflow: u64,
+    pub packets_lost: u64,
+    pub seq_wraps: u64,
+}
+
+impl JitterBuffer {
+    /// 创建 jitter buffer
+    ///
+    /// capacity: 缓冲区最大包数
+    /// threshold: 开始输出前需要的最小包数（通常 capacity/2）
+    pub fn new(capacity: usize, threshold: usize) -> Self {
+        Self {
+            capacity,
+            threshold: threshold.min(capacity),
+            buffer: std::collections::HashMap::with_capacity(capacity),
+            next_seq: None,
+            first_seq: None,
+            stats: JitterStats::default(),
+        }
+    }
+
+    /// 投递一个 RTP 包
+    ///
+    /// 返回 true 表示接受，false 表示丢弃（重复或溢出）
+    pub fn push(&mut self, packet: RtpPacket) -> bool {
+        self.stats.packets_pushed += 1;
+
+        // 检查重复
+        if self.buffer.contains_key(&packet.sequence_number) {
+            self.stats.packets_dropped_duplicate += 1;
+            return false;
+        }
+
+        // 检查是否已经输出过这个 seq（迟到的包）
+        if let Some(next) = self.next_seq {
+            // 计算 packet seq 相对于 next_seq 的"距离"（处理回绕）
+            let diff = packet.sequence_number.wrapping_sub(next);
+            // 如果 diff 很大（> 32768），说明是过去的包
+            if diff > 32768 {
+                self.stats.packets_dropped_duplicate += 1;
+                return false;
+            }
+        }
+
+        // 记录第一个到达的包
+        if self.first_seq.is_none() {
+            self.first_seq = Some(packet.sequence_number);
+        }
+
+        // 检查缓冲区溢出
+        if self.buffer.len() >= self.capacity {
+            // 丢掉离 next_seq 最远的包（最旧的）
+            if let Some(next) = self.next_seq.or(self.first_seq) {
+                let mut farthest_seq = None;
+                let mut farthest_dist: u16 = 0;
+                for &seq in self.buffer.keys() {
+                    let dist = seq.wrapping_sub(next);
+                    if dist > farthest_dist {
+                        farthest_dist = dist;
+                        farthest_seq = Some(seq);
+                    }
+                }
+                if let Some(seq) = farthest_seq {
+                    self.buffer.remove(&seq);
+                    self.stats.packets_dropped_overflow += 1;
+                }
+            }
+        }
+
+        self.buffer.insert(packet.sequence_number, packet);
+        true
+    }
+
+    /// 弹出下一个有序包
+    ///
+    /// 当缓冲区达到 threshold 后开始输出。
+    /// 如果检测到 seq gap（丢包），跳过缺失的 seq。
+    pub fn pop(&mut self) -> Option<RtpPacket> {
+        // 还没开始输出
+        if self.next_seq.is_none() {
+            if self.buffer.len() < self.threshold {
+                return None;
+            }
+            // 开始：确定起点 seq
+            // 策略：如果缓冲区中所有 seq 的跨度 < 32768，选数值最小的
+            // 否则用 first_seq（回绕场景）
+            let seqs: Vec<u16> = self.buffer.keys().copied().collect();
+            let max_seq = *seqs.iter().max().unwrap();
+            let min_seq = *seqs.iter().min().unwrap();
+            let span = max_seq.wrapping_sub(min_seq);
+
+            let start_seq = if span < 32768 {
+                // 无回绕：选最小的 seq
+                min_seq
+            } else {
+                // 有回绕：用 first_seq
+                self.first_seq.unwrap_or(min_seq)
+            };
+            self.next_seq = Some(start_seq);
+        }
+
+        let next = self.next_seq?;
+
+        // 检查 next 是否在缓冲区
+        if let Some(pkt) = self.buffer.remove(&next) {
+            self.stats.packets_popped += 1;
+            // 推进 next_seq（处理回绕）
+            let new_seq = next.wrapping_add(1);
+            if new_seq == 0 {
+                self.stats.seq_wraps += 1;
+            }
+            self.next_seq = Some(new_seq);
+            return Some(pkt);
+        }
+
+        // next 不在缓冲区 — 可能是丢包或还没到
+        // 找缓冲区中 wrapping 距离 next 最近的包
+        let mut nearest_seq: Option<u16> = None;
+        let mut nearest_dist: u16 = u16::MAX;
+        for &seq in self.buffer.keys() {
+            let dist = seq.wrapping_sub(next);
+            if dist < nearest_dist {
+                nearest_dist = dist;
+                nearest_seq = Some(seq);
+            }
+        }
+
+        if let Some(earliest) = nearest_seq {
+            let gap = earliest.wrapping_sub(next);
+            if gap > 0 && gap < 32768 {
+                // 有比 next 更大的包，说明 next 丢了
+                // 跳过丢失的包
+                self.stats.packets_lost += gap as u64;
+                self.next_seq = Some(earliest);
+                // 递归 pop（现在 earliest 应该在缓冲区）
+                return self.pop();
+            }
+        }
+
+        // 缓冲区为空或所有包都在 next 之前（不该发生）
+        None
+    }
+
+    /// 当前缓冲区大小
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
+    /// 获取统计
+    pub fn stats(&self) -> &JitterStats {
+        &self.stats
+    }
+
+    /// 重置（清空缓冲区，重置 next_seq）
+    pub fn reset(&mut self) {
+        self.buffer.clear();
+        self.next_seq = None;
+        self.first_seq = None;
+    }
+}
+
+// ============================================================================
 // Pacer — 20ms tick 节拍器（Sans-IO 版本）
 // ============================================================================
 
@@ -429,5 +638,117 @@ mod tests {
         assert!(!encoded.is_empty());
 
         handle.abort();
+    }
+
+    // ─── JitterBuffer 测试 ───────────────────────────────────────────────
+
+    fn make_rtp(seq: u16, ts: u32) -> RtpPacket {
+        RtpPacket {
+            ssrc: 12345,
+            payload_type: 0,
+            sequence_number: seq,
+            timestamp: ts,
+            marker: false,
+            payload: bytes::Bytes::from_static(&[0xff; 160]),
+            rid: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_jitter_buffer_ordered() {
+        // 顺序到达的包应该直接输出
+        let mut jb = JitterBuffer::new(10, 3);
+        for i in 0..5u16 {
+            jb.push(make_rtp(i, i as u32 * 160));
+        }
+        // 达到 threshold 后开始输出
+        let mut output = Vec::new();
+        while let Some(pkt) = jb.pop() {
+            output.push(pkt.sequence_number);
+        }
+        assert_eq!(output, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_jitter_buffer_reorder() {
+        // 乱序到达的包应该被重排序
+        let mut jb = JitterBuffer::new(10, 3);
+        // 推入顺序: 2, 0, 1, 4, 3
+        jb.push(make_rtp(2, 320));
+        jb.push(make_rtp(0, 0));
+        jb.push(make_rtp(1, 160));
+        jb.push(make_rtp(4, 640));
+        jb.push(make_rtp(3, 480));
+
+        let mut output = Vec::new();
+        while let Some(pkt) = jb.pop() {
+            output.push(pkt.sequence_number);
+        }
+        assert_eq!(output, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_jitter_buffer_duplicate() {
+        let mut jb = JitterBuffer::new(10, 2);
+        assert!(jb.push(make_rtp(0, 0)));
+        assert!(!jb.push(make_rtp(0, 0))); // 重复包被拒绝
+        assert_eq!(jb.stats().packets_dropped_duplicate, 1);
+    }
+
+    #[test]
+    fn test_jitter_buffer_loss() {
+        // 丢包场景：0, 1, 3, 4（2 丢了）
+        let mut jb = JitterBuffer::new(10, 2);
+        jb.push(make_rtp(0, 0));
+        jb.push(make_rtp(1, 160));
+        jb.push(make_rtp(3, 480));
+        jb.push(make_rtp(4, 640));
+
+        let mut output = Vec::new();
+        while let Some(pkt) = jb.pop() {
+            output.push(pkt.sequence_number);
+        }
+        // 应该输出 0, 1, 3, 4（跳过 2）
+        assert_eq!(output, vec![0, 1, 3, 4]);
+        assert!(jb.stats().packets_lost > 0);
+    }
+
+    #[test]
+    fn test_jitter_buffer_wrap() {
+        // seq 回绕：65534, 65535, 0, 1
+        let mut jb = JitterBuffer::new(10, 2);
+        jb.push(make_rtp(65534, 0));
+        jb.push(make_rtp(65535, 160));
+        jb.push(make_rtp(0, 320));
+        jb.push(make_rtp(1, 480));
+
+        let mut output = Vec::new();
+        while let Some(pkt) = jb.pop() {
+            output.push(pkt.sequence_number);
+        }
+        assert_eq!(output, vec![65534, 65535, 0, 1]);
+        assert!(jb.stats().seq_wraps >= 1);
+    }
+
+    #[test]
+    fn test_jitter_buffer_late_packet() {
+        // 迟到的包应该被丢弃
+        let mut jb = JitterBuffer::new(10, 2);
+        jb.push(make_rtp(0, 0));
+        jb.push(make_rtp(1, 160));
+        // 先 pop 0 和 1
+        jb.pop();
+        jb.pop();
+        // 迟到的 0 应该被拒绝
+        assert!(!jb.push(make_rtp(0, 0)));
+    }
+
+    #[test]
+    fn test_jitter_buffer_threshold() {
+        // 不到 threshold 不输出
+        let mut jb = JitterBuffer::new(10, 5);
+        jb.push(make_rtp(0, 0));
+        jb.push(make_rtp(1, 160));
+        assert!(jb.pop().is_none()); // 只有 2 个包，不到 5
     }
 }

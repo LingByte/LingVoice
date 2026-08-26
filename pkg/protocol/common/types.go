@@ -18,6 +18,7 @@ const (
 	ProtocolMQTT   ProtocolType = "mqtt"
 	ProtocolRTSP   ProtocolType = "rtsp"
 	ProtocolSRT    ProtocolType = "srt"
+	ProtocolGB28181 ProtocolType = "gb28181"
 )
 
 // ─── 事件 ───────────────────────────────────────────────────────────────────
@@ -170,6 +171,10 @@ const (
 	CodecAV1   CodecType = 0x08
 	CodecRTX   CodecType = 0x09
 	CodecAAC   CodecType = 0x0a
+	CodecH265  CodecType = 0x0b
+	CodecG711U CodecType = 0x0c // G.711 μ-law (同 PCMU，GB28181 常用)
+	CodecG711A CodecType = 0x0d // G.711 A-law (同 PCMA，GB28181 常用)
+	CodecPS    CodecType = 0x0e // MPEG-2 Program Stream (GB28181 封装)
 )
 
 func (c CodecType) String() string {
@@ -194,6 +199,14 @@ func (c CodecType) String() string {
 		return "rtx"
 	case CodecAAC:
 		return "aac"
+	case CodecH265:
+		return "h265"
+	case CodecG711U:
+		return "g711u"
+	case CodecG711A:
+		return "g711a"
+	case CodecPS:
+		return "ps"
 	default:
 		return "unknown"
 	}
@@ -221,6 +234,14 @@ func CodecFromString(s string) (CodecType, error) {
 		return CodecRTX, nil
 	case "aac":
 		return CodecAAC, nil
+	case "h265":
+		return CodecH265, nil
+	case "g711u", "g711mu":
+		return CodecG711U, nil
+	case "g711a":
+		return CodecG711A, nil
+	case "ps":
+		return CodecPS, nil
 	default:
 		return 0, errors.New("unknown codec: " + s)
 	}

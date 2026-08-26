@@ -110,6 +110,12 @@ pub struct FlvRemuxer {
     last_timestamp: u32,
     /// 输出缓冲
     output_buffer: Vec<u8>,
+    /// 是否已写入 AVC sequence header（SPS/PPS）
+    avc_header_written: bool,
+    /// 缓存的 SPS
+    sps: Option<Vec<u8>>,
+    /// 缓存的 PPS
+    pps: Option<Vec<u8>>,
 }
 
 impl FlvRemuxer {
@@ -120,6 +126,9 @@ impl FlvRemuxer {
             has_video,
             last_timestamp: 0,
             output_buffer: Vec::new(),
+            avc_header_written: false,
+            sps: None,
+            pps: None,
         }
     }
 
@@ -130,6 +139,109 @@ impl FlvRemuxer {
         // Previous tag size 0 (4 bytes)
         self.output_buffer.extend_from_slice(&[0, 0, 0, 0]);
         self.header_written = true;
+    }
+
+    /// 从 Annex-B NALU 中提取 SPS/PPS
+    fn extract_sps_pps(data: &[u8]) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+        let mut sps: Option<Vec<u8>> = None;
+        let mut pps: Option<Vec<u8>> = None;
+        let mut i = 0;
+        while i + 3 < data.len() {
+            let (sc_len, nal_start) = if data[i..i + 4] == [0, 0, 0, 1] {
+                (4, i + 4)
+            } else if data[i..i + 3] == [0, 0, 1] {
+                (3, i + 3)
+            } else {
+                i += 1;
+                continue;
+            };
+            let nal_type = data[nal_start] & 0x1F;
+            // 找下一个 start code 或文件末尾
+            let mut end = data.len();
+            let mut j = nal_start + 1;
+            while j + 3 < data.len() {
+                if data[j..j + 4] == [0, 0, 0, 1] || data[j..j + 3] == [0, 0, 1] {
+                    end = j;
+                    break;
+                }
+                j += 1;
+            }
+            let nal_data = &data[nal_start..end];
+            match nal_type {
+                7 => sps = Some(nal_data.to_vec()),
+                8 => pps = Some(nal_data.to_vec()),
+                _ => {}
+            }
+            i = end;
+        }
+        (sps, pps)
+    }
+
+    /// 生成 AVCDecoderConfigurationRecord
+    fn build_avc_decoder_config(sps: &[u8], pps: &[u8]) -> Vec<u8> {
+        // AVCDecoderConfigurationRecord:
+        // 1 byte: configurationVersion = 1
+        // 1 byte: AVCProfileIndication (from SPS)
+        // 1 byte: profile_compatibility (from SPS)
+        // 1 byte: AVCLevelIndication (from SPS)
+        // 1 byte: reserved(6) + lengthSizeMinusOne(2) = 0xFF
+        // 1 byte: reserved(3) + numOfSequenceParameterSets(5) = 0xE1
+        // 2 bytes: SPS length
+        // SPS data
+        // 1 byte: numOfPictureParameterSets = 1
+        // 2 bytes: PPS length
+        // PPS data
+        let mut config = Vec::new();
+        config.push(0x01); // configurationVersion
+        if sps.len() >= 4 {
+            config.push(sps[1]); // AVCProfileIndication
+            config.push(sps[2]); // profile_compatibility
+            config.push(sps[3]); // AVCLevelIndication
+        } else {
+            config.extend_from_slice(&[0x42, 0x00, 0x1E]);
+        }
+        config.push(0xFF); // lengthSizeMinusOne = 3 (4 bytes)
+        config.push(0xE1); // 1 SPS
+        config.push((sps.len() >> 8) as u8);
+        config.push((sps.len() & 0xFF) as u8);
+        config.extend_from_slice(sps);
+        config.push(0x01); // 1 PPS
+        config.push((pps.len() >> 8) as u8);
+        config.push((pps.len() & 0xFF) as u8);
+        config.extend_from_slice(pps);
+        config
+    }
+
+    /// 将 Annex-B NALU 转为 AVCC 格式（4字节长度前缀，去掉 start code）
+    fn annex_b_to_avcc(data: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        let mut i = 0;
+        while i + 3 < data.len() {
+            let (sc_len, nal_start) = if data[i..i + 4] == [0, 0, 0, 1] {
+                (4, i + 4)
+            } else if data[i..i + 3] == [0, 0, 1] {
+                (3, i + 3)
+            } else {
+                i += 1;
+                continue;
+            };
+            // 找下一个 start code
+            let mut end = data.len();
+            let mut j = nal_start + 1;
+            while j + 3 < data.len() {
+                if data[j..j + 4] == [0, 0, 0, 1] || data[j..j + 3] == [0, 0, 1] {
+                    end = j;
+                    break;
+                }
+                j += 1;
+            }
+            let nal_data = &data[nal_start..end];
+            let nal_len = nal_data.len() as u32;
+            output.extend_from_slice(&nal_len.to_be_bytes());
+            output.extend_from_slice(nal_data);
+            i = end;
+        }
+        output
     }
 
     /// 创建 FLV tag
@@ -164,7 +276,7 @@ impl FlvRemuxer {
         tag
     }
 
-    /// 编码视频帧为 FLV video tag data
+    /// 编码视频帧为 FLV video tag data（AVCC 格式，4字节长度前缀）
     fn encode_video_frame(frame: &MediaFrame) -> Vec<u8> {
         let frame_type = if frame.keyframe {
             FlvFrameType::KeyFrame
@@ -182,13 +294,13 @@ impl FlvRemuxer {
 
         let mut data = vec![first_byte];
 
-        // H.264/AVC: AVCPacketType + CompositionTime + NALU data
+        // H.264/AVC: AVCPacketType + CompositionTime + NALU data (AVCC format)
         if frame.codec == CodecType::H264 {
             data.push(0x01); // AVCPacketType = 1 (NALU)
             data.extend_from_slice(&[0, 0, 0]); // CompositionTime = 0
-            data.extend_from_slice(&frame.data);
+            // 转 Annex-B → AVCC（4字节长度前缀）
+            data.extend(Self::annex_b_to_avcc(&frame.data));
         } else {
-            // 其他编解码：直接追加帧数据
             data.extend_from_slice(&frame.data);
         }
 
@@ -235,6 +347,27 @@ impl Remuxer for FlvRemuxer {
             self.write_header();
         }
 
+        // H.264: 从关键帧提取 SPS/PPS，先写 AVC sequence header
+        if frame.kind == TrackKind::Video && frame.codec == CodecType::H264 && frame.keyframe {
+            let (sps, pps) = Self::extract_sps_pps(&frame.data);
+            if let (Some(sps), Some(pps)) = (sps, pps) {
+                self.sps = Some(sps.clone());
+                self.pps = Some(pps.clone());
+                if !self.avc_header_written {
+                    // 写 AVCDecoderConfigurationRecord 作为 video tag
+                    let config = Self::build_avc_decoder_config(&sps, &pps);
+                    let first_byte = ((FlvFrameType::KeyFrame as u8) << 4) | (FlvVideoCodecId::Avc as u8);
+                    let mut seq_data = vec![first_byte];
+                    seq_data.push(0x00); // AVCPacketType = 0 (sequence header)
+                    seq_data.extend_from_slice(&[0, 0, 0]); // CompositionTime = 0
+                    seq_data.extend_from_slice(&config);
+                    let seq_tag = Self::create_tag(FlvTagType::Video, 0, &seq_data);
+                    self.output_buffer.extend_from_slice(&seq_tag);
+                    self.avc_header_written = true;
+                }
+            }
+        }
+
         // 时间戳从 RTP 90kHz 转为 FLV 毫秒
         let timestamp_ms = if frame.kind == TrackKind::Video {
             frame.timestamp / 90 // 90kHz → ms
@@ -273,6 +406,9 @@ impl Remuxer for FlvRemuxer {
         self.header_written = false;
         self.output_buffer.clear();
         self.last_timestamp = 0;
+        self.avc_header_written = false;
+        self.sps = None;
+        self.pps = None;
     }
 }
 
@@ -325,5 +461,100 @@ mod tests {
         assert!(output.len() > 9 + 4 + 11);
         // Audio tag type = 8 at position 9 (after FLV header) + 4 (previous tag size 0)
         assert_eq!(output[13], 8);
+    }
+
+    /// 用真实 H.264 NALU 生成 FLV，用 ffprobe 验证
+    #[test]
+    fn test_flv_ffprobe_real_h264() {
+        // 读取真实 H.264 Annex-B 数据
+        let h264_data = match std::fs::read("/tmp/test_h264_raw.h264") {
+            Ok(d) => d,
+            Err(_) => {
+                eprintln!("WARNING: /tmp/test_h264_raw.h264 not found, skipping ffprobe FLV test");
+                return;
+            }
+        };
+        if h264_data.is_empty() {
+            eprintln!("WARNING: empty H.264 file, skipping");
+            return;
+        }
+
+        // 解析 NALU，按帧分组（与 TS 测试相同逻辑）
+        let mut frames: Vec<(Vec<u8>, bool, u32)> = Vec::new();
+        let mut current_au: Vec<u8> = Vec::new();
+        let mut frame_idx = 0u32;
+
+        let mut nalus: Vec<(usize, usize)> = Vec::new();
+        let mut i = 0;
+        while i + 3 < h264_data.len() {
+            if h264_data[i..i + 4] == [0, 0, 0, 1] {
+                nalus.push((i, 4));
+                i += 4;
+            } else if h264_data[i..i + 3] == [0, 0, 1] {
+                nalus.push((i, 3));
+                i += 3;
+            } else {
+                i += 1;
+            }
+        }
+
+        for (j, &(pos, sc_len)) in nalus.iter().enumerate() {
+            let nal_type = h264_data[pos + sc_len] & 0x1F;
+            let end = if j + 1 < nalus.len() { nalus[j + 1].0 } else { h264_data.len() };
+            let nal_data = &h264_data[pos..end];
+
+            match nal_type {
+                7 | 8 | 9 | 6 => {
+                    current_au.extend_from_slice(nal_data);
+                }
+                5 => {
+                    current_au.extend_from_slice(nal_data);
+                    let ts = frame_idx * 3000;
+                    frames.push((std::mem::take(&mut current_au), true, ts));
+                    frame_idx += 1;
+                }
+                1 => {
+                    current_au.extend_from_slice(nal_data);
+                    let ts = frame_idx * 3000;
+                    frames.push((std::mem::take(&mut current_au), false, ts));
+                    frame_idx += 1;
+                }
+                _ => {
+                    current_au.extend_from_slice(nal_data);
+                }
+            }
+        }
+
+        // 用 FlvRemuxer 封装
+        let mut remuxer = FlvRemuxer::new(false, true);
+        let mut flv_output = Vec::new();
+        for (frame_data, keyframe, ts) in &frames {
+            let frame = MediaFrame::video(
+                CodecType::H264,
+                *ts,
+                bytes::Bytes::from(frame_data.clone()),
+                1,
+                *keyframe,
+            );
+            flv_output.extend(remuxer.push_frame(&frame));
+        }
+
+        std::fs::write("/tmp/test_flv_real.flv", &flv_output).unwrap();
+
+        // ffprobe 验证
+        let output = std::process::Command::new("ffprobe")
+            .args(&["-v", "error", "-show_streams", "-show_format", "/tmp/test_flv_real.flv"])
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !output.status.success() {
+            panic!("ffprobe failed: {}", stderr);
+        }
+        println!("ffprobe FLV output:\n{}", stdout);
+        assert!(stdout.contains("h264") || stdout.contains("H264"), "no h264 stream found");
+        assert!(stdout.contains("flv"), "not FLV format");
     }
 }
