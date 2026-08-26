@@ -5,11 +5,12 @@
 use std::sync::Arc;
 
 use lm_core::{EndpointId, SessionId, TrackId};
+use crate::mixer::MixManager;
 use crate::session::SessionManager;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 // tonic-build 生成的代码
 tonic::include_proto!("lingvoice.media.v1");
@@ -18,6 +19,7 @@ tonic::include_proto!("lingvoice.media.v1");
 pub struct MediaNodeServer {
     node_id: String,
     sessions: Arc<SessionManager>,
+    mixes: Arc<MixManager>,
 }
 
 impl MediaNodeServer {
@@ -25,11 +27,16 @@ impl MediaNodeServer {
         Self {
             node_id: node_id.into(),
             sessions: Arc::new(SessionManager::new()),
+            mixes: Arc::new(MixManager::new()),
         }
     }
 
     pub fn session_count(&self) -> usize {
         self.sessions.session_count()
+    }
+
+    pub fn mix_count(&self) -> usize {
+        self.mixes.mix_count()
     }
 
     pub fn node_id(&self) -> &str {
@@ -244,61 +251,98 @@ impl media_node_server::MediaNode for MediaNodeServer {
         let mut stream = request.into_inner();
         let mut packets_received: u64 = 0;
 
+        // 在流开始时检查是否处于混音模式
+        // 如果是，创建解码器并在此流的生命周期内复用
+        let mut mix_decoder: Option<Box<dyn audio_codec::Decoder>> = None;
+        let mut mix_input_tx: Option<mpsc::Sender<lm_core::AudioFrame>> = None;
+        let mut mix_checked = false;
+
         while let Some(req) = stream.next().await {
             let req = req?;
             if let Some(packet) = req.packet {
                 packets_received += 1;
 
-                // 查找 session 和 track
                 let session_id = SessionId(req.session_id.clone());
                 let track_id = TrackId(req.track_id.clone());
 
-                // 从 source track 获取 kind（音频/视频），用于 kind-aware 路由
-                let src_kind = self.sessions.get_session(&session_id)
-                    .and_then(|s| s.tracks.get(&track_id).map(|t| t.kind));
-
-                let pkt_out = crate::session::RtpPacketOut {
-                    ssrc: packet.ssrc,
-                    payload_type: packet.payload_type,
-                    sequence_number: packet.sequence_number,
-                    timestamp: packet.timestamp,
-                    marker: packet.marker,
-                    payload: bytes::Bytes::from(packet.payload),
-                    rid: packet.rid.clone(),
-                    clock_rate: packet.clock_rate,
-                };
-
-                // 1. 转发到同 room 其他 session 的同 kind track（N-1 路由核心）
-                //    音频包只转发给音频 track，视频包只转发给视频 track
-                let peer_tracks = match src_kind {
-                    Some(kind) => self.sessions.get_room_peer_tracks_by_kind(&session_id, kind),
-                    None => {
-                        // track 未注册（少见），降级为不过滤
-                        warn!(session = %req.session_id, track = %req.track_id, "source track kind unknown, skipping kind filter");
-                        Vec::new()
+                // 首包时检查混音模式（避免每包都查）
+                if !mix_checked {
+                    mix_checked = true;
+                    if let Some(tx) = self.mixes.get_mix_input(&session_id, &track_id) {
+                        // 混音模式：创建解码器
+                        let session = self.sessions.get_session(&session_id);
+                        let codec = session
+                            .and_then(|s| s.tracks.get(&track_id).map(|t| t.codec))
+                            .unwrap_or(lm_core::CodecType::Opus);
+                        let ac_codec = match codec {
+                            lm_core::CodecType::Opus => audio_codec::CodecType::Opus,
+                            lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
+                            lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
+                            lm_core::CodecType::G722 => audio_codec::CodecType::G722,
+                            _ => audio_codec::CodecType::Opus,
+                        };
+                        mix_decoder = Some(audio_codec::create_decoder(ac_codec));
+                        mix_input_tx = Some(tx);
+                        info!(
+                            session = %req.session_id,
+                            track = %req.track_id,
+                            "push_rtp in MIX mode, decoder created"
+                        );
                     }
-                };
-                let peer_count = peer_tracks.len();
-                for peer_track in &peer_tracks {
-                    // send 到 peer 的 broadcast channel
-                    // 如果 peer 没有 pull_rtp 订阅者，send 会返回 Err，忽略
-                    let _ = peer_track.rtp_broadcast.send(pkt_out.clone());
                 }
 
-                // 注意：不发到自己的 broadcast，避免自回声。
-                // pull_rtp 从自己的 publisher track 拉的是其他 session 转发过来的包。
+                if let (Some(decoder), Some(tx)) = (&mut mix_decoder, &mix_input_tx) {
+                    // === 混音模式 ===
+                    // 解码 Opus → PCM，发送到 mixer input
+                    let samples = decoder.decode(&packet.payload);
+                    if !samples.is_empty() {
+                        let frame = lm_core::AudioFrame {
+                            samples,
+                            sample_rate: decoder.sample_rate(),
+                            timestamp: packet.timestamp as u64,
+                        };
+                        let _ = tx.try_send(frame);
+                    }
+                    // 不做 SFU 转发，混音输出通过 mix-output track 的 pull_rtp 获取
+                } else {
+                    // === SFU 转发模式（当前行为）===
+                    let src_kind = self.sessions.get_session(&session_id)
+                        .and_then(|s| s.tracks.get(&track_id).map(|t| t.kind));
 
-                // 采样日志：每 1000 包打一次，避免日志淹没
-                if packets_received % 1000 == 0 {
-                    info!(
-                        session = %req.session_id,
-                        track = %req.track_id,
-                        ssrc = packet.ssrc,
-                        seq = packet.sequence_number,
-                        peer_count,
-                        total = packets_received,
-                        "rtp push_rtp progress (sampled 1/1000)"
-                    );
+                    let pkt_out = crate::session::RtpPacketOut {
+                        ssrc: packet.ssrc,
+                        payload_type: packet.payload_type,
+                        sequence_number: packet.sequence_number,
+                        timestamp: packet.timestamp,
+                        marker: packet.marker,
+                        payload: bytes::Bytes::from(packet.payload),
+                        rid: packet.rid.clone(),
+                        clock_rate: packet.clock_rate,
+                    };
+
+                    let peer_tracks = match src_kind {
+                        Some(kind) => self.sessions.get_room_peer_tracks_by_kind(&session_id, kind),
+                        None => {
+                            warn!(session = %req.session_id, track = %req.track_id, "source track kind unknown, skipping kind filter");
+                            Vec::new()
+                        }
+                    };
+                    let peer_count = peer_tracks.len();
+                    for peer_track in &peer_tracks {
+                        let _ = peer_track.rtp_broadcast.send(pkt_out.clone());
+                    }
+
+                    if packets_received % 1000 == 0 {
+                        info!(
+                            session = %req.session_id,
+                            track = %req.track_id,
+                            ssrc = packet.ssrc,
+                            seq = packet.sequence_number,
+                            peer_count,
+                            total = packets_received,
+                            "rtp push_rtp progress (sampled 1/1000)"
+                        );
+                    }
                 }
             }
         }
@@ -446,17 +490,21 @@ impl media_node_server::MediaNode for MediaNodeServer {
         request: Request<StartMixRequest>,
     ) -> Result<Response<StartMixResponse>, Status> {
         let req = request.into_inner();
-        let mix_id = uuid::Uuid::new_v4().to_string();
+        let sample_rate = if req.sample_rate > 0 { req.sample_rate } else { 48000 };
+
+        let state = self.mixes.start_mix(&req.room_id, sample_rate);
+        let mix_id = state.mix_id.clone();
 
         info!(
             room_id = %req.room_id,
             mix_id = %mix_id,
+            sample_rate,
             "gRPC start_mix"
         );
 
-        // TODO: 实际启动混音器
-
-        Ok(Response::new(StartMixResponse { mix_id }))
+        Ok(Response::new(StartMixResponse {
+            mix_id,
+        }))
     }
 
     async fn stop_mix(
@@ -464,6 +512,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
         request: Request<StopMixRequest>,
     ) -> Result<Response<StopMixResponse>, Status> {
         let req = request.into_inner();
+        self.mixes
+            .stop_mix(&req.mix_id)
+            .map_err(|e| Status::not_found(e))?;
         info!(mix_id = %req.mix_id, "gRPC stop_mix");
         Ok(Response::new(StopMixResponse {}))
     }
@@ -473,11 +524,51 @@ impl media_node_server::MediaNode for MediaNodeServer {
         request: Request<AddMixParticipantRequest>,
     ) -> Result<Response<AddMixParticipantResponse>, Status> {
         let req = request.into_inner();
+        let session_id = SessionId(req.session_id.clone());
+
+        let session = self
+            .sessions
+            .get_session(&session_id)
+            .ok_or_else(|| Status::not_found(format!("session {} not found", req.session_id)))?;
+
+        // 查找该 session 的音频 source track
+        // 通常是 AddTrack 创建的音频 track，track_id 由 Go 侧传入
+        let source_track_id = TrackId(req.track_id.clone());
+
+        // 获取采样率（从 mix state 或默认 48000）
+        let sample_rate = self
+            .mixes
+            .mix_participant_count(&req.mix_id)
+            .and_then(|_| {
+                // 从 mix state 获取 sample_rate
+                None // TODO: expose sample_rate from MixState
+            })
+            .unwrap_or(48000);
+
+        let mix_track_id = self
+            .mixes
+            .add_participant(&req.mix_id, &session, &source_track_id, sample_rate)
+            .await
+            .map_err(|e| Status::internal(e))?;
+
+        // 如果 muted，设置 self→all 的增益为 0
+        if req.muted {
+            let _ = self.mixes.set_route_gain(
+                &req.mix_id,
+                &req.session_id,
+                "__all__",
+                0.0,
+            );
+        }
+
         info!(
             mix_id = %req.mix_id,
             session = %req.session_id,
+            mix_track = %mix_track_id.0,
+            muted = req.muted,
             "gRPC add_mix_participant"
         );
+
         Ok(Response::new(AddMixParticipantResponse {}))
     }
 
@@ -486,6 +577,23 @@ impl media_node_server::MediaNode for MediaNodeServer {
         request: Request<RemoveMixParticipantRequest>,
     ) -> Result<Response<RemoveMixParticipantResponse>, Status> {
         let req = request.into_inner();
+        let session_id = SessionId(req.session_id.clone());
+
+        let session = self
+            .sessions
+            .get_session(&session_id)
+            .ok_or_else(|| Status::not_found(format!("session {} not found", req.session_id)))?;
+
+        // 查找该 session 的音频 source track（需要从 mix state 获取）
+        // 简化：用 session_id 推导 track_id
+        // TODO: 从 mix state 获取 source_track_id
+        let source_track_id = TrackId(format!("audio-{}", req.session_id));
+
+        self.mixes
+            .remove_participant(&req.mix_id, &session, &source_track_id)
+            .await
+            .map_err(|e| Status::internal(e))?;
+
         info!(
             mix_id = %req.mix_id,
             session = %req.session_id,
@@ -499,6 +607,15 @@ impl media_node_server::MediaNode for MediaNodeServer {
         request: Request<SetMixGainRequest>,
     ) -> Result<Response<SetMixGainResponse>, Status> {
         let req = request.into_inner();
+        self.mixes
+            .set_route_gain(
+                &req.mix_id,
+                &req.src_session_id,
+                &req.dst_session_id,
+                req.gain,
+            )
+            .map_err(|e| Status::not_found(e))?;
+
         info!(
             mix_id = %req.mix_id,
             src = %req.src_session_id,

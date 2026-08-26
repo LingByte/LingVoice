@@ -383,6 +383,77 @@ func (c *Client) GetStats(ctx context.Context, sessionID string) (*mediav1.GetSt
 	})
 }
 
+// --- 混音 ---
+
+// StartMix starts an audio mixer for a room.
+// sampleRate is typically 48000, frameSize is typically 960 (20ms@48k).
+// Returns the mix_id.
+func (c *Client) StartMix(ctx context.Context, roomID string, sampleRate uint32, frameSize uint32) (string, error) {
+	resp, err := c.stub.StartMix(ctx, &mediav1.StartMixRequest{
+		RoomId:     roomID,
+		SampleRate: sampleRate,
+		FrameSize:  frameSize,
+	})
+	if err != nil {
+		return "", fmt.Errorf("start mix: %w", err)
+	}
+	return resp.MixId, nil
+}
+
+// StopMix stops an audio mixer.
+func (c *Client) StopMix(ctx context.Context, mixID string) error {
+	_, err := c.stub.StopMix(ctx, &mediav1.StopMixRequest{
+		MixId: mixID,
+	})
+	if err != nil {
+		return fmt.Errorf("stop mix: %w", err)
+	}
+	return nil
+}
+
+// AddMixParticipant adds a session's audio track to a mixer.
+// The session will receive mixed audio (excluding itself) via a "mix-{sessionID}" track.
+// Use pull_rtp on that track to get the mixed audio.
+func (c *Client) AddMixParticipant(ctx context.Context, mixID, sessionID, trackID string, muted bool) error {
+	_, err := c.stub.AddMixParticipant(ctx, &mediav1.AddMixParticipantRequest{
+		MixId:     mixID,
+		SessionId: sessionID,
+		TrackId:   trackID,
+		Muted:     muted,
+	})
+	if err != nil {
+		return fmt.Errorf("add mix participant: %w", err)
+	}
+	return nil
+}
+
+// RemoveMixParticipant removes a session from a mixer.
+func (c *Client) RemoveMixParticipant(ctx context.Context, mixID, sessionID string) error {
+	_, err := c.stub.RemoveMixParticipant(ctx, &mediav1.RemoveMixParticipantRequest{
+		MixId:     mixID,
+		SessionId: sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("remove mix participant: %w", err)
+	}
+	return nil
+}
+
+// SetMixGain sets the gain for a specific source→destination route in a mixer.
+// gain 0.0 = mute, 1.0 = normal.
+func (c *Client) SetMixGain(ctx context.Context, mixID, srcSessionID, dstSessionID string, gain float32) error {
+	_, err := c.stub.SetMixGain(ctx, &mediav1.SetMixGainRequest{
+		MixId:         mixID,
+		SrcSessionId:  srcSessionID,
+		DstSessionId:  dstSessionID,
+		Gain:          gain,
+	})
+	if err != nil {
+		return fmt.Errorf("set mix gain: %w", err)
+	}
+	return nil
+}
+
 // --- helpers ---
 
 func (c *Client) getOrCreateStreams(sessionID string) *sessionStreams {

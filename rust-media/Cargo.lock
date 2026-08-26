@@ -703,6 +703,7 @@ name = "lm-control"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "audio-codec",
  "bytes",
  "dashmap",
  "lm-codecs",

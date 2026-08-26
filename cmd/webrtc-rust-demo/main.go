@@ -60,6 +60,11 @@ type rustHandler struct {
 	// 跟踪每个 session 对应的 Rust session 状态
 	mu       sync.Mutex
 	sessions map[string]*sessionState
+
+	// 混音模式
+	mixThreshold int   // 超过此人数自动启用混音（0=禁用自动切换）
+	forceMix     bool  // 强制启用混音模式（所有人从一开始就用混音）
+	roomMixes    map[string]string // roomID → mixID
 }
 
 type sessionState struct {
@@ -70,6 +75,9 @@ type sessionState struct {
 	tracks map[common.TrackID]*trackState
 	// 自己的 publisher SSRC 集合（用于排除自己，避免自回声）
 	mySSRCs sync.Map // map[uint32]struct{}
+	// 是否在混音中
+	inMix     bool
+	mixTrackID common.TrackID // 混音输出 track ID（"mix-{sessionID}"）
 }
 
 type trackState struct {
@@ -86,12 +94,15 @@ type trackState struct {
 	subTracks   map[uint32]common.TrackID // ssrc → subTrackID
 }
 
-func newRustHandler(log *zap.Logger, bridge *rustbridge.Client, srv *webrtc.Server) *rustHandler {
+func newRustHandler(log *zap.Logger, bridge *rustbridge.Client, srv *webrtc.Server, mixThreshold int, forceMix bool) *rustHandler {
 	return &rustHandler{
-		log:      log,
-		bridge:   bridge,
-		srv:      srv,
-		sessions: make(map[string]*sessionState),
+		log:          log,
+		bridge:       bridge,
+		srv:          srv,
+		sessions:     make(map[string]*sessionState),
+		mixThreshold: mixThreshold,
+		forceMix:     forceMix,
+		roomMixes:    make(map[string]string),
 	}
 }
 
@@ -121,6 +132,110 @@ func (h *rustHandler) getOrCreateTrack(ss *sessionState, trackID common.TrackID,
 		ss.tracks[trackID] = ts
 	}
 	return ts
+}
+
+// countRoomAudioParticipants 统计 room 中有音频 track 的 session 数量
+func (h *rustHandler) countRoomAudioParticipants(roomID string) int {
+	count := 0
+	h.mu.Lock()
+	for _, ss := range h.sessions {
+		if ss.roomID == roomID && ss.created {
+			for _, ts := range ss.tracks {
+				if ts.kind == common.TrackAudio {
+					count++
+					break
+				}
+			}
+		}
+	}
+	h.mu.Unlock()
+	return count
+}
+
+// getRoomAudioSessions 返回 room 中有音频 track 的 session 列表
+func (h *rustHandler) getRoomAudioSessions(roomID string) []string {
+	var result []string
+	h.mu.Lock()
+	for sid, ss := range h.sessions {
+		if ss.roomID == roomID && ss.created {
+			for _, ts := range ss.tracks {
+				if ts.kind == common.TrackAudio {
+					result = append(result, sid)
+					break
+				}
+			}
+		}
+	}
+	h.mu.Unlock()
+	return result
+}
+
+// ensureMixStarted 确保 room 的混音已启动，返回 mixID
+func (h *rustHandler) ensureMixStarted(roomID string) (string, error) {
+	h.mu.Lock()
+	mixID, exists := h.roomMixes[roomID]
+	h.mu.Unlock()
+	if exists {
+		return mixID, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	mixID, err := h.bridge.StartMix(ctx, roomID, 48000, 960)
+	if err != nil {
+		return "", fmt.Errorf("start mix for room %s: %w", roomID, err)
+	}
+
+	h.mu.Lock()
+	h.roomMixes[roomID] = mixID
+	h.mu.Unlock()
+
+	h.log.Info(">> 混音模式已启动",
+		zap.String("room", roomID),
+		zap.String("mixID", mixID))
+	return mixID, nil
+}
+
+// addSessionToMix 将 session 加入 room 的混音
+func (h *rustHandler) addSessionToMix(roomID, sessionID string, audioTrackID common.TrackID) error {
+	mixID, err := h.ensureMixStarted(roomID)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.bridge.AddMixParticipant(ctx, mixID, sessionID, string(audioTrackID), false); err != nil {
+		return fmt.Errorf("add mix participant: %w", err)
+	}
+
+	ss := h.getOrCreateSession(sessionID)
+	ss.inMix = true
+	ss.mixTrackID = common.TrackID(fmt.Sprintf("mix-%s", sessionID))
+
+	h.log.Info(">> 参与者加入混音",
+		zap.String("session", sessionID),
+		zap.String("mixTrack", string(ss.mixTrackID)))
+	return nil
+}
+
+// removeSessionFromMix 将 session 从混音中移除
+func (h *rustHandler) removeSessionFromMix(roomID, sessionID string) {
+	h.mu.Lock()
+	mixID, hasMix := h.roomMixes[roomID]
+	h.mu.Unlock()
+	if !hasMix {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.bridge.RemoveMixParticipant(ctx, mixID, sessionID); err != nil {
+		h.log.Warn("remove mix participant failed", zap.Error(err))
+	}
+
+	ss := h.getOrCreateSession(sessionID)
+	ss.inMix = false
 }
 
 func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
@@ -223,6 +338,7 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 				ctx2, cancel2 := context.WithCancel(context.Background())
 				if err := h.bridge.StartPushRtp(ctx2, event.SessionID, event.Track.ID); err != nil {
 					h.log.Error("rust StartPushRtp failed", zap.Error(err))
+					cancel2()
 				} else {
 					ts.pushStarted = true
 					ts.pushCancel = cancel2
@@ -233,10 +349,30 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 				}
 			}
 
-			// 启动 PullRtp 流（从 Rust 拉同 room 其他人的同 kind 媒体）
+			// 音频 track：检查是否需要混音模式
+			if kind == common.TrackAudio {
+				if h.forceMix || (h.mixThreshold > 0 && h.countRoomAudioParticipants(ss.roomID) >= h.mixThreshold) {
+					// 启用混音模式
+					if !ss.inMix {
+						if err := h.addSessionToMix(ss.roomID, event.SessionID, event.Track.ID); err != nil {
+							h.log.Error("add session to mix failed", zap.Error(err))
+						}
+					}
+				}
+			}
+
+			// 启动 PullRtp 流
+			// 混音模式：音频从 mix track 拉取（单路混音流），视频仍从 normal track 拉取
+			// SFU 模式：从 normal track 拉取（多路按 SSRC 分流）
 			if !ts.pullStarted {
 				ts.pullStarted = true
-				go h.startPullLoop(event.SessionID, event.Track.ID, kind, event.Track.Codec)
+				if kind == common.TrackAudio && ss.inMix {
+					// 混音模式：从 mix track 拉取混音
+					go h.startMixPullLoop(event.SessionID, ss.mixTrackID, kind, event.Track.Codec)
+				} else {
+					// SFU 模式：从 normal track 拉取
+					go h.startPullLoop(event.SessionID, event.Track.ID, kind, event.Track.Codec)
+				}
 			}
 		}
 
@@ -258,6 +394,41 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 				}
 			}
 			delete(h.sessions, event.SessionID)
+		}
+		// 检查是否需要停止混音（room 空了）
+		var remainingInRoom int
+		var roomID string
+		if ok && hangingSS != nil {
+			roomID = hangingSS.roomID
+			for sid, ss := range h.sessions {
+				if sid != event.SessionID && ss.roomID == roomID && ss.created {
+					remainingInRoom++
+				}
+			}
+		}
+		h.mu.Unlock()
+
+		// 从混音移除
+		if ok && hangingSS != nil && hangingSS.inMix {
+			h.removeSessionFromMix(roomID, event.SessionID)
+		}
+
+		// 如果 room 空了，停止混音
+		if remainingInRoom == 0 && roomID != "" {
+			h.mu.Lock()
+			mixID, hasMix := h.roomMixes[roomID]
+			delete(h.roomMixes, roomID)
+			h.mu.Unlock()
+			if hasMix {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := h.bridge.StopMix(ctx, mixID); err != nil {
+					h.log.Warn("stop mix failed", zap.Error(err))
+				}
+				cancel()
+				h.log.Info(">> 混音已停止（room 空）",
+					zap.String("room", roomID),
+					zap.String("mixID", mixID))
+			}
 		}
 		// 收集同 room 的其他 session，通知它们 participant left
 		var peers []string
@@ -357,6 +528,8 @@ func (h *rustHandler) startPullLoop(sessionID string, pubTrackID common.TrackID,
 	ctx, cancel := context.WithCancel(context.Background())
 	if ts, ok := ss.tracks[pubTrackID]; ok {
 		ts.pullCancel = cancel
+	} else {
+		cancel()
 	}
 
 	err := h.bridge.StartPullRtp(ctx, sessionID, pubTrackID, kind, codec, func(frame common.MediaFrame) error {
@@ -453,6 +626,65 @@ func (h *rustHandler) startPullLoop(sessionID string, pubTrackID common.TrackID,
 	}
 }
 
+// startMixPullLoop 从 Rust 拉取混音后的单路音频流。
+//
+// 混音模式下，Rust 将同 room 所有其他参与者的音频混音后编码为单路 Opus，
+// 通过 "mix-{sessionID}" track 的 pull_rtp 返回。
+// 不需要按 SSRC 分流，因为只有一路混合音频。
+func (h *rustHandler) startMixPullLoop(sessionID string, mixTrackID common.TrackID, kind common.TrackKind, codec common.CodecType) {
+	if h.srv == nil {
+		h.log.Error("srv not set, cannot start mix pull loop")
+		return
+	}
+
+	sess, ok := h.srv.GetSession(sessionID)
+	if !ok {
+		h.log.Error("session not found for mix pull loop", zap.String("session", sessionID))
+		return
+	}
+
+	// 创建一个 subscriber track 用于接收混音
+	trackCfg := common.TrackConfig{
+		Kind:       kind,
+		Codec:      codec,
+		Label:      fmt.Sprintf("mix-audio-%s", sessionID),
+		StreamID:   "mixed-audio",
+		SampleRate: 48000,
+		Channels:   1,
+	}
+	subTrackID, err := sess.AddTrack(trackCfg)
+	if err != nil {
+		h.log.Error("add mix subscriber track failed", zap.Error(err))
+		return
+	}
+
+	h.log.Info(">> 混音 subscriber track 创建",
+		zap.String("session", sessionID),
+		zap.String("subTrackID", string(subTrackID)),
+		zap.String("mixTrackID", string(mixTrackID)))
+
+	// 通知前端
+	joinMsg := fmt.Sprintf(`{"type":"mix_track_created","subTrackID":"%s"}`, string(subTrackID))
+	_ = sess.SendData("reliable", []byte(joinMsg))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // 在 startMixPullLoop 退出时取消（hangup 时 DestroySession 也会清理）
+
+	err = h.bridge.StartPullRtp(ctx, sessionID, mixTrackID, kind, codec, func(frame common.MediaFrame) error {
+		// 混音是单路流，直接写到 subscriber track
+		// SSRC 重写为固定值（mix SSRC）
+		mixFrame := frame
+		mixFrame.SSRC = 0x4D495800 // "MIX\0"，与 Rust egress bridge 一致
+		return sess.SendMediaFrame(subTrackID, mixFrame)
+	})
+	if err != nil {
+		h.log.Error("StartPullRtp (mix) failed",
+			zap.String("session", sessionID),
+			zap.String("mixTrack", string(mixTrackID)),
+			zap.Error(err))
+	}
+}
+
 func main() {
 	var (
 		addr       = flag.String("addr", ":8081", "WebRTC 信令监听地址")
@@ -463,6 +695,8 @@ func main() {
 		tls        = flag.Bool("tls", false, "启用 HTTPS（局域网联调用，自动生成自签证书）")
 		tlsCert    = flag.String("tls-cert", "", "TLS 证书文件（为空且 --tls 时自动生成）")
 		tlsKey     = flag.String("tls-key", "", "TLS 私钥文件（为空且 --tls 时自动生成）")
+		mixThresh  = flag.Int("mix-threshold", 0, "音频混音人数阈值（超过此人数自动启用混音，0=禁用自动切换）")
+		forceMix   = flag.Bool("mix", false, "强制启用音频混音模式（所有人从一开始就用 MCU 混音而非 SFU 转发）")
 	)
 	flag.Parse()
 
@@ -493,7 +727,7 @@ func main() {
 
 	// 2. 创建 WebRTC 服务器
 	// 注意：handler 和 srv 循环依赖，先创建 handler 再回填 srv
-	handler := newRustHandler(log, bridge, nil)
+	handler := newRustHandler(log, bridge, nil, *mixThresh, *forceMix)
 
 	cfg := webrtc.DefaultConfig()
 	cfg.Addr = *addr
@@ -557,6 +791,13 @@ func main() {
 	fmt.Printf("  WebSocket:   %s://%s%s\n", wsScheme, normalizeAddr(*addr), *path)
 	fmt.Printf("  Rust 媒体:   %s\n", *rustAddr)
 	fmt.Printf("  STUN:        %s\n", *stun)
+	if *forceMix {
+		fmt.Printf("  混音模式:    强制启用（MCU N-1 混音）\n")
+	} else if *mixThresh > 0 {
+		fmt.Printf("  混音模式:    自动切换（≥%d 人启用 MCU 混音）\n", *mixThresh)
+	} else {
+		fmt.Printf("  混音模式:    禁用（纯 SFU 转发）\n")
+	}
 	if *tls {
 		fmt.Printf("  TLS:         已启用（自签证书，浏览器需点\"继续访问\"）\n")
 	}

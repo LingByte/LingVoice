@@ -15,6 +15,7 @@ lm-mixer = { path = "../lm-mixer" }
 lm-recorder = { path = "../lm-recorder" }
 lm-dsp = { path = "../lm-dsp" }
 lm-telemetry = { path = "../lm-telemetry" }
+audio-codec.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 tonic.workspace = true
