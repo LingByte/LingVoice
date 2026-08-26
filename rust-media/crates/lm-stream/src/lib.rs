@@ -1,0 +1,640 @@
+//! lm-stream — 媒体流抽象 + GOP 缓存 + Simulcast 路由
+//!
+//! 参考 Xiu StreamHub + atm0s MediaTrack。
+//!
+//! 核心抽象：
+//! - `MediaStream`: 一个 publisher 的一个 track = 一个流
+//! - `StreamSink`: 流订阅者（录制、转封装订阅源流；SFU 转发订阅转发流）
+//! - `GopCache`: GOP 缓存，新订阅者快速首屏
+//! - `StreamRegistry`: 流注册表，管理 room 内所有流
+
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+use lm_core::{CodecType, MediaFrame, StreamSink, TrackKind};
+use lm_depacketizer::create_depacketizer;
+use lm_transport::RtpPacket;
+use parking_lot::RwLock;
+use tracing::{debug, info};
+
+// ============================================================================
+// StreamId — 流标识
+// ============================================================================
+
+/// 流标识：session_id + track_id
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StreamId {
+    pub session_id: String,
+    pub track_id: String,
+}
+
+impl StreamId {
+    pub fn new(session_id: impl Into<String>, track_id: impl Into<String>) -> Self {
+        Self {
+            session_id: session_id.into(),
+            track_id: track_id.into(),
+        }
+    }
+}
+
+// ============================================================================
+// GopCache — GOP 缓存（参考 Xiu Gops）
+// ============================================================================
+
+/// GOP（一组从关键帧开始的帧序列）
+struct Gop {
+    frames: Vec<MediaFrame>,
+}
+
+impl Gop {
+    fn new() -> Self {
+        Self { frames: Vec::new() }
+    }
+
+    fn save(&mut self, frame: &MediaFrame) {
+        self.frames.push(frame.clone());
+    }
+
+    fn frame_count(&self) -> usize {
+        self.frames.len()
+    }
+}
+
+/// GOP 缓存
+///
+/// 缓存最近 N 个 GOP，新订阅者先 replay 缓存数据，实现快速首屏。
+/// 参考 Xiu 的 Gops 实现，包含音频流内存泄漏修复（帧数限制）。
+pub struct GopCache {
+    /// 缓存的 GOP 数量（通常 1-2）
+    gop_count: usize,
+    /// 单 GOP 最大帧数（防止纯音频流内存泄漏）
+    max_frames_per_gop: usize,
+    /// GOP 队列
+    gops: VecDeque<Gop>,
+}
+
+impl GopCache {
+    /// 创建 GOP 缓存
+    ///
+    /// - `gop_count`: 缓存的 GOP 数量（视频通常 1-2）
+    /// - `max_frames_per_gop`: 单 GOP 最大帧数（防止纯音频流内存泄漏）
+    pub fn new(gop_count: usize, max_frames_per_gop: usize) -> Self {
+        Self {
+            gop_count,
+            max_frames_per_gop,
+            gops: VecDeque::new(),
+        }
+    }
+
+    /// 禁用缓存
+    pub fn disabled() -> Self {
+        Self::new(0, 0)
+    }
+
+    /// 是否启用缓存
+    pub fn is_enabled(&self) -> bool {
+        self.gop_count > 0
+    }
+
+    /// 保存帧
+    ///
+    /// 关键帧时新建 GOP，非关键帧追加到当前 GOP。
+    /// 纯音频流（无关键帧）按帧数限制轮转。
+    pub fn save(&mut self, frame: &MediaFrame) {
+        if !self.is_enabled() {
+            return;
+        }
+
+        // 视频关键帧：新建 GOP
+        if frame.kind == TrackKind::Video && frame.keyframe {
+            if self.gops.len() >= self.gop_count {
+                self.gops.pop_front();
+            }
+            self.gops.push_back(Gop::new());
+        }
+
+        // 追加到当前 GOP
+        if let Some(gop) = self.gops.back_mut() {
+            // 帧数限制：即使没有关键帧也轮转（防止纯音频流内存泄漏）
+            if gop.frame_count() >= self.max_frames_per_gop {
+                if self.gops.len() >= self.gop_count {
+                    self.gops.pop_front();
+                }
+                self.gops.push_back(Gop::new());
+            }
+
+            if let Some(gop) = self.gops.back_mut() {
+                gop.save(frame);
+            }
+        } else {
+            // 第一个帧不是关键帧，也创建 GOP
+            let mut gop = Gop::new();
+            gop.save(frame);
+            self.gops.push_back(gop);
+        }
+    }
+
+    /// 重放缓存给新订阅者
+    pub fn replay(&self, sink: &dyn StreamSink) {
+        if !self.is_enabled() {
+            return;
+        }
+        for gop in &self.gops {
+            for frame in &gop.frames {
+                sink.on_frame(frame);
+            }
+        }
+    }
+
+    /// 清空缓存
+    pub fn clear(&mut self) {
+        self.gops.clear();
+    }
+
+    /// 缓存的帧数
+    pub fn frame_count(&self) -> usize {
+        self.gops.iter().map(|g| g.frame_count()).sum()
+    }
+}
+
+// ============================================================================
+// MediaStream — 媒体流（参考 Xiu Stream + atm0s MediaTrack）
+// ============================================================================
+
+/// 媒体流
+///
+/// 一个 publisher 的一个 track = 一个流。
+/// 职责：
+/// 1. 接收 RTP 包，用 Depacketizer 组装为 MediaFrame
+/// 2. 将 MediaFrame 分发给**源流订阅者**（录制、转封装）— 收到的是完整帧
+/// 3. 将 RTP 包分发给**转发流订阅者**（SFU 转发）— 收到的是裸包
+/// 4. 缓存 GOP，新订阅者快速首屏
+pub struct MediaStream {
+    /// 流标识
+    pub id: StreamId,
+    /// 所属 room
+    pub room_id: Option<String>,
+    /// 编解码
+    pub codec: CodecType,
+    /// 轨道类型
+    pub kind: TrackKind,
+    /// SSRC（主层）
+    pub ssrc: u32,
+    /// 时钟率
+    pub clock_rate: u32,
+
+    /// 源流订阅者（录制、转封装 — 收到 MediaFrame）
+    source_sinks: RwLock<Vec<Arc<dyn StreamSink>>>,
+
+    /// GOP 缓存
+    gop_cache: RwLock<GopCache>,
+
+    /// RTP 解包器
+    depacketizer: RwLock<Box<dyn lm_core::Depacketizer>>,
+}
+
+impl MediaStream {
+    /// 创建媒体流
+    pub fn new(
+        id: StreamId,
+        room_id: Option<String>,
+        codec: CodecType,
+        kind: TrackKind,
+        ssrc: u32,
+        clock_rate: u32,
+    ) -> Self {
+        let depacketizer = create_depacketizer(codec);
+
+        // 视频流启用 GOP 缓存，音频流禁用
+        let gop_cache = if kind == TrackKind::Video {
+            GopCache::new(1, 2000) // 缓存 1 个 GOP，最多 2000 帧
+        } else {
+            GopCache::disabled()
+        };
+
+        Self {
+            id,
+            room_id,
+            codec,
+            kind,
+            ssrc,
+            clock_rate,
+            source_sinks: RwLock::new(Vec::new()),
+            gop_cache: RwLock::new(gop_cache),
+            depacketizer: RwLock::new(depacketizer),
+        }
+    }
+
+    /// 添加源流订阅者（录制、转封装）
+    ///
+    /// 订阅后会先 replay GOP 缓存（如果是视频流），然后接收新的帧。
+    pub fn add_source_sink(&self, sink: Arc<dyn StreamSink>) {
+        // 先 replay GOP 缓存
+        {
+            let cache = self.gop_cache.read();
+            cache.replay(sink.as_ref());
+        }
+        let mut sinks = self.source_sinks.write();
+        sinks.push(sink);
+        info!(
+            stream = ?self.id,
+            sink_count = sinks.len(),
+            "source sink added"
+        );
+    }
+
+    /// 移除源流订阅者
+    pub fn remove_source_sink(&self, sink: &Arc<dyn StreamSink>) {
+        let mut sinks = self.source_sinks.write();
+        sinks.retain(|s| !Arc::ptr_eq(s, sink));
+    }
+
+    /// 推入 RTP 包
+    ///
+    /// 1. 用 Depacketizer 组装帧
+    /// 2. 帧完成后分发给源流订阅者
+    /// 3. 存入 GOP 缓存
+    ///
+    /// 返回 true 表示组装出了一个完整帧
+    pub fn push_packet(&self, pkt: &RtpPacket) -> bool {
+        let mut dep = self.depacketizer.write();
+        let result = dep.push_packet(
+            &pkt.payload,
+            pkt.marker,
+            pkt.sequence_number as u16,
+            pkt.timestamp,
+        );
+
+        let frame_complete = matches!(result, lm_core::DepacketizeResult::FrameComplete);
+
+        if frame_complete {
+            if let Some(mut frame) = dep.take_frame() {
+                // 设置 SSRC
+                frame.ssrc = pkt.ssrc;
+                frame.rid = pkt.rid.clone();
+
+                // 存入 GOP 缓存
+                {
+                    let mut cache = self.gop_cache.write();
+                    cache.save(&frame);
+                }
+
+                // 分发给源流订阅者
+                let sinks = self.source_sinks.read();
+                for sink in sinks.iter() {
+                    sink.on_frame(&frame);
+                }
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// 获取源流订阅者数量
+    pub fn source_sink_count(&self) -> usize {
+        self.source_sinks.read().len()
+    }
+
+    /// 获取 GOP 缓存帧数
+    pub fn gop_frame_count(&self) -> usize {
+        self.gop_cache.read().frame_count()
+    }
+
+    /// 重置解包器
+    pub fn reset(&self) {
+        self.depacketizer.write().reset();
+        self.gop_cache.write().clear();
+    }
+}
+
+// ============================================================================
+// StreamRegistry — 流注册表
+// ============================================================================
+
+/// 流注册表
+///
+/// 管理一个 media node 上所有流。
+/// 支持按 room 查询流（用于 SFU 转发时查找 peer tracks）。
+pub struct StreamRegistry {
+    /// StreamId → Arc<MediaStream>
+    streams: dashmap::DashMap<StreamId, Arc<MediaStream>>,
+    /// room_id → Vec<StreamId>
+    room_streams: dashmap::DashMap<String, Vec<StreamId>>,
+}
+
+impl Default for StreamRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StreamRegistry {
+    pub fn new() -> Self {
+        Self {
+            streams: dashmap::DashMap::new(),
+            room_streams: dashmap::DashMap::new(),
+        }
+    }
+
+    /// 注册流
+    pub fn register(&self, stream: Arc<MediaStream>) {
+        let id = stream.id.clone();
+        let room_id = stream.room_id.clone();
+
+        self.streams.insert(id.clone(), stream);
+
+        if let Some(room) = &room_id {
+            let mut entry = self.room_streams.entry(room.clone()).or_insert_with(Vec::new);
+            entry.push(id);
+        }
+    }
+
+    /// 注销流
+    pub fn unregister(&self, id: &StreamId) {
+        if let Some((_, stream)) = self.streams.remove(id) {
+            if let Some(room) = &stream.room_id {
+                if let Some(mut entry) = self.room_streams.get_mut(room) {
+                    entry.retain(|s| s != id);
+                }
+            }
+        }
+    }
+
+    /// 获取流
+    pub fn get(&self, id: &StreamId) -> Option<Arc<MediaStream>> {
+        self.streams.get(id).map(|r| r.clone())
+    }
+
+    /// 获取 room 内同 kind 的其他流（排除指定 session）
+    ///
+    /// 用于 SFU 转发：A push RTP 时，查找同 room 其他 session 的流
+    pub fn get_room_peer_streams(
+        &self,
+        room_id: &str,
+        exclude_session: &str,
+        kind: TrackKind,
+    ) -> Vec<Arc<MediaStream>> {
+        let mut result = Vec::new();
+
+        if let Some(ids) = self.room_streams.get(room_id) {
+            for id in ids.iter() {
+                if id.session_id == exclude_session {
+                    continue;
+                }
+                if let Some(stream) = self.streams.get(id) {
+                    if stream.kind == kind {
+                        result.push(stream.clone());
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// 获取 room 内所有流
+    pub fn get_room_streams(&self, room_id: &str) -> Vec<Arc<MediaStream>> {
+        let mut result = Vec::new();
+        if let Some(ids) = self.room_streams.get(room_id) {
+            for id in ids.iter() {
+                if let Some(stream) = self.streams.get(id) {
+                    result.push(stream.clone());
+                }
+            }
+        }
+        result
+    }
+
+    /// 流数量
+    pub fn count(&self) -> usize {
+        self.streams.len()
+    }
+
+    /// room 数量
+    pub fn room_count(&self) -> usize {
+        self.room_streams.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lm_core::Backpressure;
+
+    /// 测试用的帧收集器
+    struct FrameCollector {
+        frames: parking_lot::Mutex<Vec<MediaFrame>>,
+    }
+
+    impl FrameCollector {
+        fn new() -> Self {
+            Self {
+                frames: parking_lot::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn frames(&self) -> Vec<MediaFrame> {
+            self.frames.lock().clone()
+        }
+    }
+
+    impl StreamSink for FrameCollector {
+        fn on_frame(&self, frame: &MediaFrame) {
+            self.frames.lock().push(frame.clone());
+        }
+
+        fn backpressure(&self) -> Backpressure {
+            Backpressure::DropOldest
+        }
+    }
+
+    #[test]
+    fn test_gop_cache_video() {
+        let mut cache = GopCache::new(2, 2000);
+
+        // 第一个 keyframe
+        let kf1 = MediaFrame::video(CodecType::Vp8, 1000, bytes::Bytes::from(vec![1]), 1, true);
+        cache.save(&kf1);
+
+        // P frames
+        let pf1 = MediaFrame::video(CodecType::Vp8, 2000, bytes::Bytes::from(vec![2]), 1, false);
+        cache.save(&pf1);
+        let pf2 = MediaFrame::video(CodecType::Vp8, 3000, bytes::Bytes::from(vec![3]), 1, false);
+        cache.save(&pf2);
+
+        assert_eq!(cache.frame_count(), 3);
+
+        // 第二个 keyframe → 新 GOP
+        let kf2 = MediaFrame::video(CodecType::Vp8, 4000, bytes::Bytes::from(vec![4]), 1, true);
+        cache.save(&kf2);
+
+        assert_eq!(cache.frame_count(), 4); // 2 GOPs: [kf1,pf1,pf2] + [kf2]
+
+        // 第三个 keyframe → 移除最旧 GOP
+        let kf3 = MediaFrame::video(CodecType::Vp8, 5000, bytes::Bytes::from(vec![5]), 1, true);
+        cache.save(&kf3);
+
+        // gop_count=2，所以只有 2 个 GOP
+        assert_eq!(cache.frame_count(), 2); // [kf2] + [kf3]
+    }
+
+    #[test]
+    fn test_gop_cache_replay() {
+        let mut cache = GopCache::new(1, 2000);
+
+        let kf = MediaFrame::video(CodecType::Vp8, 1000, bytes::Bytes::from(vec![1, 2, 3]), 1, true);
+        cache.save(&kf);
+        let pf = MediaFrame::video(CodecType::Vp8, 2000, bytes::Bytes::from(vec![4, 5, 6]), 1, false);
+        cache.save(&pf);
+
+        let collector = Arc::new(FrameCollector::new());
+        cache.replay(collector.as_ref());
+
+        let frames = collector.frames();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].data.as_ref(), &[1, 2, 3]);
+        assert_eq!(frames[1].data.as_ref(), &[4, 5, 6]);
+    }
+
+    #[test]
+    fn test_gop_cache_audio_no_leak() {
+        // 纯音频流：无关键帧，靠帧数限制轮转
+        let mut cache = GopCache::new(1, 5); // max 5 frames per GOP
+
+        for i in 0..20 {
+            let frame = MediaFrame::audio(CodecType::Opus, i * 960, bytes::Bytes::from(vec![i as u8]), 1);
+            cache.save(&frame);
+        }
+
+        // 应该只有 1 个 GOP，最多 5 帧
+        assert_eq!(cache.frame_count(), 5);
+    }
+
+    #[test]
+    fn test_stream_vp8_frame_assembly() {
+        let stream = MediaStream::new(
+            StreamId::new("session1", "track1"),
+            Some("room1".into()),
+            CodecType::Vp8,
+            TrackKind::Video,
+            12345,
+            90000,
+        );
+
+        // 添加源流订阅者
+        let collector = Arc::new(FrameCollector::new());
+        stream.add_source_sink(collector.clone());
+
+        // 推入 VP8 keyframe（2 个 RTP 包）
+        let pkt1 = RtpPacket {
+            ssrc: 12345,
+            payload_type: 96,
+            sequence_number: 1000,
+            timestamp: 30000,
+            marker: false,
+            payload: bytes::Bytes::from(vec![
+                0x90, 0x80, 0x00, // VP8 descriptor (3 bytes)
+                0xf0, 0x51, 0x00, // frame_tag (keyframe)
+                0x9d, 0x01, 0x2a, // sync code
+                0x80, 0x02, 0xe0, 0x01, // 640x480
+            ]),
+            rid: String::new(),
+        };
+        stream.push_packet(&pkt1);
+
+        let pkt2 = RtpPacket {
+            ssrc: 12345,
+            payload_type: 96,
+            sequence_number: 1001,
+            timestamp: 30000,
+            marker: true,
+            payload: bytes::Bytes::from(vec![
+                0x80, 0x80, 0x01, // VP8 descriptor (3 bytes)
+                0x39, 0x5f, 0x00, 0x23, // VP8 payload
+            ]),
+            rid: String::new(),
+        };
+        let frame_completed = stream.push_packet(&pkt2);
+
+        assert!(frame_completed);
+
+        let frames = collector.frames();
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].keyframe);
+        assert_eq!(frames[0].ssrc, 12345);
+        assert_eq!(frames[0].timestamp, 30000);
+    }
+
+    #[test]
+    fn test_stream_gop_replay_on_subscribe() {
+        let stream = MediaStream::new(
+            StreamId::new("session1", "track1"),
+            Some("room1".into()),
+            CodecType::Vp8,
+            TrackKind::Video,
+            12345,
+            90000,
+        );
+
+        // 先推入一帧（填充 GOP 缓存）
+        let pkt = RtpPacket {
+            ssrc: 12345,
+            payload_type: 96,
+            sequence_number: 1000,
+            timestamp: 30000,
+            marker: true,
+            payload: bytes::Bytes::from(vec![
+                0x90, 0x80, 0x00, // VP8 descriptor (3 bytes)
+                0xf0, 0x51, 0x00, 0x9d, 0x01, 0x2a, 0x80, 0x02, 0xe0, 0x01,
+            ]),
+            rid: String::new(),
+        };
+        stream.push_packet(&pkt);
+
+        // 现在订阅 — 应该收到 GOP 缓存中的帧
+        let collector = Arc::new(FrameCollector::new());
+        stream.add_source_sink(collector.clone());
+
+        let frames = collector.frames();
+        assert_eq!(frames.len(), 1, "should receive 1 frame from GOP cache");
+        assert!(frames[0].keyframe);
+    }
+
+    #[test]
+    fn test_stream_registry() {
+        let registry = StreamRegistry::new();
+
+        let stream1 = Arc::new(MediaStream::new(
+            StreamId::new("session1", "track1"),
+            Some("room1".into()),
+            CodecType::Vp8,
+            TrackKind::Video,
+            111,
+            90000,
+        ));
+        let stream2 = Arc::new(MediaStream::new(
+            StreamId::new("session2", "track2"),
+            Some("room1".into()),
+            CodecType::Opus,
+            TrackKind::Audio,
+            222,
+            48000,
+        ));
+
+        registry.register(stream1);
+        registry.register(stream2);
+
+        assert_eq!(registry.count(), 2);
+        assert_eq!(registry.room_count(), 1);
+
+        // 查找 room1 中排除 session1 的视频流
+        let peers = registry.get_room_peer_streams("room1", "session1", TrackKind::Video);
+        assert_eq!(peers.len(), 0); // session2 是音频流，不匹配视频
+
+        // 查找 room1 中排除 session1 的音频流
+        let peers = registry.get_room_peer_streams("room1", "session1", TrackKind::Audio);
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].id.session_id, "session2");
+    }
+}

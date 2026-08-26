@@ -708,11 +708,13 @@ dependencies = [
  "dashmap",
  "lm-codecs",
  "lm-core",
+ "lm-depacketizer",
  "lm-dsp",
  "lm-mixer",
  "lm-pipeline",
  "lm-recorder",
  "lm-router",
+ "lm-stream",
  "lm-telemetry",
  "lm-transport",
  "parking_lot",
@@ -737,6 +739,15 @@ dependencies = [
  "thiserror",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "lm-depacketizer"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "lm-core",
+ "tracing",
 ]
 
 [[package]]
@@ -796,6 +807,20 @@ dependencies = [
  "dashmap",
  "lm-core",
  "parking_lot",
+ "tracing",
+]
+
+[[package]]
+name = "lm-stream"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "dashmap",
+ "lm-core",
+ "lm-depacketizer",
+ "lm-transport",
+ "parking_lot",
+ "tokio",
  "tracing",
 ]
 

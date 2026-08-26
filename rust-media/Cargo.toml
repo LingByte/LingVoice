@@ -5,6 +5,8 @@ members = [
     "crates/lm-core",
     "crates/lm-codecs",
     "crates/lm-transport",
+    "crates/lm-depacketizer",
+    "crates/lm-stream",
     "crates/lm-router",
     "crates/lm-pipeline",
     "crates/lm-mixer",
@@ -32,6 +34,12 @@ tonic-types = "0.12"
 
 # 编解码（vendored 本地副本，避免上游频繁变更影响）
 audio-codec = { path = "crates/audio-codec" }
+
+# 内部 crate
+lm-core = { path = "crates/lm-core" }
+lm-transport = { path = "crates/lm-transport" }
+lm-depacketizer = { path = "crates/lm-depacketizer" }
+lm-stream = { path = "crates/lm-stream" }
 
 # WebRTC（暂不启用 str0m，Phase 1 先做 RTP 透传）
 # str0m = "0.7"

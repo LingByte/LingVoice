@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use lm_core::{EndpointId, SessionId, TrackId};
+use lm_stream::{MediaStream, StreamId, StreamRegistry};
 use crate::mixer::MixManager;
 use crate::recorder::RecordingManager;
 use crate::session::SessionManager;
@@ -22,6 +23,8 @@ pub struct MediaNodeServer {
     sessions: Arc<SessionManager>,
     mixes: Arc<MixManager>,
     recordings: Arc<RecordingManager>,
+    /// 媒体流注册表（新的流抽象，用于帧级处理：录制、转封装）
+    streams: Arc<StreamRegistry>,
 }
 
 impl MediaNodeServer {
@@ -31,6 +34,7 @@ impl MediaNodeServer {
             sessions: Arc::new(SessionManager::new()),
             mixes: Arc::new(MixManager::new()),
             recordings: Arc::new(RecordingManager::new()),
+            streams: Arc::new(StreamRegistry::new()),
         }
     }
 
@@ -42,8 +46,17 @@ impl MediaNodeServer {
         self.mixes.mix_count()
     }
 
+    pub fn stream_count(&self) -> usize {
+        self.streams.count()
+    }
+
     pub fn node_id(&self) -> &str {
         &self.node_id
+    }
+
+    /// 获取流注册表引用（供 recorder 使用）
+    pub fn streams(&self) -> &Arc<StreamRegistry> {
+        &self.streams
     }
 }
 
@@ -110,6 +123,10 @@ impl media_node_server::MediaNode for MediaNodeServer {
         self.sessions
             .destroy_session(&session_id)
             .map_err(|e| Status::not_found(e.to_string()))?;
+
+        // 清理该 session 的所有 MediaStream
+        // TODO: StreamRegistry 应该支持按 session 批量注销
+        // 目前依赖 remove_track 逐个注销，session destroy 时 tracks 已被清理
 
         info!(session = %req.session_id, "gRPC destroy_session");
         Ok(Response::new(DestroySessionResponse {}))
@@ -221,6 +238,28 @@ impl media_node_server::MediaNode for MediaNodeServer {
 
         session.tracks.insert(track_id.clone(), Arc::new(track_state));
 
+        // 同时注册 MediaStream（新的流抽象）
+        let room_id = session.room_id.clone();
+        let clock_rate = if kind == lm_core::TrackKind::Video {
+            90000
+        } else {
+            match codec {
+                lm_core::CodecType::Opus => 48000,
+                lm_core::CodecType::PcmU | lm_core::CodecType::PcmA => 8000,
+                lm_core::CodecType::G722 => 8000,
+                _ => 48000,
+            }
+        };
+        let media_stream = Arc::new(MediaStream::new(
+            StreamId::new(req.session_id.clone(), track.track_id.clone()),
+            room_id,
+            codec,
+            kind,
+            track.ssrc,
+            clock_rate,
+        ));
+        self.streams.register(media_stream);
+
         info!(
             session = %req.session_id,
             track = %track.track_id,
@@ -245,6 +284,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
             .ok_or_else(|| Status::not_found(format!("session {} not found", req.session_id)))?;
 
         session.tracks.remove(&TrackId(req.track_id.clone()));
+
+        // 同时注销 MediaStream
+        self.streams.unregister(&StreamId::new(req.session_id.clone(), req.track_id.clone()));
 
         info!(
             session = %req.session_id,
@@ -318,7 +360,7 @@ impl media_node_server::MediaNode for MediaNodeServer {
                     }
                     // 不做 SFU 转发，混音输出通过 mix-output track 的 pull_rtp 获取
                 } else {
-                    // === SFU 转发模式（当前行为）===
+                    // === SFU 转发模式 ===
                     let src_kind = self.sessions.get_session(&session_id)
                         .and_then(|s| s.tracks.get(&track_id).map(|t| t.kind));
 
@@ -328,11 +370,12 @@ impl media_node_server::MediaNode for MediaNodeServer {
                         sequence_number: packet.sequence_number,
                         timestamp: packet.timestamp,
                         marker: packet.marker,
-                        payload: bytes::Bytes::from(packet.payload),
+                        payload: bytes::Bytes::from(packet.payload.clone()),
                         rid: packet.rid.clone(),
                         clock_rate: packet.clock_rate,
                     };
 
+                    // 1. SFU 裸包转发：广播到同 room 其他 session 的 peer track
                     let peer_tracks = match src_kind {
                         Some(kind) => self.sessions.get_room_peer_tracks_by_kind(&session_id, kind),
                         None => {
@@ -345,8 +388,23 @@ impl media_node_server::MediaNode for MediaNodeServer {
                         let _ = peer_track.rtp_broadcast.send(pkt_out.clone());
                     }
 
-                    // 也广播到源 track 自身的 broadcast channel
-                    // （用于录制：录制 task 订阅源 track 来录制原始音频）
+                    // 2. 媒体流处理：用 MediaStream 组装帧，通知源流订阅者（录制等）
+                    let stream_id = StreamId::new(req.session_id.clone(), req.track_id.clone());
+                    if let Some(media_stream) = self.streams.get(&stream_id) {
+                        let rtp_pkt = lm_transport::RtpPacket {
+                            ssrc: packet.ssrc,
+                            payload_type: packet.payload_type as u8,
+                            sequence_number: packet.sequence_number as u16,
+                            timestamp: packet.timestamp,
+                            marker: packet.marker,
+                            payload: bytes::Bytes::from(packet.payload),
+                            rid: packet.rid.clone(),
+                        };
+                        media_stream.push_packet(&rtp_pkt);
+                    }
+
+                    // 3. 也广播到源 track 自身的 broadcast channel
+                    // （保持兼容：旧的 pull_rtp 订阅者仍用 broadcast）
                     if let Some(session) = self.sessions.get_session(&session_id) {
                         if let Some(src_track) = session.tracks.get(&track_id) {
                             let _ = src_track.rtp_broadcast.send(pkt_out.clone());
@@ -493,7 +551,7 @@ impl media_node_server::MediaNode for MediaNodeServer {
         );
 
         self.recordings
-            .start_recording(&recording_id, &session, &output_dir)
+            .start_recording(&recording_id, &session, &output_dir, &self.streams)
             .await
             .map_err(|e| Status::internal(format!("start recording: {e}")))?;
 
