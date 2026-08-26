@@ -7,6 +7,7 @@ members = [
     "crates/lm-transport",
     "crates/lm-depacketizer",
     "crates/lm-stream",
+    "crates/lm-protocol",
     "crates/lm-router",
     "crates/lm-pipeline",
     "crates/lm-mixer",
@@ -40,6 +41,7 @@ lm-core = { path = "crates/lm-core" }
 lm-transport = { path = "crates/lm-transport" }
 lm-depacketizer = { path = "crates/lm-depacketizer" }
 lm-stream = { path = "crates/lm-stream" }
+lm-protocol = { path = "crates/lm-protocol" }
 
 # WebRTC（暂不启用 str0m，Phase 1 先做 RTP 透传）
 # str0m = "0.7"

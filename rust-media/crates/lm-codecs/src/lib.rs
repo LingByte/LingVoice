@@ -159,9 +159,14 @@ pub fn codec_from_name(name: &str) -> Option<CodecType> {
         "pcmu" => Some(CodecType::PcmU),
         "pcma" => Some(CodecType::PcmA),
         "g722" => Some(CodecType::G722),
+        "pcm" | "l16" => Some(CodecType::Pcm),
+        "aac" => Some(CodecType::Aac),
+        "mp3" => Some(CodecType::Mp3),
         "h264" | "h.264" | "avc" => Some(CodecType::H264),
+        "h265" | "h.265" | "hevc" => Some(CodecType::H265),
         "vp8" => Some(CodecType::Vp8),
         "vp9" => Some(CodecType::Vp9),
+        "av1" => Some(CodecType::Av1),
         _ => None,
     }
 }
@@ -174,9 +179,13 @@ pub fn codec_name(codec: CodecType) -> &'static str {
         CodecType::PcmA => "pcma",
         CodecType::G722 => "g722",
         CodecType::Pcm => "pcm",
+        CodecType::Aac => "aac",
+        CodecType::Mp3 => "mp3",
         CodecType::H264 => "h264",
+        CodecType::H265 => "h265",
         CodecType::Vp8 => "vp8",
         CodecType::Vp9 => "vp9",
+        CodecType::Av1 => "av1",
     }
 }
 

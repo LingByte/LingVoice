@@ -654,9 +654,17 @@ pub fn create_depacketizer(codec: CodecType) -> Box<dyn Depacketizer> {
             // PCM 类编解码器：一个 RTP 包 = 一帧
             Box::new(OpusDepacketizerBuffered::new())
         }
+        CodecType::Aac | CodecType::Mp3 => {
+            // AAC/MP3：一个 RTP 包 = 一帧（简化）
+            Box::new(OpusDepacketizerBuffered::new())
+        }
         CodecType::Vp9 => {
             // VP9 暂时用类似 VP8 的逻辑（需要单独实现 VP9 descriptor 解析）
             Box::new(Vp8Depacketizer::new())
+        }
+        CodecType::H265 | CodecType::Av1 => {
+            // H265/AV1：暂用 H264 解包器（需要单独实现）
+            Box::new(H264Depacketizer::new())
         }
     }
 }

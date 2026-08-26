@@ -57,22 +57,37 @@ pub enum CodecType {
     G722,
     /// 原始 PCM
     Pcm,
+    /// AAC — RTMP/HLS 常用音频编码
+    Aac,
+    /// MP3 — 通用音频编码
+    Mp3,
     /// H.264 — 视频编码
     H264,
+    /// H.265 / HEVC — 高效视频编码
+    H265,
     /// VP8 — 视频编码
     Vp8,
     /// VP9 — 视频编码
     Vp9,
+    /// AV1 — 下一代视频编码
+    Av1,
 }
 
 impl CodecType {
     /// 判断是否为音频编解码
     pub fn is_audio(self) -> bool {
-        matches!(self, CodecType::Opus | CodecType::PcmU | CodecType::PcmA | CodecType::G722 | CodecType::Pcm)
+        matches!(
+            self,
+            CodecType::Opus | CodecType::PcmU | CodecType::PcmA | CodecType::G722 | CodecType::Pcm
+                | CodecType::Aac | CodecType::Mp3
+        )
     }
     /// 判断是否为视频编解码
     pub fn is_video(self) -> bool {
-        matches!(self, CodecType::H264 | CodecType::Vp8 | CodecType::Vp9)
+        matches!(
+            self,
+            CodecType::H264 | CodecType::H265 | CodecType::Vp8 | CodecType::Vp9 | CodecType::Av1
+        )
     }
 }
 
