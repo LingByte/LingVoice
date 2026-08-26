@@ -43,6 +43,27 @@ input[type="text"] { background: #0d1117; border: 1px solid #30363d; color: #eee
   <span id="connStatus" style="margin-left:12px;color:#8b949e">未连接</span>
 </div>
 
+<div class="panel">
+  <h2>视频质量</h2>
+  <label style="margin-right:12px">分辨率:
+    <select id="videoResolution" style="background:#0d1117;border:1px solid #30363d;color:#eee;padding:4px 8px;border-radius:4px">
+      <option value="320x240">320×240 (低)</option>
+      <option value="640x480" selected>640×480 (标清)</option>
+      <option value="1280x720">1280×720 (高清)</option>
+      <option value="1920x1080">1920×1080 (全高清)</option>
+    </select>
+  </label>
+  <label style="margin-left:12px">帧率:
+    <select id="videoFramerate" style="background:#0d1117;border:1px solid #30363d;color:#eee;padding:4px 8px;border-radius:4px">
+      <option value="15">15 fps</option>
+      <option value="24">24 fps</option>
+      <option value="30" selected>30 fps</option>
+      <option value="60">60 fps</option>
+    </select>
+  </label>
+  <span style="margin-left:12px;color:#8b949e;font-size:12px">(需在"开启音视频"前设置)</span>
+</div>
+
 <div class="row">
   <div class="col">
     <div class="panel">
@@ -246,8 +267,21 @@ async function connect() {
 
 async function startMedia() {
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
+    // 读取用户选择的分辨率和帧率
+    const resSel = document.getElementById('videoResolution');
+    const fpsSel = document.getElementById('videoFramerate');
+    const [w, h] = resSel.value.split('x').map(Number);
+    const fps = parseInt(fpsSel.value, 10);
+    const videoConstraints = {width: {ideal: w}, height: {ideal: h}, frameRate: {ideal: fps}};
+    log(`请求视频: ${w}×${h}@${fps}fps`, 'info');
+    localStream = await navigator.mediaDevices.getUserMedia({audio: true, video: videoConstraints});
     document.getElementById('localVideo').srcObject = localStream;
+    // 打印实际获取的分辨率
+    const vTrack = localStream.getVideoTracks()[0];
+    if (vTrack) {
+      const settings = vTrack.getSettings();
+      log(`实际视频: ${settings.width}×${settings.height}@${settings.frameRate}fps`, 'success');
+    }
     log('本地媒体已获取 (audio + video)', 'success');
 
     // 创建 Publisher PC

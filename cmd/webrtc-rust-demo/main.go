@@ -374,20 +374,92 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 				}
 			}
 
-			// 录制：在 track 注册后启动（只启动一次，音频 track 到来时触发）
-			if h.recordEnabled && ss.recordingID == "" && kind == common.TrackAudio {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				recID, err := h.bridge.StartRecording(ctx, event.SessionID, "wav", h.recordDir, 1)
-				if err != nil {
-					h.log.Error("start recording failed", zap.Error(err))
-				} else {
-					ss.recordingID = recID
-					h.log.Info("recording started",
-						zap.String("session", event.SessionID),
-						zap.String("recordingID", recID),
-						zap.String("dir", h.recordDir))
+			// 录制：在 track 注册后启动（只启动一次）
+			// 等待音频和视频 track 都到齐后再启动，这样录制能同时录到音视频
+			// 如果只有音频（无摄像头），音频 track 到来后也启动
+			if h.recordEnabled && ss.recordingID == "" {
+				hasAudio := false
+				hasVideo := false
+				for _, t := range ss.tracks {
+					if t.kind == common.TrackAudio {
+						hasAudio = true
+					} else if t.kind == common.TrackVideo {
+						hasVideo = true
+					}
 				}
-				cancel()
+				// 启动条件：
+				//   - 音频+视频都到齐 → 立即启动
+				//   - 只有音频（无摄像头）→ 启动
+				//   - 只有视频（无麦克风）→ 启动
+				//   - 只有视频但有音频 track 正在路上 → 等音频
+				// 简化：两个 track 都到齐 OR 只有一种 track 且是当前到达的
+				shouldStart := false
+				if hasAudio && hasVideo {
+					shouldStart = true
+				} else if hasAudio && !hasVideo && kind == common.TrackAudio {
+					// 只有音频 track，音频刚到 → 启动（无摄像头场景）
+					// 用短延迟检查是否有视频 track 即将到达
+					shouldStart = true
+				} else if hasVideo && !hasAudio && kind == common.TrackVideo {
+					// 只有视频 track，视频刚到 → 启动（无麦克风场景）
+					shouldStart = true
+				}
+
+				if shouldStart {
+					// 如果当前只有音频，延迟 1 秒启动，给视频 track 到达的机会
+					if hasAudio && !hasVideo {
+						go func(sessionID, dir string) {
+							time.Sleep(1 * time.Second)
+							h.mu.Lock()
+							s, ok := h.sessions[sessionID]
+							if !ok || s.recordingID != "" {
+								h.mu.Unlock()
+								return
+							}
+							// 重新检查是否有视频了
+							nowHasVideo := false
+							for _, t := range s.tracks {
+								if t.kind == common.TrackVideo {
+									nowHasVideo = true
+								}
+							}
+							h.mu.Unlock()
+
+							ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+							recID, err := h.bridge.StartRecording(ctx, sessionID, "wav", dir, 1)
+							if err != nil {
+								h.log.Error("start recording failed", zap.Error(err))
+							} else {
+								h.mu.Lock()
+								if s, ok := h.sessions[sessionID]; ok && s.recordingID == "" {
+									s.recordingID = recID
+								}
+								h.mu.Unlock()
+								h.log.Info("recording started (delayed)",
+									zap.String("session", sessionID),
+									zap.String("recordingID", recID),
+									zap.String("dir", dir),
+									zap.Bool("hasVideo", nowHasVideo))
+							}
+							cancel()
+						}(event.SessionID, h.recordDir)
+					} else {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						recID, err := h.bridge.StartRecording(ctx, event.SessionID, "wav", h.recordDir, 1)
+						if err != nil {
+							h.log.Error("start recording failed", zap.Error(err))
+						} else {
+							ss.recordingID = recID
+							h.log.Info("recording started",
+								zap.String("session", event.SessionID),
+								zap.String("recordingID", recID),
+								zap.String("dir", h.recordDir),
+								zap.Bool("hasAudio", hasAudio),
+								zap.Bool("hasVideo", hasVideo))
+						}
+						cancel()
+					}
+				}
 			}
 
 			// 启动 PullRtp 流

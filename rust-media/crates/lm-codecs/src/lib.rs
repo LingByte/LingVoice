@@ -159,6 +159,9 @@ pub fn codec_from_name(name: &str) -> Option<CodecType> {
         "pcmu" => Some(CodecType::PcmU),
         "pcma" => Some(CodecType::PcmA),
         "g722" => Some(CodecType::G722),
+        "h264" | "h.264" | "avc" => Some(CodecType::H264),
+        "vp8" => Some(CodecType::Vp8),
+        "vp9" => Some(CodecType::Vp9),
         _ => None,
     }
 }
