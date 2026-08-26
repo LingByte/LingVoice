@@ -170,14 +170,19 @@ graph TD
 |------|---------|------|-------------|------------|------|
 | **WebRTC** | ✅ Pion 完整 | ✅ webrtc-rust-demo | ✅ rustbridge push/pull | ✅ 音频+视频 | **跑通** |
 | **WebSocket** | ✅ offer/answer/start/stop + chat | ✅ ws-rust-demo | ✅ rustbridge push/pull | ✅ 音频 + 文本 | **跑通** |
-| **SIP** | ✅ sipgo (INVITE/BYE/REGISTER) | ✅ protocol-server | ❌ | ❌ | 信令通，无 RTP |
-| **RTMP** | ✅ gortmplib (publish/play) | ✅ protocol-server | ❌ | ❌ | 信令通，无媒体 |
-| **WHIP** | ✅ Pion (POST/DELETE) | ✅ protocol-server | ❌ | ❌ | 信令通，无媒体 |
-| **WHEP** | ✅ Pion (POST/DELETE) | ✅ protocol-server | ❌ | ❌ | 信令通，无媒体 |
-| **MQTT** | ✅ paho (signal/media topic) | ✅ protocol-server | ❌ | ❌ | 信令通，无媒体 |
-| **REST API** | ✅ session CRUD | ✅ protocol-server | ❌ | N/A | 管理面通 |
+| **SIP** | ✅ sipgo (INVITE/BYE/REGISTER) + SDP answer | ✅ sip-rust-demo | ✅ RTP bridge → rustbridge push/pull | ✅ 音频双向 | **跑通** |
+| **RTMP** | ✅ gortmplib (publish/play) | ✅ rtmp-rust-demo | ✅ rustbridge push | ✅ 推流 | **跑通** |
+| **WHIP** | ✅ Pion (POST/DELETE) | ✅ whip-rust-demo | ✅ rustbridge push | ✅ 推流 | **跑通** |
+| **WHEP** | ✅ Pion (POST/DELETE) | ✅ whep-rust-demo | ✅ rustbridge pull | ✅ 拉流 | **跑通** |
+| **MQTT** | ✅ paho (signal/media topic) | ✅ mqtt-rust-demo | ✅ rustbridge push/pull | ✅ 双向音频 | **跑通** |
+| **RTSP** | ✅ ANNOUNCE/SETUP/PLAY + interleaved RTP | ✅ rtsp-rust-demo | ✅ rustbridge push | ✅ 推流 | **跑通** |
+| **SRT** | ✅ handshake + data stream (TS/RTP) | ✅ srt-rust-demo | ✅ rustbridge push | ✅ 推流 | **跑通** |
+| **GB28181** | ✅ SIP + PS 接收 + EventTrackAdded | ✅ gb28181-rust-demo | ✅ rustbridge push | ✅ 推流 | **跑通** |
+| **HLS 输出** | ✅ MPEG-TS mux | ✅ hls-test-client | ✅ 端到端验证 | ✅ ffprobe 验证 | **跑通** |
+| **HTTP-FLV 输出** | ✅ FLV remuxer | — | ✅ ffprobe 验证 | ✅ ffprobe 验证 | **跑通** |
+| **REST API** | ✅ session CRUD | ✅ protocol-server | — | N/A | 管理面通 |
 
-**结论：WebRTC 和 WebSocket 已跑通端到端媒体流（Go↔Rust）。其余协议的信令层都已实现，但媒体帧未接入 Rust 媒体节点。**
+**结论：所有协议的信令层和媒体层都已接入 Rust 媒体节点，端到端媒体流全部跑通。**
 
 ### 协议适用场景
 
@@ -198,9 +203,9 @@ graph TD
 ## 6. 当前完成度 vs 计划
 
 ```mermaid
-pie title 总体完成度（约 75%）
-    "已完成" : 75
-    "未完成" : 25
+pie title 总体完成度（约 85%）
+    "已完成" : 85
+    "未完成" : 15
 ```
 
 | 模块 | 状态 | 说明 |
@@ -217,16 +222,16 @@ pie title 总体完成度（约 75%）
 | MQTT 端到端 demo | ✅ | 双向音频，cmd/mqtt-rust-demo（需 MQTT broker） |
 | SIP 端到端 demo | ✅ | 信令+RTP bridge 框架，cmd/sip-rust-demo（SDP answer 待完善） |
 | audio-codec vendor | ✅ | 源码内嵌，不再依赖 crates.io |
-| 单元测试 | ✅ | Rust 97 + Go 40 = 137 tests |
+| 单元测试 | ✅ | Rust 169 + Go 313 = 482 tests |
 | **流媒体层重构** | ✅ | MediaFrame + Depacketizer + Stream + GOP + Simulcast |
 | **分段录制 + MP4 合并** | ✅ | 录制状态机 + FFmpeg 合并 |
 | **协议转封装框架** | ✅ | HLS/HTTP-FLV/RTMP/RTSP/SRT/GB28181/WHIP/WHEP remuxer |
 | **media-node HTTP 输出** | ✅ | HLS playlist + TS 分段 + HTTP-FLV chunked stream |
 | **端到端 HLS 转封装** | ✅ | gRPC PushRtp → MediaStream → HlsRemuxer → HLS playlist |
-| **Go 控制面 `control/`** | ❌ | 无 AgentSession/TurnManager/AgentLoop |
-| **插件系统** | ❌ | 无 ASR/TTS/LLM 接口、无 registry、无 mock 插件 |
-| **协议业务逻辑** | ❌ | 无 auth/router/transfer |
-| **SIP SDP answer** | ❌ | answer 未带本地 RTP 端口，对端不知往哪发 RTP |
+| **Go 控制面 `control/`** | ✅ | AgentSession/TurnManager/AgentLoop + barge-in |
+| **插件系统** | ✅ | ASR/TTS/LLM/Detector 接口 + registry + loader + mock 插件 |
+| **协议业务逻辑** | ✅ | auth/router/transfer 框架 |
+| **SIP SDP answer** | ✅ | answer 带 SDP body，含本地 RTP 端口 |
 
 ---
 

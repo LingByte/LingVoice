@@ -206,8 +206,9 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 			zap.String("session", event.SessionID),
 			zap.Int("localPort", rtpPort))
 
-		// 自动接听
+		// 设置本地 RTP 端口到 SIP session（用于 SDP answer）并自动接听
 		if sess, ok := h.srv.GetSession(event.SessionID); ok {
+			sess.SetLocalRtpPort(rtpPort)
 			_ = sess.SendCommand(common.ProtocolCommand{Type: common.CmdAnswer})
 		}
 

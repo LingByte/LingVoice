@@ -68,6 +68,19 @@ type Session struct {
 	inviteTx  sip.ServerTransaction
 	answered  bool
 	audio     *common.AudioMedia
+
+	// 本地 RTP 端口（由上层在 EventIncomingCall 后设置，用于 SDP answer）
+	localRtpPort int
+	// 本地 IP（用于 SDP answer，默认从 config.Addr 推断）
+	localIP string
+}
+
+// SetLocalRtpPort 设置本地 RTP 端口，用于 SDP answer。
+// 必须在 SendCommand(CmdAnswer) 之前调用。
+func (sess *Session) SetLocalRtpPort(port int) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.localRtpPort = port
 }
 
 // NewServer 创建 SIP 服务
@@ -292,7 +305,7 @@ func (sess *Session) SendCommand(cmd common.ProtocolCommand) error {
 	}
 }
 
-// answer 接听：发 200 OK + 通知上层
+// answer 接听：发 200 OK + SDP answer + 通知上层
 func (sess *Session) answer() error {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
@@ -301,8 +314,12 @@ func (sess *Session) answer() error {
 	}
 	sess.answered = true
 
-	// 发 200 OK
-	resp := sip.NewResponseFromRequest(sess.inviteReq, 200, "OK", nil)
+	// 生成 SDP answer body
+	sdpBody := sess.buildSdpAnswer()
+
+	// 发 200 OK + SDP
+	resp := sip.NewResponseFromRequest(sess.inviteReq, 200, "OK", []byte(sdpBody))
+	resp.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	resp.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:lingvoice@%s>", sess.to)))
 	_ = sess.inviteTx.Respond(resp)
 
@@ -330,6 +347,55 @@ func (sess *Session) answer() error {
 		Timestamp: time.Now(),
 	})
 	return nil
+}
+
+// buildSdpAnswer 构造 SDP answer body，包含本地 RTP 端口。
+// 如果 localRtpPort 未设置，使用 0（对端无法发 RTP，但信令流程完整）。
+func (sess *Session) buildSdpAnswer() string {
+	localIP := sess.localIP
+	if localIP == "" {
+		localIP = "127.0.0.1"
+	}
+	rtpPort := sess.localRtpPort
+	if rtpPort == 0 {
+		rtpPort = 0 // 明确表示未分配
+	}
+
+	codecName := sess.audio.Codec.String()
+	payloadType := codecToPayloadType(sess.audio.Codec)
+	clockRate := sess.audio.SampleRate
+	channels := sess.audio.Channels
+	if channels == 0 {
+		channels = 1
+	}
+
+	sdp := fmt.Sprintf("v=0\r\n")
+	sdp += fmt.Sprintf("o=lingvoice 0 0 IN IP4 %s\r\n", localIP)
+	sdp += "s=LingVoice SIP Session\r\n"
+	sdp += "c=IN IP4 %s\r\n"
+	sdp += "t=0 0\r\n"
+	sdp += fmt.Sprintf("m=audio %d RTP/AVP %d\r\n", rtpPort, payloadType)
+	sdp += fmt.Sprintf("a=rtpmap:%d %s/%d", payloadType, codecName, clockRate)
+	if channels > 1 {
+		sdp += fmt.Sprintf("/%d", channels)
+	}
+	sdp += "\r\n"
+	sdp += "a=sendrecv\r\n"
+	return fmt.Sprintf(sdp, localIP)
+}
+
+// codecToPayloadType 返回 SIP 编解码的 RTP payload type
+func codecToPayloadType(codec common.CodecType) int {
+	switch codec {
+	case common.CodecPCMU:
+		return 0
+	case common.CodecPCMA:
+		return 8
+	case common.CodecOpus:
+		return 111
+	default:
+		return 0
+	}
 }
 
 // SendMediaFrame SIP 不通过此接口发媒体帧，RTP 媒体由外部处理。

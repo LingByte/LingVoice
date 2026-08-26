@@ -378,6 +378,39 @@ func (s *Server) handleAck(req *SipRequest, addr *net.UDPAddr) {
 			To:        s.config.ServerID,
 			Timestamp: time.Now(),
 		})
+
+		// 通知上层 track 就绪（GB28181 默认 H.264 视频 + G.711 音频）
+		s.handler.OnEvent(common.ProtocolEvent{
+			Type:      common.EventTrackAdded,
+			Protocol:  common.ProtocolGB28181,
+			SessionID: req.CallID,
+			From:      ms.deviceID,
+			To:        s.config.ServerID,
+			Track: &common.TrackInfo{
+				ID:         common.TrackID(req.CallID + "/video"),
+				Kind:       common.TrackVideo,
+				Direction:  common.TrackRecv,
+				Codec:      common.CodecH264,
+				SampleRate: 90000,
+			},
+			Timestamp: time.Now(),
+		})
+		s.handler.OnEvent(common.ProtocolEvent{
+			Type:      common.EventTrackAdded,
+			Protocol:  common.ProtocolGB28181,
+			SessionID: req.CallID,
+			From:      ms.deviceID,
+			To:        s.config.ServerID,
+			Track: &common.TrackInfo{
+				ID:         common.TrackID(req.CallID + "/audio"),
+				Kind:       common.TrackAudio,
+				Direction:  common.TrackRecv,
+				Codec:      common.CodecPCMU,
+				SampleRate: 8000,
+				Channels:   1,
+			},
+			Timestamp: time.Now(),
+		})
 	}
 }
 
