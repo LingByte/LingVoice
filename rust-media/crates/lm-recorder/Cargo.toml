@@ -7,8 +7,10 @@ authors.workspace = true
 
 [dependencies]
 lm-core = { path = "../lm-core" }
+lm-depacketizer = { path = "../lm-depacketizer" }
 tokio.workspace = true
 anyhow.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

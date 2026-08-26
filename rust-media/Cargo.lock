@@ -795,8 +795,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "lm-core",
+ "lm-depacketizer",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
