@@ -32,6 +32,8 @@ pub struct MixState {
     pub mix_id: String,
     pub room_id: String,
     pub mixer: Arc<ConferenceMixer>,
+    /// 混音采样率（用于 egress bridge 创建编码器）
+    pub sample_rate: u32,
     /// session_id → 参与者混音状态
     pub participants: DashMap<SessionId, ParticipantMixState>,
 }
@@ -90,6 +92,7 @@ impl MixManager {
             mix_id: mix_id.clone(),
             room_id: room_id.to_string(),
             mixer,
+            sample_rate,
             participants: DashMap::new(),
         });
 
@@ -291,6 +294,11 @@ impl MixManager {
     /// 获取 mix 的参与者数量
     pub fn mix_participant_count(&self, mix_id: &str) -> Option<usize> {
         self.mixes.get(mix_id).map(|m| m.participants.len())
+    }
+
+    /// 获取 mix 的采样率
+    pub fn mix_sample_rate(&self, mix_id: &str) -> Option<u32> {
+        self.mixes.get(mix_id).map(|m| m.sample_rate)
     }
 }
 

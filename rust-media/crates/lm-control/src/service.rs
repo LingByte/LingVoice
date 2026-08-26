@@ -537,14 +537,10 @@ impl media_node_server::MediaNode for MediaNodeServer {
         // 通常是 AddTrack 创建的音频 track，track_id 由 Go 侧传入
         let source_track_id = TrackId(req.track_id.clone());
 
-        // 获取采样率（从 mix state 或默认 48000）
+        // 获取采样率（从 mix state）
         let sample_rate = self
             .mixes
-            .mix_participant_count(&req.mix_id)
-            .and_then(|_| {
-                // 从 mix state 获取 sample_rate
-                None // TODO: expose sample_rate from MixState
-            })
+            .mix_sample_rate(&req.mix_id)
             .unwrap_or(48000);
 
         let mix_track_id = self
