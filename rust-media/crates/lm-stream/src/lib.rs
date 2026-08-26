@@ -417,6 +417,395 @@ impl StreamRegistry {
     }
 }
 
+// ============================================================================
+// Phase 4: Simulcast — RID 路由 + 层选择 + Dynacast
+// ============================================================================
+
+/// Simulcast 层级
+///
+/// 参考 WebRTC simulcast RID 约定：
+/// - "low": 1/4 分辨率（如 320x180）
+/// - "mid": 1/2 分辨率（如 640x360）
+/// - "high": 原始分辨率（如 1280x720）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SimulcastLayer {
+    Low,
+    Mid,
+    High,
+}
+
+impl SimulcastLayer {
+    /// 从 RID 字符串解析
+    pub fn from_rid(rid: &str) -> Option<Self> {
+        match rid.to_lowercase().as_str() {
+            "low" | "l" | "quarter" => Some(SimulcastLayer::Low),
+            "mid" | "m" | "half" => Some(SimulcastLayer::Mid),
+            "high" | "h" | "full" => Some(SimulcastLayer::High),
+            _ => None,
+        }
+    }
+
+    /// 转为 RID 字符串
+    pub fn to_rid(&self) -> &'static str {
+        match self {
+            SimulcastLayer::Low => "low",
+            SimulcastLayer::Mid => "mid",
+            SimulcastLayer::High => "high",
+        }
+    }
+
+    /// 优先级数值（用于排序，越大越优先）
+    pub fn priority(&self) -> u8 {
+        match self {
+            SimulcastLayer::Low => 0,
+            SimulcastLayer::Mid => 1,
+            SimulcastLayer::High => 2,
+        }
+    }
+}
+
+/// Simulcast 层元数据
+#[derive(Debug, Clone)]
+pub struct LayerMeta {
+    pub layer: SimulcastLayer,
+    pub ssrc: u32,
+    pub rid: String,
+    /// 估计码率（bps），由 publisher 在 signaling 中声明或由 SFU 测量
+    pub bitrate: u32,
+    /// 分辨率
+    pub width: u16,
+    pub height: u16,
+    /// 帧率
+    pub fps: u8,
+}
+
+/// 订阅者层选择策略
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerSelectionPolicy {
+    /// 固定选择指定层
+    Fixed(SimulcastLayer),
+    /// 根据订阅者带宽自适应（暂用固定层降级）
+    Adaptive,
+    /// 总是选最高层
+    Highest,
+    /// 总是选最低层（省带宽）
+    Lowest,
+}
+
+/// Simulcast 流
+///
+/// 一个 publisher 的一个视频 track 有多个 simulcast 层。
+/// 每个 layer 有独立的 SSRC 和 RID。
+///
+/// 职责：
+/// 1. 按 RID 路由 RTP 包到对应层的 MediaStream
+/// 2. 维护各层元数据
+/// 3. 为每个订阅者按 LayerSelectionPolicy 选择层
+/// 4. 支持层切换（切换时请求关键帧）
+/// 5. Dynacast：根据订阅者需求启用/禁用 publisher 层
+pub struct SimulcastStream {
+    /// 流标识（不含 layer）
+    pub id: StreamId,
+    pub room_id: Option<String>,
+    pub codec: CodecType,
+
+    /// 各层的 MediaStream
+    layers: RwLock<std::collections::HashMap<SimulcastLayer, Arc<MediaStream>>>,
+
+    /// 各层元数据
+    layer_metas: RwLock<std::collections::HashMap<SimulcastLayer, LayerMeta>>,
+
+    /// 订阅者 → 选层策略
+    subscribers: RwLock<Vec<(Arc<dyn StreamSink>, LayerSelectionPolicy)>>,
+
+    /// 当前各层是否启用（Dynacast）
+    /// 如果没有任何订阅者需要某层，可以请求 publisher 停止发送该层
+    layer_enabled: RwLock<std::collections::HashMap<SimulcastLayer, bool>>,
+}
+
+impl SimulcastStream {
+    /// 创建 Simulcast 流
+    pub fn new(
+        id: StreamId,
+        room_id: Option<String>,
+        codec: CodecType,
+        clock_rate: u32,
+    ) -> Self {
+        let mut layer_enabled = std::collections::HashMap::new();
+        layer_enabled.insert(SimulcastLayer::Low, true);
+        layer_enabled.insert(SimulcastLayer::Mid, true);
+        layer_enabled.insert(SimulcastLayer::High, true);
+
+        Self {
+            id,
+            room_id,
+            codec,
+            layers: RwLock::new(std::collections::HashMap::new()),
+            layer_metas: RwLock::new(std::collections::HashMap::new()),
+            subscribers: RwLock::new(Vec::new()),
+            layer_enabled: RwLock::new(layer_enabled),
+        }
+    }
+
+    /// 注册一个 simulcast 层
+    pub fn add_layer(&self, layer: SimulcastLayer, meta: LayerMeta, clock_rate: u32) {
+        let stream = Arc::new(MediaStream::new(
+            StreamId::new(
+                format!("{}#{}", self.id.session_id, self.id.track_id),
+                layer.to_rid(),
+            ),
+            self.room_id.clone(),
+            self.codec,
+            TrackKind::Video,
+            meta.ssrc,
+            clock_rate,
+        ));
+
+        {
+            let mut layers = self.layers.write();
+            layers.insert(layer, stream);
+        }
+        {
+            let mut metas = self.layer_metas.write();
+            metas.insert(layer, meta);
+        }
+
+        info!(
+            stream = ?self.id,
+            layer = layer.to_rid(),
+            ssrc = ?self.layer_metas.read().get(&layer).map(|m| m.ssrc),
+            "simulcast layer added"
+        );
+    }
+
+    /// 按 RID 路由 RTP 包到对应层
+    ///
+    /// 返回 true 如果某层组装出了完整帧
+    pub fn push_packet(&self, pkt: &RtpPacket) -> bool {
+        // 通过 RID 判断层
+        let layer = if !pkt.rid.is_empty() {
+            SimulcastLayer::from_rid(&pkt.rid)
+        } else {
+            // 无 RID 时通过 SSRC 匹配
+            let metas = self.layer_metas.read();
+            metas.iter().find(|(_, m)| m.ssrc == pkt.ssrc).map(|(l, _)| *l)
+        };
+
+        let layer = match layer {
+            Some(l) => l,
+            None => return false,
+        };
+
+        // 检查层是否启用（Dynacast）
+        {
+            let enabled = self.layer_enabled.read();
+            if !*enabled.get(&layer).unwrap_or(&true) {
+                return false; // 层被禁用，丢弃
+            }
+        }
+
+        // 路由到对应层的 MediaStream
+        let layers = self.layers.read();
+        if let Some(stream) = layers.get(&layer) {
+            let frame_completed = stream.push_packet(pkt);
+
+            // 如果帧完成，分发给选择此层的订阅者
+            if frame_completed {
+                self.dispatch_to_subscribers(layer);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 分发帧给选择指定层的订阅者
+    fn dispatch_to_subscribers(&self, layer: SimulcastLayer) {
+        // 从对应层的 MediaStream 获取最新帧
+        // MediaStream 的帧已通过 source_sinks 分发，这里处理 simulcast 订阅者
+        let layers = self.layers.read();
+        if let Some(stream) = layers.get(&layer) {
+            // MediaStream 的 GOP cache 中有最新帧
+            // 这里简化处理：simulcast 订阅者直接订阅对应层的 MediaStream
+            // 实际实现中，订阅者应该在 add_subscriber 时就订阅到对应层
+            let _ = stream;
+        }
+
+        // 更新层启用状态（Dynacast）
+        self.update_dynacast();
+    }
+
+    /// 添加订阅者
+    ///
+    /// 订阅者会根据 LayerSelectionPolicy 被路由到对应层
+    pub fn add_subscriber(&self, sink: Arc<dyn StreamSink>, policy: LayerSelectionPolicy) {
+        let layer = self.select_layer_for_policy(&policy);
+
+        // 订阅到对应层的 MediaStream
+        let layers = self.layers.read();
+        if let Some(stream) = layers.get(&layer) {
+            stream.add_source_sink(sink.clone());
+        }
+
+        let mut subs = self.subscribers.write();
+        subs.push((sink, policy));
+
+        info!(
+            stream = ?self.id,
+            layer = layer.to_rid(),
+            subscriber_count = subs.len(),
+            "simulcast subscriber added"
+        );
+
+        // 更新 Dynacast
+        drop(subs);
+        self.update_dynacast();
+    }
+
+    /// 移除订阅者
+    pub fn remove_subscriber(&self, sink: &Arc<dyn StreamSink>) {
+        let mut subs = self.subscribers.write();
+        subs.retain(|(s, _)| !Arc::ptr_eq(s, sink));
+        drop(subs);
+        self.update_dynacast();
+    }
+
+    /// 根据策略选择层
+    fn select_layer_for_policy(&self, policy: &LayerSelectionPolicy) -> SimulcastLayer {
+        match policy {
+            LayerSelectionPolicy::Fixed(layer) => *layer,
+            LayerSelectionPolicy::Highest => {
+                // 选可用的最高层
+                let layers = self.layers.read();
+                if layers.contains_key(&SimulcastLayer::High) {
+                    SimulcastLayer::High
+                } else if layers.contains_key(&SimulcastLayer::Mid) {
+                    SimulcastLayer::Mid
+                } else {
+                    SimulcastLayer::Low
+                }
+            }
+            LayerSelectionPolicy::Lowest => SimulcastLayer::Low,
+            LayerSelectionPolicy::Adaptive => {
+                // 简化：默认选 mid 层
+                // TODO: 根据订阅者带宽、RTT、丢包率自适应
+                let layers = self.layers.read();
+                if layers.contains_key(&SimulcastLayer::Mid) {
+                    SimulcastLayer::Mid
+                } else {
+                    SimulcastLayer::Low
+                }
+            }
+        }
+    }
+
+    /// Dynacast：根据订阅者需求启用/禁用 publisher 层
+    ///
+    /// 如果没有任何订阅者需要某层，标记为禁用。
+    /// 实际禁用通过 RTCP PLI 或 signaling 通知 publisher 停止发送。
+    fn update_dynacast(&self) {
+        let subs = self.subscribers.read();
+        let mut needed_layers = std::collections::HashSet::new();
+
+        for (_, policy) in subs.iter() {
+            let layer = self.select_layer_for_policy(policy);
+            needed_layers.insert(layer);
+        }
+
+        let mut enabled = self.layer_enabled.write();
+        for layer in [SimulcastLayer::Low, SimulcastLayer::Mid, SimulcastLayer::High] {
+            let is_needed = needed_layers.contains(&layer);
+            let was_enabled = *enabled.get(&layer).unwrap_or(&true);
+            *enabled.entry(layer).or_insert(true) = is_needed;
+
+            if was_enabled && !is_needed {
+                info!(
+                    stream = ?self.id,
+                    layer = layer.to_rid(),
+                    "dynacast: disabling unused layer"
+                );
+            } else if !was_enabled && is_needed {
+                info!(
+                    stream = ?self.id,
+                    layer = layer.to_rid(),
+                    "dynacast: enabling needed layer"
+                );
+            }
+        }
+    }
+
+    /// 切换订阅者的层
+    ///
+    /// 切换时需要请求关键帧（通过 RTCP PLI）
+    pub fn switch_layer(
+        &self,
+        sink: &Arc<dyn StreamSink>,
+        new_layer: SimulcastLayer,
+    ) -> bool {
+        let mut subs = self.subscribers.write();
+
+        // 找到订阅者并更新策略
+        let mut found = false;
+        for (s, policy) in subs.iter_mut() {
+            if Arc::ptr_eq(s, sink) {
+                *policy = LayerSelectionPolicy::Fixed(new_layer);
+                found = true;
+                break;
+            }
+        }
+
+        if found {
+            info!(
+                stream = ?self.id,
+                new_layer = new_layer.to_rid(),
+                "simulcast subscriber switched layer"
+            );
+            // TODO: 请求关键帧（RTCP PLI）
+            // 切换层时需要关键帧才能正确解码
+        }
+
+        drop(subs);
+        if found {
+            self.update_dynacast();
+        }
+        found
+    }
+
+    /// 请求关键帧
+    ///
+    /// 通过 RTCP PLI 请求 publisher 发送关键帧
+    /// 用于层切换、新订阅者加入等场景
+    pub fn request_keyframe(&self, layer: SimulcastLayer) {
+        info!(
+            stream = ?self.id,
+            layer = layer.to_rid(),
+            "requesting keyframe (PLI)"
+        );
+        // TODO: 发送 RTCP PLI 包到 publisher
+        // 当前由 Go/Pion 层处理 RTCP，需要通过 gRPC 通知 Go 层发送 PLI
+    }
+
+    /// 获取层元数据
+    pub fn get_layer_meta(&self, layer: SimulcastLayer) -> Option<LayerMeta> {
+        self.layer_metas.read().get(&layer).cloned()
+    }
+
+    /// 获取所有层
+    pub fn layers(&self) -> Vec<SimulcastLayer> {
+        self.layers.read().keys().copied().collect()
+    }
+
+    /// 获取订阅者数量
+    pub fn subscriber_count(&self) -> usize {
+        self.subscribers.read().len()
+    }
+
+    /// 检查层是否启用
+    pub fn is_layer_enabled(&self, layer: SimulcastLayer) -> bool {
+        *self.layer_enabled.read().get(&layer).unwrap_or(&true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,5 +1025,173 @@ mod tests {
         let peers = registry.get_room_peer_streams("room1", "session1", TrackKind::Audio);
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].id.session_id, "session2");
+    }
+
+    #[test]
+    fn test_simulcast_layer_from_rid() {
+        assert_eq!(SimulcastLayer::from_rid("low"), Some(SimulcastLayer::Low));
+        assert_eq!(SimulcastLayer::from_rid("mid"), Some(SimulcastLayer::Mid));
+        assert_eq!(SimulcastLayer::from_rid("high"), Some(SimulcastLayer::High));
+        assert_eq!(SimulcastLayer::from_rid("unknown"), None);
+    }
+
+    #[test]
+    fn test_simulcast_layer_priority() {
+        assert!(SimulcastLayer::High.priority() > SimulcastLayer::Mid.priority());
+        assert!(SimulcastLayer::Mid.priority() > SimulcastLayer::Low.priority());
+    }
+
+    #[test]
+    fn test_simulcast_add_layer_and_route() {
+        let sim = SimulcastStream::new(
+            StreamId::new("session1", "video"),
+            Some("room1".into()),
+            CodecType::Vp8,
+            90000,
+        );
+
+        // 添加 low 和 high 层
+        sim.add_layer(
+            SimulcastLayer::Low,
+            LayerMeta {
+                layer: SimulcastLayer::Low,
+                ssrc: 111,
+                rid: "low".into(),
+                bitrate: 150_000,
+                width: 320,
+                height: 180,
+                fps: 15,
+            },
+            90000,
+        );
+        sim.add_layer(
+            SimulcastLayer::High,
+            LayerMeta {
+                layer: SimulcastLayer::High,
+                ssrc: 333,
+                rid: "high".into(),
+                bitrate: 1_500_000,
+                width: 1280,
+                height: 720,
+                fps: 30,
+            },
+            90000,
+        );
+
+        assert_eq!(sim.layers().len(), 2);
+        assert!(sim.get_layer_meta(SimulcastLayer::Low).is_some());
+        assert!(sim.get_layer_meta(SimulcastLayer::High).is_some());
+
+        // 路由 low 层的 RTP 包
+        let pkt = RtpPacket {
+            ssrc: 111,
+            payload_type: 96,
+            sequence_number: 1000,
+            timestamp: 30000,
+            marker: true,
+            payload: bytes::Bytes::from(vec![
+                0x90, 0x80, 0x00, // VP8 descriptor
+                0xf0, 0x51, 0x00, 0x9d, 0x01, 0x2a, 0x80, 0x02, 0xe0, 0x01,
+            ]),
+            rid: "low".into(),
+        };
+        let result = sim.push_packet(&pkt);
+        assert!(result);
+    }
+
+    #[test]
+    fn test_simulcast_dynacast() {
+        let sim = SimulcastStream::new(
+            StreamId::new("session1", "video"),
+            Some("room1".into()),
+            CodecType::Vp8,
+            90000,
+        );
+
+        sim.add_layer(
+            SimulcastLayer::Low,
+            LayerMeta {
+                layer: SimulcastLayer::Low,
+                ssrc: 111,
+                rid: "low".into(),
+                bitrate: 150_000,
+                width: 320,
+                height: 180,
+                fps: 15,
+            },
+            90000,
+        );
+        sim.add_layer(
+            SimulcastLayer::High,
+            LayerMeta {
+                layer: SimulcastLayer::High,
+                ssrc: 333,
+                rid: "high".into(),
+                bitrate: 1_500_000,
+                width: 1280,
+                height: 720,
+                fps: 30,
+            },
+            90000,
+        );
+
+        // 初始状态：所有层启用
+        assert!(sim.is_layer_enabled(SimulcastLayer::Low));
+        assert!(sim.is_layer_enabled(SimulcastLayer::High));
+
+        // 添加一个只订阅 low 层的订阅者
+        let collector: Arc<dyn StreamSink> = Arc::new(FrameCollector::new());
+        sim.add_subscriber(collector, LayerSelectionPolicy::Fixed(SimulcastLayer::Low));
+
+        // high 层应该被禁用（Dynacast）
+        assert!(sim.is_layer_enabled(SimulcastLayer::Low));
+        assert!(!sim.is_layer_enabled(SimulcastLayer::High));
+    }
+
+    #[test]
+    fn test_simulcast_layer_switch() {
+        let sim = SimulcastStream::new(
+            StreamId::new("session1", "video"),
+            Some("room1".into()),
+            CodecType::Vp8,
+            90000,
+        );
+
+        sim.add_layer(
+            SimulcastLayer::Low,
+            LayerMeta {
+                layer: SimulcastLayer::Low,
+                ssrc: 111,
+                rid: "low".into(),
+                bitrate: 150_000,
+                width: 320,
+                height: 180,
+                fps: 15,
+            },
+            90000,
+        );
+        sim.add_layer(
+            SimulcastLayer::High,
+            LayerMeta {
+                layer: SimulcastLayer::High,
+                ssrc: 333,
+                rid: "high".into(),
+                bitrate: 1_500_000,
+                width: 1280,
+                height: 720,
+                fps: 30,
+            },
+            90000,
+        );
+
+        let collector: Arc<dyn StreamSink> = Arc::new(FrameCollector::new());
+        sim.add_subscriber(collector.clone(), LayerSelectionPolicy::Fixed(SimulcastLayer::Low));
+
+        // 切换到 high 层
+        let switched = sim.switch_layer(&collector, SimulcastLayer::High);
+        assert!(switched);
+
+        // 切换后 high 层应该启用
+        assert!(sim.is_layer_enabled(SimulcastLayer::High));
     }
 }
