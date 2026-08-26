@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use lm_core::{EndpointId, SessionId, TrackId};
 use crate::mixer::MixManager;
+use crate::recorder::RecordingManager;
 use crate::session::SessionManager;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
@@ -20,6 +21,7 @@ pub struct MediaNodeServer {
     node_id: String,
     sessions: Arc<SessionManager>,
     mixes: Arc<MixManager>,
+    recordings: Arc<RecordingManager>,
 }
 
 impl MediaNodeServer {
@@ -28,6 +30,7 @@ impl MediaNodeServer {
             node_id: node_id.into(),
             sessions: Arc::new(SessionManager::new()),
             mixes: Arc::new(MixManager::new()),
+            recordings: Arc::new(RecordingManager::new()),
         }
     }
 
@@ -93,6 +96,16 @@ impl media_node_server::MediaNode for MediaNodeServer {
     ) -> Result<Response<DestroySessionResponse>, Status> {
         let req = request.into_inner();
         let session_id = SessionId(req.session_id.clone());
+
+        // 停止该 session 的所有录制
+        let recording_results = self.recordings.stop_session_recordings(&session_id).await;
+        if !recording_results.is_empty() {
+            info!(
+                session = %req.session_id,
+                recordings_stopped = recording_results.len(),
+                "stopped recordings on session destroy"
+            );
+        }
 
         self.sessions
             .destroy_session(&session_id)
@@ -332,6 +345,14 @@ impl media_node_server::MediaNode for MediaNodeServer {
                         let _ = peer_track.rtp_broadcast.send(pkt_out.clone());
                     }
 
+                    // 也广播到源 track 自身的 broadcast channel
+                    // （用于录制：录制 task 订阅源 track 来录制原始音频）
+                    if let Some(session) = self.sessions.get_session(&session_id) {
+                        if let Some(src_track) = session.tracks.get(&track_id) {
+                            let _ = src_track.rtp_broadcast.send(pkt_out.clone());
+                        }
+                    }
+
                     if packets_received % 1000 == 0 {
                         info!(
                             session = %req.session_id,
@@ -447,17 +468,34 @@ impl media_node_server::MediaNode for MediaNodeServer {
         request: Request<StartRecordingRequest>,
     ) -> Result<Response<StartRecordingResponse>, Status> {
         let req = request.into_inner();
+        let session_id = SessionId(req.session_id.clone());
+
+        let session = self
+            .sessions
+            .get_session(&session_id)
+            .ok_or_else(|| Status::not_found(format!("session {} not found", req.session_id)))?;
+
         let recording_id = uuid::Uuid::new_v4().to_string();
+
+        // 录制目录：使用 req.path 或默认 ./recordings
+        let output_dir = if req.path.is_empty() {
+            "./recordings".to_string()
+        } else {
+            req.path.clone()
+        };
 
         info!(
             session = %req.session_id,
             format = %req.format,
-            path = %req.path,
+            output_dir = %output_dir,
             recording_id = %recording_id,
             "gRPC start_recording"
         );
 
-        // TODO: 实际启动录制
+        self.recordings
+            .start_recording(&recording_id, &session, &output_dir)
+            .await
+            .map_err(|e| Status::internal(format!("start recording: {e}")))?;
 
         Ok(Response::new(StartRecordingResponse { recording_id }))
     }
@@ -474,12 +512,16 @@ impl media_node_server::MediaNode for MediaNodeServer {
             "gRPC stop_recording"
         );
 
-        // TODO: 实际停止录制
+        let result = self
+            .recordings
+            .stop_recording(&req.recording_id)
+            .await
+            .map_err(|e| Status::internal(format!("stop recording: {e}")))?;
 
         Ok(Response::new(StopRecordingResponse {
-            file_path: String::new(),
-            duration_ms: 0,
-            file_size: 0,
+            file_path: result.file_path,
+            duration_ms: result.duration_ms,
+            file_size: result.file_size,
         }))
     }
 

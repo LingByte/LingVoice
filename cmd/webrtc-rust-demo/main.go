@@ -67,6 +67,10 @@ type rustHandler struct {
 	maxSpeakers  int   // Top-K 最大发言者数（0=混所有人，5=只混Top5）
 	outputCodec  string // 混音输出编码：opus（浏览器）或 pcmu（SIP/极致性能）
 	roomMixes    map[string]string // roomID → mixID
+
+	// 录制
+	recordEnabled bool   // 是否启用录制
+	recordDir     string // 录制文件输出目录
 }
 
 type sessionState struct {
@@ -81,6 +85,8 @@ type sessionState struct {
 	inMix       bool
 	mixTrackID  common.TrackID // 混音输出 track ID（"mix-{sessionID}"）
 	mixPullCancel context.CancelFunc // 混音 pull loop 的 cancel
+	// 录制 ID（如果正在录制）
+	recordingID string
 }
 
 type trackState struct {
@@ -97,17 +103,19 @@ type trackState struct {
 	subTracks   map[uint32]common.TrackID // ssrc → subTrackID
 }
 
-func newRustHandler(log *zap.Logger, bridge *rustbridge.Client, srv *webrtc.Server, mixThreshold int, forceMix bool, maxSpeakers int, outputCodec string) *rustHandler {
+func newRustHandler(log *zap.Logger, bridge *rustbridge.Client, srv *webrtc.Server, mixThreshold int, forceMix bool, maxSpeakers int, outputCodec string, recordEnabled bool, recordDir string) *rustHandler {
 	return &rustHandler{
-		log:          log,
-		bridge:       bridge,
-		srv:          srv,
-		sessions:     make(map[string]*sessionState),
-		mixThreshold: mixThreshold,
-		forceMix:     forceMix,
-		maxSpeakers:  maxSpeakers,
-		outputCodec:  outputCodec,
-		roomMixes:    make(map[string]string),
+		log:           log,
+		bridge:        bridge,
+		srv:           srv,
+		sessions:      make(map[string]*sessionState),
+		mixThreshold:  mixThreshold,
+		forceMix:      forceMix,
+		maxSpeakers:   maxSpeakers,
+		outputCodec:   outputCodec,
+		roomMixes:     make(map[string]string),
+		recordEnabled: recordEnabled,
+		recordDir:     recordDir,
 	}
 }
 
@@ -366,6 +374,22 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 				}
 			}
 
+			// 录制：在 track 注册后启动（只启动一次，音频 track 到来时触发）
+			if h.recordEnabled && ss.recordingID == "" && kind == common.TrackAudio {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				recID, err := h.bridge.StartRecording(ctx, event.SessionID, "wav", h.recordDir, 1)
+				if err != nil {
+					h.log.Error("start recording failed", zap.Error(err))
+				} else {
+					ss.recordingID = recID
+					h.log.Info("recording started",
+						zap.String("session", event.SessionID),
+						zap.String("recordingID", recID),
+						zap.String("dir", h.recordDir))
+				}
+				cancel()
+			}
+
 			// 启动 PullRtp 流
 			// 混音模式：音频从 mix track 拉取（单路混音流），视频仍从 normal track 拉取
 			// SFU 模式：从 normal track 拉取（多路按 SSRC 分流）
@@ -389,6 +413,11 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 		// 取消所有 track 的 push/pull，收集清理信息
 		h.mu.Lock()
 		hangingSS, ok := h.sessions[event.SessionID]
+		// 提前提取录制 ID（session 会被删除）
+		var recordingIDToStop string
+		if ok && hangingSS != nil {
+			recordingIDToStop = hangingSS.recordingID
+		}
 		if ok {
 			for _, ts := range hangingSS.tracks {
 				if ts.pushCancel != nil {
@@ -452,6 +481,22 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 					zap.String("peer", peerID),
 					zap.String("left", event.SessionID))
 			}
+		}
+
+		// 停止录制
+		if recordingIDToStop != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			resp, err := h.bridge.StopRecording(ctx, event.SessionID, recordingIDToStop)
+			if err != nil {
+				h.log.Error("stop recording failed", zap.Error(err))
+			} else {
+				h.log.Info("recording stopped",
+					zap.String("session", event.SessionID),
+					zap.String("file", resp.FilePath),
+					zap.Uint64("duration_ms", resp.DurationMs),
+					zap.Uint64("file_size", resp.FileSize))
+			}
+			cancel()
 		}
 
 		// 清理 Rust session
@@ -704,6 +749,8 @@ func main() {
 		forceMix   = flag.Bool("mix", false, "强制启用音频混音模式（所有人从一开始就用 MCU 混音而非 SFU 转发）")
 		maxSpeak   = flag.Int("max-speakers", 0, "Top-K 最大发言者数（0=混所有人，5=只混能量最高的5路）")
 		outCodec   = flag.String("output-codec", "opus", "混音输出编码：opus（浏览器兼容）或 pcmu（SIP/极致性能）")
+		record     = flag.Bool("record", false, "启用房间级录制（音视频都录制，音频WAV+视频H.264）")
+		recordDir  = flag.String("record-dir", "./recordings", "录制文件输出目录")
 	)
 	flag.Parse()
 
@@ -734,7 +781,7 @@ func main() {
 
 	// 2. 创建 WebRTC 服务器
 	// 注意：handler 和 srv 循环依赖，先创建 handler 再回填 srv
-	handler := newRustHandler(log, bridge, nil, *mixThresh, *forceMix, *maxSpeak, *outCodec)
+	handler := newRustHandler(log, bridge, nil, *mixThresh, *forceMix, *maxSpeak, *outCodec, *record, *recordDir)
 
 	cfg := webrtc.DefaultConfig()
 	cfg.Addr = *addr
@@ -809,6 +856,9 @@ func main() {
 		fmt.Printf("  Top-K:       只混能量最高的 %d 路音频\n", *maxSpeak)
 	}
 	fmt.Printf("  输出编码:    %s\n", *outCodec)
+	if *record {
+		fmt.Printf("  录制:        已启用 (输出到 %s)\n", *recordDir)
+	}
 	if *tls {
 		fmt.Printf("  TLS:         已启用（自签证书，浏览器需点\"继续访问\"）\n")
 	}
