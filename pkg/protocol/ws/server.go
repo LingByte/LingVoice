@@ -166,12 +166,10 @@ func (s *Server) handleTextMessage(session *Session, data []byte) error {
 	case MsgTypeStart:
 		return s.handleStart(session)
 	case MsgTypeStop:
-		s.handler.OnEvent(common.ProtocolEvent{
-			Type:      common.EventHangup,
-			Protocol:  common.ProtocolWS,
-			SessionID: session.id,
-			Timestamp: time.Now(),
-		})
+		// stop 只是停止媒体传输，不是挂断。
+		// 不触发 EventHangup，避免 demo 层销毁 Rust session。
+		// 真正的挂断在 WS 连接关闭时触发。
+		s.log.Info("ws media stop", zap.String("session", session.id))
 		return nil
 	case MsgTypeDTMF:
 		var msg DTMFMessage
@@ -275,36 +273,40 @@ func (s *Server) handleStart(session *Session) error {
 		return s.sendError(session, "not-negotiated", "send offer first")
 	}
 
-	// 通知上层：媒体轨道就绪（WS 固定轨道，按协商结果逐条上报）
-	if session.audio != nil {
-		s.handler.OnEvent(common.ProtocolEvent{
-			Type:      common.EventTrackAdded,
-			Protocol:  common.ProtocolWS,
-			SessionID: session.id,
-			Track: &common.TrackInfo{
-				ID:         TrackIDAudio,
-				Kind:       common.TrackAudio,
-				Direction:  common.TrackSend,
-				Codec:      session.audio.Codec,
-				SampleRate: session.audio.SampleRate,
-				Channels:   session.audio.Channels,
-			},
-			Timestamp: time.Now(),
-		})
-	}
-	if session.video != nil {
-		s.handler.OnEvent(common.ProtocolEvent{
-			Type:      common.EventTrackAdded,
-			Protocol:  common.ProtocolWS,
-			SessionID: session.id,
-			Track: &common.TrackInfo{
-				ID:        TrackIDVideo,
-				Kind:      common.TrackVideo,
-				Direction: common.TrackSend,
-				Codec:     session.video.Codec,
-			},
-			Timestamp: time.Now(),
-		})
+	// 只在第一次 start 时触发 EventTrackAdded（防止 stop/start 循环导致重复注册）
+	if !session.trackAdded {
+		session.trackAdded = true
+		// 通知上层：媒体轨道就绪（WS 固定轨道，按协商结果逐条上报）
+		if session.audio != nil {
+			s.handler.OnEvent(common.ProtocolEvent{
+				Type:      common.EventTrackAdded,
+				Protocol:  common.ProtocolWS,
+				SessionID: session.id,
+				Track: &common.TrackInfo{
+					ID:         TrackIDAudio,
+					Kind:       common.TrackAudio,
+					Direction:  common.TrackSend,
+					Codec:      session.audio.Codec,
+					SampleRate: session.audio.SampleRate,
+					Channels:   session.audio.Channels,
+				},
+				Timestamp: time.Now(),
+			})
+		}
+		if session.video != nil {
+			s.handler.OnEvent(common.ProtocolEvent{
+				Type:      common.EventTrackAdded,
+				Protocol:  common.ProtocolWS,
+				SessionID: session.id,
+				Track: &common.TrackInfo{
+					ID:        TrackIDVideo,
+					Kind:      common.TrackVideo,
+					Direction: common.TrackSend,
+					Codec:     session.video.Codec,
+				},
+				Timestamp: time.Now(),
+			})
+		}
 	}
 
 	// 回复 ready

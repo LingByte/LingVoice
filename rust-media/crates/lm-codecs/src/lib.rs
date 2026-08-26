@@ -159,7 +159,7 @@ pub fn codec_from_name(name: &str) -> Option<CodecType> {
         "pcmu" => Some(CodecType::PcmU),
         "pcma" => Some(CodecType::PcmA),
         "g722" => Some(CodecType::G722),
-        "pcm" | "l16" => Some(CodecType::Pcm),
+        "pcm" | "l16" | "pcm16" | "pcm-16" => Some(CodecType::Pcm),
         "aac" => Some(CodecType::Aac),
         "mp3" => Some(CodecType::Mp3),
         "h264" | "h.264" | "avc" => Some(CodecType::H264),

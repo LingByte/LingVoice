@@ -376,7 +376,8 @@ impl media_node_server::MediaNode for MediaNodeServer {
                         clock_rate: packet.clock_rate,
                     };
 
-                    // 1. SFU 裸包转发：广播到同 room 其他 session 的 peer track
+                    // 1. SFU 转发：广播到同 room 其他 session 的 peer track
+                    //    如果源 codec 与目标 codec 不同，做转码（仅音频）
                     let peer_tracks = match src_kind {
                         Some(kind) => self.sessions.get_room_peer_tracks_by_kind(&session_id, kind),
                         None => {
@@ -385,8 +386,34 @@ impl media_node_server::MediaNode for MediaNodeServer {
                         }
                     };
                     let peer_count = peer_tracks.len();
+
+                    // 获取源 codec（用于转码判断）
+                    let src_codec = self.sessions.get_session(&session_id)
+                        .and_then(|s| s.tracks.get(&track_id).map(|t| t.codec));
+
                     for peer_track in &peer_tracks {
-                        let _ = peer_track.rtp_broadcast.send(pkt_out.clone());
+                        // 检查是否需要转码（仅音频，且 codec 不同）
+                        let need_transcode = src_kind == Some(lm_core::TrackKind::Audio)
+                            && src_codec.is_some()
+                            && peer_track.codec != src_codec.unwrap()
+                            && peer_track.codec.is_audio()
+                            && src_codec.unwrap().is_audio();
+
+                        if need_transcode {
+                            // 转码：src codec → PCM → dst codec
+                            let dst_pkt = transcode_audio_packet(
+                                &pkt_out,
+                                src_codec.unwrap(),
+                                peer_track.codec,
+                            );
+                            if let Some(dst_pkt) = dst_pkt {
+                                let _ = peer_track.rtp_broadcast.send(dst_pkt);
+                            }
+                            // 转码失败则跳过该包（避免发送噪音）
+                        } else {
+                            // 同 codec 或视频：裸包转发
+                            let _ = peer_track.rtp_broadcast.send(pkt_out.clone());
+                        }
                     }
 
                     // 2. 媒体流处理：用 MediaStream 组装帧，通知源流订阅者（录制等）
@@ -819,5 +846,158 @@ impl media_node_server::MediaNode for MediaNodeServer {
             duration_ms,
             tracks: vec![],
         }))
+    }
+}
+
+// ============================================================================
+// 转码辅助函数
+// ============================================================================
+
+/// 将音频 RTP 包从源 codec 转码为目标 codec。
+///
+/// 流程：src payload → PCM samples → dst payload
+/// 失败时返回 None（调用方应跳过该包）。
+///
+/// 支持：Opus ↔ PCMU ↔ PCMA ↔ PCM(l16)
+fn transcode_audio_packet(
+    pkt: &crate::session::RtpPacketOut,
+    src_codec: lm_core::CodecType,
+    dst_codec: lm_core::CodecType,
+) -> Option<crate::session::RtpPacketOut> {
+    // PCM (L16) 不需要解码，直接作为 samples
+    let samples: Vec<audio_codec::Sample> = if src_codec == lm_core::CodecType::Pcm {
+        // L16 little-endian → i16 samples
+        let payload = &pkt.payload;
+        if payload.len() % 2 != 0 {
+            return None;
+        }
+        payload
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect()
+    } else {
+        // 其他 codec 用 decoder 解码
+        let ac_src = match src_codec {
+            lm_core::CodecType::Opus => audio_codec::CodecType::Opus,
+            lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
+            lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
+            lm_core::CodecType::G722 => audio_codec::CodecType::G722,
+            _ => return None,
+        };
+        let mut decoder = audio_codec::create_decoder(ac_src);
+        decoder.decode(&pkt.payload)
+    };
+
+    if samples.is_empty() {
+        return None;
+    }
+
+    // 编码到目标 codec
+    let dst_payload: bytes::Bytes = if dst_codec == lm_core::CodecType::Pcm {
+        // L16 little-endian
+        let mut buf = Vec::with_capacity(samples.len() * 2);
+        for s in &samples {
+            buf.extend_from_slice(&s.to_le_bytes());
+        }
+        bytes::Bytes::from(buf)
+    } else {
+        let ac_dst = match dst_codec {
+            lm_core::CodecType::Opus => audio_codec::CodecType::Opus,
+            lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
+            lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
+            lm_core::CodecType::G722 => audio_codec::CodecType::G722,
+            _ => return None,
+        };
+        let mut encoder = audio_codec::create_encoder(ac_dst);
+        let mut buf = vec![0u8; samples.len() * 4]; // 足够大的输出缓冲
+        match encoder.encode_into(&samples, &mut buf) {
+            Ok(n) => bytes::Bytes::from(buf[..n].to_vec()),
+            Err(_) => return None,
+        }
+    };
+
+    // 构造转码后的 RTP 包
+    // SSRC 保持原值（接收方按 SSRC 区分流）
+    // payload_type 用目标 codec 的常见值
+    let dst_pt = match dst_codec {
+        lm_core::CodecType::Opus => 111,
+        lm_core::CodecType::PcmU => 0,
+        lm_core::CodecType::PcmA => 8,
+        lm_core::CodecType::G722 => 9,
+        lm_core::CodecType::Pcm => 96, // 动态
+        _ => pkt.payload_type,
+    };
+
+    Some(crate::session::RtpPacketOut {
+        ssrc: pkt.ssrc,
+        payload_type: dst_pt,
+        sequence_number: pkt.sequence_number,
+        timestamp: pkt.timestamp,
+        marker: pkt.marker,
+        payload: dst_payload,
+        rid: pkt.rid.clone(),
+        clock_rate: pkt.clock_rate,
+    })
+}
+
+#[cfg(test)]
+mod transcode_tests {
+    use super::*;
+
+    fn make_pkt(payload: &[u8]) -> crate::session::RtpPacketOut {
+        crate::session::RtpPacketOut {
+            ssrc: 1234,
+            payload_type: 111,
+            sequence_number: 1,
+            timestamp: 960,
+            marker: true,
+            payload: bytes::Bytes::from(payload.to_vec()),
+            rid: String::new(),
+            clock_rate: 48000,
+        }
+    }
+
+    #[test]
+    fn test_transcode_pcmu_to_pcm() {
+        // PCMU 编码：0xFF 是 silence
+        let pkt = make_pkt(&[0xFF; 160]);
+        let out = transcode_audio_packet(&pkt, lm_core::CodecType::PcmU, lm_core::CodecType::Pcm);
+        assert!(out.is_some());
+        let out = out.unwrap();
+        assert_eq!(out.payload.len(), 320); // 160 samples * 2 bytes
+        assert_eq!(out.payload_type, 96); // PCM 动态 PT
+    }
+
+    #[test]
+    fn test_transcode_pcm_to_pcmu() {
+        // L16 silence = 0
+        let pcm = vec![0i16; 160];
+        let mut payload = Vec::new();
+        for s in &pcm {
+            payload.extend_from_slice(&s.to_le_bytes());
+        }
+        let pkt = make_pkt(&payload);
+        let out = transcode_audio_packet(&pkt, lm_core::CodecType::Pcm, lm_core::CodecType::PcmU);
+        assert!(out.is_some());
+        let out = out.unwrap();
+        assert_eq!(out.payload.len(), 160); // 160 samples * 1 byte
+        assert_eq!(out.payload_type, 0); // PCMU PT
+    }
+
+    #[test]
+    fn test_transcode_same_codec_returns_none_for_unsupported() {
+        // 同 codec 不应该走转码路径，但函数本身对同 codec 也能工作
+        // 这里测试不支持的 codec 返回 None
+        let pkt = make_pkt(&[0x00; 10]);
+        let out = transcode_audio_packet(&pkt, lm_core::CodecType::H264, lm_core::CodecType::Opus);
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn test_transcode_pcm_odd_payload_returns_none() {
+        // L16 必须是偶数长度
+        let pkt = make_pkt(&[0x00; 3]);
+        let out = transcode_audio_packet(&pkt, lm_core::CodecType::Pcm, lm_core::CodecType::PcmU);
+        assert!(out.is_none());
     }
 }

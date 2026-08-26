@@ -11,16 +11,17 @@ import (
 
 // Session 表示一个 WebSocket 语音会话
 type Session struct {
-	id        string
-	conn      *websocket.Conn
-	mu        sync.Mutex
+	id         string
+	conn       *websocket.Conn
+	mu         sync.Mutex
 	negotiated bool
-	audio     *common.AudioMedia // 协商后的音频参数
-	video     *common.VideoMedia // 协商后的视频参数
-	handler   common.EventHandler
-	closed    atomic.Bool
-	sendSeq   atomic.Uint32 // 发送序列号（用 Uint32 避免 Go 1.26 移除的 AddUint16）
-	createdAt time.Time
+	trackAdded bool // 是否已触发 EventTrackAdded（防止重复）
+	audio      *common.AudioMedia // 协商后的音频参数
+	video      *common.VideoMedia // 协商后的视频参数
+	handler    common.EventHandler
+	closed     atomic.Bool
+	sendSeq    atomic.Uint32 // 发送序列号（用 Uint32 避免 Go 1.26 移除的 AddUint16）
+	createdAt  time.Time
 }
 
 func newSession(id string, conn *websocket.Conn, handler common.EventHandler) *Session {
