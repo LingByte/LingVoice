@@ -33,6 +33,12 @@ tokio-stream = "0.1"
 tonic = "0.12"
 tonic-types = "0.12"
 
+# HTTP
+axum = { version = "0.7", features = ["ws"] }
+hyper = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+
 # 编解码（vendored 本地副本，避免上游频繁变更影响）
 audio-codec = { path = "crates/audio-codec" }
 

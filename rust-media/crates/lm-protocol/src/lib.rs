@@ -201,7 +201,7 @@ impl StreamSink for RemuxSink {
 // ============================================================================
 
 mod hls;
-pub use hls::{HlsRemuxer, HlsPlaylist};
+pub use hls::{HlsRemuxer, HlsPlaylist, HlsConfig};
 
 // ============================================================================
 // Phase 5: HTTP-FLV Remuxer

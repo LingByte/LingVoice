@@ -4,23 +4,51 @@ use tracing::info;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+mod http_server;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = init_logging();
 
     let node_id = hostname_or_id();
-    let addr: SocketAddr = "0.0.0.0:50051".parse()?;
+    let grpc_addr: SocketAddr = "0.0.0.0:50051".parse()?;
+    let http_addr = std::env::var("HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8082".to_string());
 
-    info!(node_id = %node_id, addr = %addr, "starting LingVoice media node");
+    info!(node_id = %node_id, grpc_addr = %grpc_addr, http_addr = %http_addr, "starting LingVoice media node");
 
     let server = MediaNodeServer::new(node_id.clone());
 
-    info!(node_id = %node_id, "media node listening on :50051");
+    // 启动 gRPC 服务器（MediaNodeServer 现在是 Clone，内部都是 Arc）
+    let grpc_server = server.clone();
+    let grpc_task = tokio::spawn(async move {
+        info!(node_id = %grpc_server.node_id(), "gRPC server listening on :50051");
+        tonic::transport::Server::builder()
+            .add_service(lm_control::service::media_node_server::MediaNodeServer::new(grpc_server))
+            .serve(grpc_addr)
+            .await
+    });
 
-    tonic::transport::Server::builder()
-        .add_service(lm_control::service::media_node_server::MediaNodeServer::new(server))
-        .serve(addr)
-        .await?;
+    // 启动 HTTP 服务器（HLS/HTTP-FLV 输出 + API）
+    let http_server = server.clone();
+    let http_task = tokio::spawn(async move {
+        if let Err(e) = http_server::start_http_server(http_server, &http_addr).await {
+            tracing::error!(error = %e, "HTTP server failed");
+        }
+    });
+
+    // 等待任一服务器退出
+    tokio::select! {
+        result = grpc_task => {
+            if let Ok(Err(e)) = result {
+                return Err(Box::new(e) as Box<dyn std::error::Error>);
+            }
+        }
+        result = http_task => {
+            if let Err(e) = result {
+                return Err(Box::new(e) as Box<dyn std::error::Error>);
+            }
+        }
+    }
 
     Ok(())
 }

@@ -18,6 +18,7 @@ use tracing::{info, warn};
 tonic::include_proto!("lingvoice.media.v1");
 
 /// MediaNode gRPC 服务器
+#[derive(Clone)]
 pub struct MediaNodeServer {
     node_id: String,
     sessions: Arc<SessionManager>,
