@@ -1,6 +1,8 @@
 # 当前流转状态与后续路线
 
 > 本文档记录截至 2026-08-26 的实际实现状态、媒体流转路径、各协议接入情况，以及后续开发路线。
+>
+> **2026-08-26 更新**：新增跨协议转码（Opus↔PCM16↔PCMU↔PCMA）、持久转码器（TranscodeState）、SFU 自回环修复、WS/WebRTC 跨协议对话验证。
 
 ---
 
@@ -164,6 +166,104 @@ graph TD
 
 ---
 
+## 4.5 跨协议转码（2026-08-26 新增）
+
+### 问题背景
+
+不同协议协商的音频编解码不同：
+- **WebRTC** 浏览器默认协商 **Opus**（48kHz）
+- **WebSocket** 前端默认协商 **PCM16**（48kHz）
+- **SIP** 通常协商 **PCMU/PCMA**（8kHz）
+
+如果 Rust SFU 只做裸包转发，WS 客户端会收到 Opus 数据但按 PCM16 播放 → 噪音。
+
+### 解决方案：SFU 转发时按 peer track codec 转码
+
+```mermaid
+graph LR
+    subgraph 源["源 push_rtp"]
+        S1["WebRTC Opus 48kHz"]
+        S2["WS PCM16 48kHz"]
+        S3["SIP PCMU 8kHz"]
+    end
+
+    subgraph Rust["Rust SFU 转发"]
+        TC["TranscodeState<br/>持久 decoder/encoder/resampler"]
+        S1 --> TC
+        S2 --> TC
+        S3 --> TC
+    end
+
+    subgraph 目标["目标 peer track"]
+        D1["WS PCM16<br/>Opus→PCM16"]
+        D2["WebRTC Opus<br/>PCM16→Opus"]
+        D3["SIP PCMU<br/>Opus→PCMU"]
+    end
+
+    TC --> D1
+    TC --> D2
+    TC --> D3
+```
+
+### TranscodeState 持久转码器
+
+**关键设计**：转码器状态在 `push_rtp` 流生命周期内复用，不每包重建。
+
+```rust
+struct TranscodeState {
+    decoder: Option<Box<dyn audio_codec::Decoder>>,  // 源 codec → PCM
+    encoder: Option<Box<dyn audio_codec::Encoder>>,  // PCM → 目标 codec
+    resampler: Option<audio_codec::BoxedResampler>,  // 采样率转换
+    src_sample_rate: u32,
+    dst_sample_rate: u32,
+}
+```
+
+**为什么需要持久化**：
+- Opus decoder/encoder 有内部状态（帧间预测）
+- 每包重建会丢失预测状态 → 杂音（滋滋声）
+- Resampler 的历史缓冲区也需要跨帧保持 → 否则帧边界不连续
+
+### 转码流程
+
+```
+源 RTP 包 →
+  1. 解码到 PCM（Opus/PCMU/PCMA → PCM samples）
+  2. 重采样（如果采样率不同，如 8kHz→48kHz）
+  3. 编码到目标 codec（PCM → Opus/PCMU/PCMA/PCM16）
+  4. 发送到 peer track 的 broadcast channel
+```
+
+### 支持的转码矩阵
+
+| 源 \ 目标 | Opus | PCM16 | PCMU | PCMA |
+|-----------|------|-------|------|------|
+| **Opus** | 直转 | ✅ 转码 | ✅ 转码 | ✅ 转码 |
+| **PCM16** | ✅ 转码 | 直转 | ✅ 转码 | ✅ 转码 |
+| **PCMU** | ✅ 转码 | ✅ 转码 | 直转 | ✅ 转码 |
+| **PCMA** | ✅ 转码 | ✅ 转码 | ✅ 转码 | 直转 |
+
+### SFU 自回环修复
+
+**问题**：原 `push_rtp` 在 SFU 转发后，还把包广播到**源 track 自身的 broadcast channel**（注释"保持兼容"）。这导致 WS 客户端 push 的音频被自己的 `pull_rtp` 收到 → 自回声。
+
+**修复**：删除"广播到源 track 自身"的逻辑。`pull_rtp` 只收到其他 participant 通过 SFU 转发过来的音频。
+
+### WS/WebRTC 跨协议对话验证
+
+已验证的跨协议链路：
+
+```
+WebRTC(Opus) → Rust push_rtp → TranscodeState(Opus→PCM16) → WS pull → 前端播放 PCM16 ✅
+WS(PCM16) → Rust push_rtp → TranscodeState(PCM16→Opus) → WebRTC pull → 浏览器播放 Opus ✅
+```
+
+**WS 前端默认配置**：
+- 编解码：PCM16（前端无 Opus 编码器，用 PCM16 + Rust 转码）
+- 采样率：48kHz（与 Opus 一致，避免重采样杂音）
+
+---
+
 ## 5. 各协议接入状态
 
 | 协议 | 信令实现 | Demo | Rust 媒体集成 | 端到端媒体流 | 状态 |
@@ -203,9 +303,9 @@ graph TD
 ## 6. 当前完成度 vs 计划
 
 ```mermaid
-pie title 总体完成度（约 85%）
-    "已完成" : 85
-    "未完成" : 15
+pie title 总体完成度（约 88%）
+    "已完成" : 88
+    "未完成" : 12
 ```
 
 | 模块 | 状态 | 说明 |
@@ -232,6 +332,9 @@ pie title 总体完成度（约 85%）
 | **插件系统** | ✅ | ASR/TTS/LLM/Detector 接口 + registry + loader + mock 插件 |
 | **协议业务逻辑** | ✅ | auth/router/transfer 框架 |
 | **SIP SDP answer** | ✅ | answer 带 SDP body，含本地 RTP 端口 |
+| **跨协议音频转码** | ✅ | Opus↔PCM16↔PCMU↔PCMA，TranscodeState 持久转码器 |
+| **SFU 自回环修复** | ✅ | push_rtp 不再广播到源 track 自身，避免自回声 |
+| **WS↔WebRTC 跨协议对话** | ✅ | 已验证双向音频对话，Rust SFU 实时转码 |
 
 ---
 

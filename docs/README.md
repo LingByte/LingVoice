@@ -23,11 +23,11 @@ LingVoice 是一个**通用语音/流媒体中台**：以插件化架构支持 W
 | [04-interface-contract.md](./04-interface-contract.md) | Rust↔Go gRPC 契约（最关键的边界） |
 | [05-roadmap.md](./05-roadmap.md) | 分阶段路线图 |
 | [06-transport-unification.md](./06-transport-unification.md) | 传输协议归一化：WS/RTP/RTMP 统一到 MediaFrame、时钟域 |
-| [07-media-pipeline.md](./07-media-pipeline.md) | 媒体管线：ptime 节奏器 + 多订阅者出口（混合模型） |
+| [07-media-pipeline.md](./07-media-pipeline.md) | 媒体管线：ptime 节奏器 + 多订阅者出口 + TranscodeState 持久转码器 |
 | [08-rustpbx-research.md](./08-rustpbx-research.md) | 历史调研记录（RustPBX 选型已废弃，保留作为决策档案） |
 | [09-protocol-layer.md](./09-protocol-layer.md) | 协议层设计：SIP/WebRTC/WS 拆分边界、Go 协议应用层、统一事件抽象 |
 | [10-rust-media-architecture.md](./10-rust-media-architecture.md) | Rust 媒体面架构：crate 设计、传输/编解码/管线/路由 |
-| [11-current-flow-and-status.md](./11-current-flow-and-status.md) | 当前流转状态：实际媒体流路径、各协议接入情况、后续路线 |
+| [11-current-flow-and-status.md](./11-current-flow-and-status.md) | 当前流转状态：实际媒体流路径、各协议接入情况、跨协议转码、后续路线 |
 | [12-websocket-demo.md](./12-websocket-demo.md) | WebSocket 协议设计、消息格式、ws-rust-demo 完整链路 |
 | [13-scaling-architecture.md](./13-scaling-architecture.md) | 大规模会议架构：音频混音(MCU)、视频按需订阅(simulcast)、分片SFU |
 | [14-streaming-media-redesign.md](./14-streaming-media-redesign.md) | 流媒体层重构方案与实施记录：MediaFrame + Depacketizer + Stream + GOP + Simulcast + 协议转封装 |

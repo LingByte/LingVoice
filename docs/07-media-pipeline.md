@@ -48,6 +48,36 @@ ptime 节奏器 (20ms tick, 必出帧, 静音兜底)  ← 强节奏保证
                            ├──▶ RecorderSubscriber  (录音)
                            ├──▶ AsrSubscriber       (推 ASR)
                            └──▶ StreamSubscriber    (推流)
+```
+
+### TranscodeState 持久转码器（已实现 ✅）
+
+> **2026-08-26 新增**：跨协议转码已在 `lm-control/src/service.rs` 中实现，使用 `TranscodeState` 持久化转码器状态。
+
+**核心问题**：Opus decoder/encoder 有内部帧间预测状态，如果每个 RTP 包都创建新的 decoder/encoder，会丢失预测状态 → 杂音（滋滋声）。Resampler 的历史缓冲区也需要跨帧保持。
+
+**解决方案**：在 `push_rtp` 流生命周期内，按 peer track ID 缓存 `TranscodeState`：
+
+```rust
+struct TranscodeState {
+    decoder: Option<Box<dyn audio_codec::Decoder>>,  // 源 codec → PCM
+    encoder: Option<Box<dyn audio_codec::Encoder>>,  // PCM → 目标 codec
+    resampler: Option<audio_codec::BoxedResampler>,  // 采样率转换（持久历史缓冲）
+    src_sample_rate: u32,
+    dst_sample_rate: u32,
+}
+```
+
+**转码流程**：
+```
+源 RTP 包 →
+  1. 解码到 PCM（Opus/PCMU/PCMA → PCM samples，用持久 decoder）
+  2. 重采样（如果采样率不同，用持久 resampler 保持历史缓冲）
+  3. 编码到目标 codec（PCM → Opus/PCMU/PCMA/PCM16，用持久 encoder）
+  4. 发送到 peer track 的 broadcast channel
+```
+
+**支持的转码矩阵**：Opus ↔ PCM16 ↔ PCMU ↔ PCMA（全部双向支持）
   // 一条腿同时做多件事
 ```
 

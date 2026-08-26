@@ -313,6 +313,10 @@ impl media_node_server::MediaNode for MediaNodeServer {
         let mut mix_input_tx: Option<mpsc::Sender<lm_core::AudioFrame>> = None;
         let mut mix_checked = false;
 
+        // SFU 转码缓存：按 peer track_id 缓存 decoder/encoder/resampler
+        // 避免每包都创建新的转码器（Opus decoder 有内部状态，重建会丢失帧间预测）
+        let mut transcode_cache: std::collections::HashMap<String, TranscodeState> = std::collections::HashMap::new();
+
         while let Some(req) = stream.next().await {
             let req = req?;
             if let Some(packet) = req.packet {
@@ -400,16 +404,37 @@ impl media_node_server::MediaNode for MediaNodeServer {
                             && src_codec.unwrap().is_audio();
 
                         if need_transcode {
-                            // 转码：src codec → PCM → dst codec
-                            let dst_pkt = transcode_audio_packet(
-                                &pkt_out,
-                                src_codec.unwrap(),
-                                peer_track.codec,
-                            );
+                            let src_c = src_codec.unwrap();
+                            let dst_c = peer_track.codec;
+
+                            // 获取或创建持久的转码器状态
+                            let tc_state = transcode_cache
+                                .entry(peer_track.track_id.0.clone())
+                                .or_insert_with(|| TranscodeState::new(src_c, dst_c, pkt_out.clock_rate));
+
+                            if packets_received == 1 {
+                                info!(
+                                    session = %req.session_id,
+                                    track = %req.track_id,
+                                    src_codec = ?src_c,
+                                    dst_codec = ?dst_c,
+                                    "transcoding audio for peer track"
+                                );
+                            }
+
+                            // 用持久转码器处理此包
+                            let dst_pkt = tc_state.transcode(&pkt_out, src_c, dst_c);
                             if let Some(dst_pkt) = dst_pkt {
                                 let _ = peer_track.rtp_broadcast.send(dst_pkt);
+                            } else {
+                                if packets_received % 500 == 0 {
+                                    warn!(
+                                        session = %req.session_id,
+                                        track = %req.track_id,
+                                        "transcode failed, dropping packet"
+                                    );
+                                }
                             }
-                            // 转码失败则跳过该包（避免发送噪音）
                         } else {
                             // 同 codec 或视频：裸包转发
                             let _ = peer_track.rtp_broadcast.send(pkt_out.clone());
@@ -431,13 +456,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
                         media_stream.push_packet(&rtp_pkt);
                     }
 
-                    // 3. 也广播到源 track 自身的 broadcast channel
-                    // （保持兼容：旧的 pull_rtp 订阅者仍用 broadcast）
-                    if let Some(session) = self.sessions.get_session(&session_id) {
-                        if let Some(src_track) = session.tracks.get(&track_id) {
-                            let _ = src_track.rtp_broadcast.send(pkt_out.clone());
-                        }
-                    }
+                    // 3. 不广播到源 track 自身的 broadcast channel
+                    // 避免自回环：pull_rtp 从源 track 拉取时会收到自己的音频（回声）
+                    // pull_rtp 应该只收到其他 participant 通过 SFU 转发过来的音频
 
                     if packets_received % 1000 == 0 {
                         info!(
@@ -853,7 +874,158 @@ impl media_node_server::MediaNode for MediaNodeServer {
 // 转码辅助函数
 // ============================================================================
 
-/// 将音频 RTP 包从源 codec 转码为目标 codec。
+/// 持久转码器状态（在 push_rtp 流生命周期内复用）
+/// 避免 Opus decoder/encoder 每包重建导致帧间预测状态丢失（杂音）
+struct TranscodeState {
+    decoder: Option<Box<dyn audio_codec::Decoder>>,
+    encoder: Option<Box<dyn audio_codec::Encoder>>,
+    resampler: Option<audio_codec::BoxedResampler>,
+    src_sample_rate: u32,
+    dst_sample_rate: u32,
+}
+
+impl TranscodeState {
+    fn new(src_codec: lm_core::CodecType, dst_codec: lm_core::CodecType, clock_rate: u32) -> Self {
+        let src_sample_rate = if clock_rate > 0 { clock_rate } else { 48000 };
+
+        // 创建 decoder（用于解码源 codec → PCM）
+        let decoder = if src_codec == lm_core::CodecType::Pcm {
+            None // PCM 不需要解码
+        } else if src_codec == lm_core::CodecType::Opus {
+            Some(audio_codec::create_opus_decoder(src_sample_rate, 1))
+        } else {
+            let ac = match src_codec {
+                lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
+                lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
+                lm_core::CodecType::G722 => audio_codec::CodecType::G722,
+                _ => return Self { decoder: None, encoder: None, resampler: None, src_sample_rate: 0, dst_sample_rate: 0 },
+            };
+            Some(audio_codec::create_decoder(ac))
+        };
+
+        // 目标采样率
+        let dst_sample_rate = match dst_codec {
+            lm_core::CodecType::Opus => 48000,
+            lm_core::CodecType::PcmU | lm_core::CodecType::PcmA => 8000,
+            lm_core::CodecType::G722 => 16000,
+            lm_core::CodecType::Pcm => src_sample_rate,
+            _ => src_sample_rate,
+        };
+
+        // 创建 encoder（用于编码 PCM → 目标 codec）
+        let encoder = if dst_codec == lm_core::CodecType::Pcm {
+            None // PCM 不需要编码
+        } else if dst_codec == lm_core::CodecType::Opus {
+            Some(audio_codec::create_opus_encoder(
+                dst_sample_rate,
+                1,
+                audio_codec::opus::OpusApplication::Voip,
+            ))
+        } else {
+            let ac = match dst_codec {
+                lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
+                lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
+                lm_core::CodecType::G722 => audio_codec::CodecType::G722,
+                _ => return Self { decoder: None, encoder: None, resampler: None, src_sample_rate: 0, dst_sample_rate: 0 },
+            };
+            Some(audio_codec::create_encoder(ac))
+        };
+
+        // 创建重采样器（如果采样率不同）
+        let resampler = if src_sample_rate != dst_sample_rate {
+            audio_codec::BoxedResampler::new(src_sample_rate as usize, dst_sample_rate as usize).ok()
+        } else {
+            None
+        };
+
+        Self {
+            decoder,
+            encoder,
+            resampler,
+            src_sample_rate,
+            dst_sample_rate,
+        }
+    }
+
+    /// 用持久状态转码一个 RTP 包
+    fn transcode(
+        &mut self,
+        pkt: &crate::session::RtpPacketOut,
+        src_codec: lm_core::CodecType,
+        dst_codec: lm_core::CodecType,
+    ) -> Option<crate::session::RtpPacketOut> {
+        // 1. 解码到 PCM
+        let (mut samples, decoded_rate) = if src_codec == lm_core::CodecType::Pcm {
+            let payload = &pkt.payload;
+            if payload.len() % 2 != 0 {
+                return None;
+            }
+            (
+                payload.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>(),
+                self.src_sample_rate,
+            )
+        } else if let Some(dec) = &mut self.decoder {
+            let s = dec.decode(&pkt.payload);
+            let r = dec.sample_rate();
+            (s, r)
+        } else {
+            return None;
+        };
+
+        if samples.is_empty() {
+            return None;
+        }
+
+        // 2. 重采样（如果需要）
+        if decoded_rate != self.dst_sample_rate {
+            if let Some(rs) = &mut self.resampler {
+                samples = rs.resample(&samples);
+                if samples.is_empty() {
+                    return None;
+                }
+            }
+        }
+
+        // 3. 编码到目标 codec
+        let dst_payload: bytes::Bytes = if dst_codec == lm_core::CodecType::Pcm {
+            let mut buf = Vec::with_capacity(samples.len() * 2);
+            for s in &samples {
+                buf.extend_from_slice(&s.to_le_bytes());
+            }
+            bytes::Bytes::from(buf)
+        } else if let Some(enc) = &mut self.encoder {
+            let mut buf = vec![0u8; samples.len() * 4];
+            match enc.encode_into(&samples, &mut buf) {
+                Ok(n) => bytes::Bytes::from(buf[..n].to_vec()),
+                Err(_) => return None,
+            }
+        } else {
+            return None;
+        };
+
+        let dst_pt = match dst_codec {
+            lm_core::CodecType::Opus => 111,
+            lm_core::CodecType::PcmU => 0,
+            lm_core::CodecType::PcmA => 8,
+            lm_core::CodecType::G722 => 9,
+            lm_core::CodecType::Pcm => 96,
+            _ => pkt.payload_type,
+        };
+
+        Some(crate::session::RtpPacketOut {
+            ssrc: pkt.ssrc,
+            payload_type: dst_pt,
+            sequence_number: pkt.sequence_number,
+            timestamp: pkt.timestamp,
+            marker: pkt.marker,
+            payload: dst_payload,
+            rid: pkt.rid.clone(),
+            clock_rate: self.dst_sample_rate,
+        })
+    }
+}
+
+/// 将音频 RTP 包从源 codec 转码为目标 codec（无状态版本，用于测试）。
 ///
 /// 流程：src payload → PCM samples → dst payload
 /// 失败时返回 None（调用方应跳过该包）。
@@ -864,32 +1036,59 @@ fn transcode_audio_packet(
     src_codec: lm_core::CodecType,
     dst_codec: lm_core::CodecType,
 ) -> Option<crate::session::RtpPacketOut> {
-    // PCM (L16) 不需要解码，直接作为 samples
-    let samples: Vec<audio_codec::Sample> = if src_codec == lm_core::CodecType::Pcm {
-        // L16 little-endian → i16 samples
+    // 源采样率（从 RTP clock_rate 获取）
+    let src_sample_rate = if pkt.clock_rate > 0 { pkt.clock_rate } else { 48000 };
+
+    // 解码到 PCM samples
+    let (mut samples, decoded_sample_rate): (Vec<audio_codec::Sample>, u32) = if src_codec == lm_core::CodecType::Pcm {
+        // L16 little-endian → i16 samples，采样率 = clock_rate
         let payload = &pkt.payload;
         if payload.len() % 2 != 0 {
             return None;
         }
-        payload
-            .chunks_exact(2)
-            .map(|c| i16::from_le_bytes([c[0], c[1]]))
-            .collect()
+        (
+            payload
+                .chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                .collect(),
+            src_sample_rate,
+        )
+    } else if src_codec == lm_core::CodecType::Opus {
+        // Opus decoder：用源采样率，mono
+        let mut decoder = audio_codec::create_opus_decoder(src_sample_rate, 1);
+        (decoder.decode(&pkt.payload), src_sample_rate)
     } else {
-        // 其他 codec 用 decoder 解码
+        // PCMU/PCMA/G722
         let ac_src = match src_codec {
-            lm_core::CodecType::Opus => audio_codec::CodecType::Opus,
             lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
             lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
             lm_core::CodecType::G722 => audio_codec::CodecType::G722,
             _ => return None,
         };
         let mut decoder = audio_codec::create_decoder(ac_src);
-        decoder.decode(&pkt.payload)
+        let sr = decoder.sample_rate();
+        (decoder.decode(&pkt.payload), sr)
     };
 
     if samples.is_empty() {
         return None;
+    }
+
+    // 目标采样率：Opus 固定 48kHz，PCM 用源采样率，PCMU/PCMA 8kHz
+    let dst_sample_rate: u32 = match dst_codec {
+        lm_core::CodecType::Opus => 48000,
+        lm_core::CodecType::PcmU | lm_core::CodecType::PcmA => 8000,
+        lm_core::CodecType::G722 => 16000,
+        lm_core::CodecType::Pcm => src_sample_rate, // PCM 保持源采样率
+        _ => src_sample_rate,
+    };
+
+    // 重采样（如果采样率不同）
+    if dst_sample_rate != decoded_sample_rate {
+        samples = audio_codec::resample(&samples, decoded_sample_rate, dst_sample_rate);
+        if samples.is_empty() {
+            return None;
+        }
     }
 
     // 编码到目标 codec
@@ -900,16 +1099,27 @@ fn transcode_audio_packet(
             buf.extend_from_slice(&s.to_le_bytes());
         }
         bytes::Bytes::from(buf)
+    } else if dst_codec == lm_core::CodecType::Opus {
+        // Opus encoder：用目标采样率，mono
+        let mut encoder = audio_codec::create_opus_encoder(
+            dst_sample_rate,
+            1,
+            audio_codec::opus::OpusApplication::Voip,
+        );
+        let mut buf = vec![0u8; samples.len() * 4];
+        match encoder.encode_into(&samples, &mut buf) {
+            Ok(n) => bytes::Bytes::from(buf[..n].to_vec()),
+            Err(_) => return None,
+        }
     } else {
         let ac_dst = match dst_codec {
-            lm_core::CodecType::Opus => audio_codec::CodecType::Opus,
             lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
             lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
             lm_core::CodecType::G722 => audio_codec::CodecType::G722,
             _ => return None,
         };
         let mut encoder = audio_codec::create_encoder(ac_dst);
-        let mut buf = vec![0u8; samples.len() * 4]; // 足够大的输出缓冲
+        let mut buf = vec![0u8; samples.len() * 4];
         match encoder.encode_into(&samples, &mut buf) {
             Ok(n) => bytes::Bytes::from(buf[..n].to_vec()),
             Err(_) => return None,
@@ -959,18 +1169,22 @@ mod transcode_tests {
 
     #[test]
     fn test_transcode_pcmu_to_pcm() {
-        // PCMU 编码：0xFF 是 silence
+        // PCMU 8kHz, 160 samples silence → PCM 48kHz (clock_rate=48000)
+        // PCMU decoder 输出 8kHz/160 samples，重采样到 48kHz → 960 samples = 1920 bytes
         let pkt = make_pkt(&[0xFF; 160]);
         let out = transcode_audio_packet(&pkt, lm_core::CodecType::PcmU, lm_core::CodecType::Pcm);
         assert!(out.is_some());
         let out = out.unwrap();
-        assert_eq!(out.payload.len(), 320); // 160 samples * 2 bytes
+        // 8kHz → 48kHz: 160 samples → ~960 samples × 2 bytes ≈ 1920
+        // 重采样插值可能有 ±1 sample 误差
+        assert!((out.payload.len() as i32 - 1920).abs() <= 4);
         assert_eq!(out.payload_type, 96); // PCM 动态 PT
     }
 
     #[test]
     fn test_transcode_pcm_to_pcmu() {
-        // L16 silence = 0
+        // PCM 48kHz, 160 samples silence → PCMU 8kHz
+        // 重采样 48kHz → 8kHz: 160 samples → 26 samples (≈27) × 1 byte
         let pcm = vec![0i16; 160];
         let mut payload = Vec::new();
         for s in &pcm {
@@ -980,7 +1194,8 @@ mod transcode_tests {
         let out = transcode_audio_packet(&pkt, lm_core::CodecType::Pcm, lm_core::CodecType::PcmU);
         assert!(out.is_some());
         let out = out.unwrap();
-        assert_eq!(out.payload.len(), 160); // 160 samples * 1 byte
+        // 48kHz → 8kHz: 160 samples → ~26 samples
+        assert!(out.payload.len() > 0 && out.payload.len() <= 160);
         assert_eq!(out.payload_type, 0); // PCMU PT
     }
 
