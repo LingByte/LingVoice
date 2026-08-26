@@ -42,6 +42,11 @@ func newTrackLocal(id common.TrackID, cfg common.TrackConfig) (*trackLocal, erro
 		capability.RTCPFeedback = videoRTCPFeedback
 	} else {
 		capability.RTCPFeedback = audioRTCPFeedback
+		// Opus 需要 SDPFmtpLine 与 MediaEngine 注册的 codec 匹配，
+		// 否则 SetRemoteDescription(answer) 会报 "codec is not supported by remote"
+		if mimeType == webrtc.MimeTypeOpus {
+			capability.SDPFmtpLine = "minptime=10;useinbandfec=1"
+		}
 	}
 
 	track, err := webrtc.NewTrackLocalStaticRTP(capability, cfg.Label, cfg.StreamID)

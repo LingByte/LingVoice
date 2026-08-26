@@ -303,7 +303,8 @@ async fn run_egress_bridge(
     mix_id: String,
     session_id: String,
 ) {
-    let mut encoder = audio_codec::create_encoder(audio_codec::CodecType::Opus);
+    // 创建 mono Opus 编码器（mixer 输出的是单声道 PCM）
+    let mut encoder = audio_codec::create_opus_encoder(sample_rate, 1, audio_codec::opus::OpusApplication::Voip);
 
     let mut rtp_seq: u32 = 0;
     let mut rtp_ts: u32 = 0;

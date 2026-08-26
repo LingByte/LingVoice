@@ -76,8 +76,9 @@ type sessionState struct {
 	// 自己的 publisher SSRC 集合（用于排除自己，避免自回声）
 	mySSRCs sync.Map // map[uint32]struct{}
 	// 是否在混音中
-	inMix     bool
-	mixTrackID common.TrackID // 混音输出 track ID（"mix-{sessionID}"）
+	inMix       bool
+	mixTrackID  common.TrackID // 混音输出 track ID（"mix-{sessionID}"）
+	mixPullCancel context.CancelFunc // 混音 pull loop 的 cancel
 }
 
 type trackState struct {
@@ -381,7 +382,7 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 
 	case common.EventHangup:
 		h.log.Info(">> 挂断", zap.String("session", event.SessionID))
-		// 取消所有 track 的 push/pull
+		// 取消所有 track 的 push/pull，收集清理信息
 		h.mu.Lock()
 		hangingSS, ok := h.sessions[event.SessionID]
 		if ok {
@@ -393,53 +394,50 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 					ts.pullCancel()
 				}
 			}
+			// 取消混音 pull loop
+			if hangingSS.mixPullCancel != nil {
+				hangingSS.mixPullCancel()
+			}
 			delete(h.sessions, event.SessionID)
 		}
-		// 检查是否需要停止混音（room 空了）
+		// 检查是否需要停止混音（room 空了）+ 收集 peers
 		var remainingInRoom int
 		var roomID string
+		var peers []string
 		if ok && hangingSS != nil {
 			roomID = hangingSS.roomID
 			for sid, ss := range h.sessions {
 				if sid != event.SessionID && ss.roomID == roomID && ss.created {
 					remainingInRoom++
+					peers = append(peers, sid)
 				}
 			}
 		}
+		// 提前取出 mixID（如果需要停止混音）
+		var mixIDToStop string
+		var hasMixToStop bool
+		if ok && hangingSS != nil && remainingInRoom == 0 && roomID != "" {
+			mixIDToStop, hasMixToStop = h.roomMixes[roomID]
+			delete(h.roomMixes, roomID)
+		}
 		h.mu.Unlock()
 
-		// 从混音移除
+		// 从混音移除（在锁外做 gRPC 调用）
 		if ok && hangingSS != nil && hangingSS.inMix {
 			h.removeSessionFromMix(roomID, event.SessionID)
 		}
 
 		// 如果 room 空了，停止混音
-		if remainingInRoom == 0 && roomID != "" {
-			h.mu.Lock()
-			mixID, hasMix := h.roomMixes[roomID]
-			delete(h.roomMixes, roomID)
-			h.mu.Unlock()
-			if hasMix {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := h.bridge.StopMix(ctx, mixID); err != nil {
-					h.log.Warn("stop mix failed", zap.Error(err))
-				}
-				cancel()
-				h.log.Info(">> 混音已停止（room 空）",
-					zap.String("room", roomID),
-					zap.String("mixID", mixID))
+		if hasMixToStop {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := h.bridge.StopMix(ctx, mixIDToStop); err != nil {
+				h.log.Warn("stop mix failed", zap.Error(err))
 			}
+			cancel()
+			h.log.Info(">> 混音已停止（room 空）",
+				zap.String("room", roomID),
+				zap.String("mixID", mixIDToStop))
 		}
-		// 收集同 room 的其他 session，通知它们 participant left
-		var peers []string
-		if ok && hangingSS != nil {
-			for sid, ss := range h.sessions {
-				if sid != event.SessionID && ss.roomID == hangingSS.roomID && ss.created {
-					peers = append(peers, sid)
-				}
-			}
-		}
-		h.mu.Unlock()
 
 		// 通知同 room 的其他 participant：有人离开了
 		leaveMsg := fmt.Sprintf(`{"type":"participant_left","session":"%s"}`, event.SessionID)
@@ -650,7 +648,7 @@ func (h *rustHandler) startMixPullLoop(sessionID string, mixTrackID common.Track
 		Label:      fmt.Sprintf("mix-audio-%s", sessionID),
 		StreamID:   "mixed-audio",
 		SampleRate: 48000,
-		Channels:   1,
+		Channels:   2, // 必须与浏览器协商的 Opus 一致（stereo）
 	}
 	subTrackID, err := sess.AddTrack(trackCfg)
 	if err != nil {
@@ -668,7 +666,10 @@ func (h *rustHandler) startMixPullLoop(sessionID string, mixTrackID common.Track
 	_ = sess.SendData("reliable", []byte(joinMsg))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel() // 在 startMixPullLoop 退出时取消（hangup 时 DestroySession 也会清理）
+	// Store cancel in sessionState for hangup cleanup (cannot defer, would cancel immediately)
+	ss2 := h.getOrCreateSession(sessionID)
+	ss2.mixPullCancel = cancel
+
 
 	err = h.bridge.StartPullRtp(ctx, sessionID, mixTrackID, kind, codec, func(frame common.MediaFrame) error {
 		// 混音是单路流，直接写到 subscriber track
