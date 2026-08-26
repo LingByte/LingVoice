@@ -426,16 +426,18 @@ impl media_node_server::MediaNode for MediaNodeServer {
                             }
 
                             // 用持久转码器处理此包
-                            let dst_pkt = tc_state.transcode(&pkt_out, src_c, dst_c);
-                            if let Some(dst_pkt) = dst_pkt {
-                                let _ = peer_track.rtp_broadcast.send(dst_pkt);
-                            } else {
+                            let dst_pkts = tc_state.transcode(&pkt_out, src_c, dst_c);
+                            if dst_pkts.is_empty() {
                                 if packets_received % 500 == 0 {
                                     warn!(
                                         session = %req.session_id,
                                         track = %req.track_id,
-                                        "transcode failed, dropping packet"
+                                        "transcode produced no output, dropping packet"
                                     );
+                                }
+                            } else {
+                                for dst_pkt in dst_pkts {
+                                    let _ = peer_track.rtp_broadcast.send(dst_pkt);
                                 }
                             }
                         } else {
@@ -888,9 +890,12 @@ struct TranscodeState {
     // 视频转码状态
     video_decoder: Option<Box<dyn video_codec::VideoDecoder>>,
     video_encoder: Option<Box<dyn video_codec::VideoEncoder>>,
-    // 视频帧重组缓冲（RTP depacketizer → 完整帧）
-    frame_buffer: Vec<u8>,
-    frame_complete: bool,
+    // RTP depacketizer（源 codec：RTP 包 → 完整编码帧）
+    depacketizer: Option<Box<dyn lm_core::Depacketizer>>,
+    // RTP packetizer（目标 codec：完整编码帧 → RTP 包序列）
+    packetizer: Option<Box<dyn lm_depacketizer::Packetizer>>,
+    // 输出 RTP 序列号
+    out_seq: u32,
 }
 
 impl TranscodeState {
@@ -899,6 +904,8 @@ impl TranscodeState {
         if src_codec.is_video() && dst_codec.is_video() {
             let video_decoder = video_codec::create_decoder(src_codec).ok();
             let video_encoder = video_codec::create_encoder(dst_codec, 320, 240).ok();
+            let depacketizer = lm_depacketizer::create_depacketizer(src_codec);
+            let packetizer = lm_depacketizer::create_packetizer(dst_codec);
             return Self {
                 decoder: None,
                 encoder: None,
@@ -907,8 +914,9 @@ impl TranscodeState {
                 dst_sample_rate: 0,
                 video_decoder,
                 video_encoder,
-                frame_buffer: Vec::new(),
-                frame_complete: false,
+                depacketizer: Some(depacketizer),
+                packetizer: Some(packetizer),
+                out_seq: 0,
             };
         }
 
@@ -925,7 +933,7 @@ impl TranscodeState {
                 lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
                 lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
                 lm_core::CodecType::G722 => audio_codec::CodecType::G722,
-                _ => return Self { decoder: None, encoder: None, resampler: None, src_sample_rate: 0, dst_sample_rate: 0, video_decoder: None, video_encoder: None, frame_buffer: Vec::new(), frame_complete: false },
+                _ => return Self { decoder: None, encoder: None, resampler: None, src_sample_rate: 0, dst_sample_rate: 0, video_decoder: None, video_encoder: None, depacketizer: None, packetizer: None, out_seq: 0 },
             };
             Some(audio_codec::create_decoder(ac))
         };
@@ -953,7 +961,7 @@ impl TranscodeState {
                 lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
                 lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
                 lm_core::CodecType::G722 => audio_codec::CodecType::G722,
-                _ => return Self { decoder: None, encoder: None, resampler: None, src_sample_rate: 0, dst_sample_rate: 0, video_decoder: None, video_encoder: None, frame_buffer: Vec::new(), frame_complete: false },
+                _ => return Self { decoder: None, encoder: None, resampler: None, src_sample_rate: 0, dst_sample_rate: 0, video_decoder: None, video_encoder: None, depacketizer: None, packetizer: None, out_seq: 0 },
             };
             Some(audio_codec::create_encoder(ac))
         };
@@ -973,18 +981,20 @@ impl TranscodeState {
             dst_sample_rate,
             video_decoder: None,
             video_encoder: None,
-            frame_buffer: Vec::new(),
-            frame_complete: false,
+            depacketizer: None,
+            packetizer: None,
+            out_seq: 0,
         }
     }
 
     /// 用持久状态转码一个 RTP 包
+    /// 返回 0 个（需要更多包/失败）或多个输出 RTP 包
     fn transcode(
         &mut self,
         pkt: &crate::session::RtpPacketOut,
         src_codec: lm_core::CodecType,
         dst_codec: lm_core::CodecType,
-    ) -> Option<crate::session::RtpPacketOut> {
+    ) -> Vec<crate::session::RtpPacketOut> {
         // 视频转码路径
         if src_codec.is_video() && dst_codec.is_video() {
             return self.transcode_video(pkt, src_codec, dst_codec);
@@ -994,7 +1004,7 @@ impl TranscodeState {
         let (mut samples, decoded_rate) = if src_codec == lm_core::CodecType::Pcm {
             let payload = &pkt.payload;
             if payload.len() % 2 != 0 {
-                return None;
+                return Vec::new();
             }
             (
                 payload.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>(),
@@ -1005,11 +1015,11 @@ impl TranscodeState {
             let r = dec.sample_rate();
             (s, r)
         } else {
-            return None;
+            return Vec::new();
         };
 
         if samples.is_empty() {
-            return None;
+            return Vec::new();
         }
 
         // 2. 重采样（如果需要）
@@ -1017,7 +1027,7 @@ impl TranscodeState {
             if let Some(rs) = &mut self.resampler {
                 samples = rs.resample(&samples);
                 if samples.is_empty() {
-                    return None;
+                    return Vec::new();
                 }
             }
         }
@@ -1033,10 +1043,10 @@ impl TranscodeState {
             let mut buf = vec![0u8; samples.len() * 4];
             match enc.encode_into(&samples, &mut buf) {
                 Ok(n) => bytes::Bytes::from(buf[..n].to_vec()),
-                Err(_) => return None,
+                Err(_) => return Vec::new(),
             }
         } else {
-            return None;
+            return Vec::new();
         };
 
         let dst_pt = match dst_codec {
@@ -1048,7 +1058,7 @@ impl TranscodeState {
             _ => pkt.payload_type,
         };
 
-        Some(crate::session::RtpPacketOut {
+        vec![crate::session::RtpPacketOut {
             ssrc: pkt.ssrc,
             payload_type: dst_pt,
             sequence_number: pkt.sequence_number,
@@ -1057,72 +1067,99 @@ impl TranscodeState {
             payload: dst_payload,
             rid: pkt.rid.clone(),
             clock_rate: self.dst_sample_rate,
-        })
+        }]
     }
 
-    /// 视频转码：RTP payload → depacketize → decode → encode → RTP payload
+    /// 视频转码：RTP 包 → depacketize → decode → encode → packetize → RTP 包序列
     ///
-    /// 注意：视频转码比音频复杂，需要：
-    /// 1. RTP depacketizer 组装完整帧（多个 RTP 包 → 一个完整编码帧）
-    /// 2. decoder 解码到 YUV420p
-    /// 3. encoder 编码到目标 codec
-    /// 4. packetizer 拆分回 RTP 包
+    /// 流程：
+    /// 1. 用 depacketizer 组装 RTP 包为完整编码帧（可能需要多个 RTP 包）
+    /// 2. 用 video_decoder 解码到 YUV420p
+    /// 3. 用 video_encoder 编码到目标 codec
+    /// 4. 用 packetizer 拆分编码帧为 RTP 包序列
     ///
-    /// 当前实现是简化版：在 marker=1（帧结束）时触发转码。
+    /// 一个输入 RTP 包可能产生 0 个（帧未完整）或多个输出 RTP 包。
     fn transcode_video(
         &mut self,
         pkt: &crate::session::RtpPacketOut,
-        src_codec: lm_core::CodecType,
+        _src_codec: lm_core::CodecType,
         dst_codec: lm_core::CodecType,
-    ) -> Option<crate::session::RtpPacketOut> {
-        // 累积 RTP payload（简化：直接拼接，不做完整 depacketize）
-        self.frame_buffer.extend_from_slice(&pkt.payload);
-
-        // marker=1 表示帧结束
-        if !pkt.marker {
-            return None; // 等待更多包
-        }
-
-        // 帧完整，开始转码
-        let frame_data = std::mem::take(&mut self.frame_buffer);
-
-        // 1. 解码到 YUV420p
-        let yuv = if let Some(dec) = &mut self.video_decoder {
-            match dec.decode(&frame_data, pkt.timestamp as u64) {
-                Ok(yuv) => yuv,
-                Err(_) => return None,
-            }
-        } else {
-            return None;
+    ) -> Vec<crate::session::RtpPacketOut> {
+        // 1. depacketize: RTP 包 → 完整编码帧
+        let dep = match &mut self.depacketizer {
+            Some(d) => d,
+            None => return Vec::new(),
         };
 
-        // 2. 编码到目标 codec
+        let result = dep.push_packet(
+            &pkt.payload,
+            pkt.marker,
+            pkt.sequence_number as u16,
+            pkt.timestamp,
+        );
+
+        if result != lm_core::DepacketizeResult::FrameComplete {
+            return Vec::new(); // 需要更多包或错误
+        }
+
+        let frame = match dep.take_frame() {
+            Some(f) => f,
+            None => return Vec::new(),
+        };
+
+        // 2. decode: 编码帧 → YUV420p
+        let yuv = if let Some(dec) = &mut self.video_decoder {
+            match dec.decode(&frame.data, frame.timestamp as u64) {
+                Ok(yuv) => yuv,
+                Err(_) => return Vec::new(),
+            }
+        } else {
+            return Vec::new();
+        };
+
+        // 3. encode: YUV420p → 目标 codec 编码帧
         let encoded = if let Some(enc) = &mut self.video_encoder {
             match enc.encode(&yuv) {
                 Ok(enc) => enc,
-                Err(_) => return None,
+                Err(_) => return Vec::new(),
             }
         } else {
-            return None;
+            return Vec::new();
         };
 
-        // 3. 构造输出 RTP 包（简化：整个编码帧放一个 RTP 包，marker=1）
+        // 4. packetize: 编码帧 → RTP 包序列
+        let pktizer = match &mut self.packetizer {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        let rtp_packets = pktizer.packetize(&encoded.data, pkt.timestamp, encoded.keyframe);
+
         let dst_pt = match dst_codec {
             lm_core::CodecType::H264 => 102,
             lm_core::CodecType::Vp8 => 96,
             _ => pkt.payload_type,
         };
 
-        Some(crate::session::RtpPacketOut {
-            ssrc: pkt.ssrc,
-            payload_type: dst_pt,
-            sequence_number: pkt.sequence_number,
-            timestamp: pkt.timestamp,
-            marker: true,
-            payload: encoded.data,
-            rid: pkt.rid.clone(),
-            clock_rate: 90000, // 视频固定 90kHz
-        })
+        // 5. 构造输出 RTP 包序列
+        let ssrc = pkt.ssrc;
+        let rid = pkt.rid.clone();
+        let mut out = Vec::with_capacity(rtp_packets.len());
+        for p in rtp_packets {
+            let seq = self.out_seq;
+            self.out_seq = self.out_seq.wrapping_add(1);
+            out.push(crate::session::RtpPacketOut {
+                ssrc,
+                payload_type: dst_pt,
+                sequence_number: seq,
+                timestamp: p.timestamp,
+                marker: p.marker,
+                payload: p.payload,
+                rid: rid.clone(),
+                clock_rate: 90000, // 视频固定 90kHz
+            });
+        }
+        out
     }
 }
 

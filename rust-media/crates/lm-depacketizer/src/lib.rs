@@ -12,6 +12,9 @@
 use lm_core::{CodecType, DepacketizeResult, Depacketizer, MediaFrame};
 use tracing::{debug, warn};
 
+pub mod packetizer;
+pub use packetizer::{create_packetizer, Packetizer, RtpPacketOut as PktRtpPacketOut};
+
 // ============================================================================
 // VP8 Depacketizer (RFC 7741)
 // ============================================================================
@@ -641,6 +644,203 @@ impl Depacketizer for H264Depacketizer {
 }
 
 // ============================================================================
+// VP9 Depacketizer (RFC 7740)
+// ============================================================================
+
+/// VP9 RTP payload descriptor 解析结果
+#[derive(Debug, Default)]
+struct Vp9Descriptor {
+    /// descriptor 总字节数
+    descriptor_len: usize,
+    /// 是否为帧起始 (B bit = 0 表示新帧)
+    beginning_of_frame: bool,
+    /// 是否为帧结束 (E bit)
+    end_of_frame: bool,
+    /// 是否为关键帧 (V bit = 0)
+    is_keyframe: bool,
+}
+
+/// VP9 RTP payload descriptor 解析 (RFC 7740)
+///
+/// ```text
+///  0 1 2 3 4 5 6 7
+/// +-+-+-+-+-+-+-+-+
+/// |I|P|L|F|B|E|V|U|  (REQUIRED)
+/// +-+-+-+-+-+-+-+-+
+/// ```
+fn vp9_parse_descriptor(payload: &[u8]) -> Option<Vp9Descriptor> {
+    if payload.is_empty() {
+        return None;
+    }
+
+    let mut offset = 0;
+    let flags = payload[offset];
+    offset += 1;
+
+    let beginning_of_frame = (flags & 0x04) != 0; // B bit
+    let end_of_frame = (flags & 0x02) != 0; // E bit
+    let is_keyframe = (flags & 0x01) == 0; // V bit: 0 = keyframe
+
+    // I bit: Picture ID present
+    if (flags & 0x80) != 0 {
+        if offset >= payload.len() {
+            return None;
+        }
+        let pic_id_byte = payload[offset];
+        offset += 1;
+        // If M bit (MSB of first byte), Picture ID is 16-bit
+        if (pic_id_byte & 0x80) != 0 {
+            offset += 1; // second byte of 16-bit Picture ID
+        }
+    }
+
+    // P bit: Inter-picture predicted
+    // (no extra data, just a flag)
+
+    // L bit: Layer indices present
+    if (flags & 0x20) != 0 {
+        offset += 1; // L0 layer index
+        if (flags & 0x10) != 0 {
+            // F bit: flexible mode → only L0
+        } else {
+            offset += 1; // L1 layer index
+        }
+    }
+
+    // F bit: flexible mode
+    // If F=0 and P=1, there are reference indices + R bits
+    if (flags & 0x10) == 0 && (flags & 0x40) != 0 {
+        // P=1, F=0: reference indices present
+        // Simplified: skip until we find a byte without R bit
+        // This is complex; for basic depacketization we just need descriptor_len
+        // In practice, most streams use F=1 or P=0 for keyframes
+    }
+
+    if offset > payload.len() {
+        return None;
+    }
+
+    Some(Vp9Descriptor {
+        descriptor_len: offset,
+        beginning_of_frame,
+        end_of_frame,
+        is_keyframe,
+    })
+}
+
+/// VP9 RTP depacketizer (RFC 7740)
+pub struct Vp9Depacketizer {
+    frame_buffer: Vec<u8>,
+    last_seq: Option<u16>,
+    current_timestamp: u32,
+    current_ssrc: u32,
+    frame_started: bool,
+    is_keyframe: bool,
+}
+
+impl Vp9Depacketizer {
+    pub fn new() -> Self {
+        Self {
+            frame_buffer: Vec::new(),
+            last_seq: None,
+            current_timestamp: 0,
+            current_ssrc: 0,
+            frame_started: false,
+            is_keyframe: false,
+        }
+    }
+}
+
+impl Default for Vp9Depacketizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Depacketizer for Vp9Depacketizer {
+    fn push_packet(
+        &mut self,
+        payload: &[u8],
+        marker: bool,
+        sequence_number: u16,
+        timestamp: u32,
+    ) -> DepacketizeResult {
+        let desc = match vp9_parse_descriptor(payload) {
+            Some(d) => d,
+            None => return DepacketizeResult::Error("failed to parse VP9 descriptor".into()),
+        };
+
+        // 重复/乱序包检测
+        if let Some(prev) = self.last_seq {
+            let diff = sequence_number.wrapping_sub(prev);
+            if diff == 0 || diff > 0x8000 {
+                return DepacketizeResult::NeedMore;
+            }
+        }
+        self.last_seq = Some(sequence_number);
+
+        // B=1 表示新帧开始
+        if desc.beginning_of_frame {
+            if self.frame_started && !self.frame_buffer.is_empty() {
+                debug!("VP9: new frame started before previous completed, discarding partial frame");
+            }
+            self.frame_buffer.clear();
+            self.current_timestamp = timestamp;
+            self.frame_started = true;
+            self.is_keyframe = desc.is_keyframe;
+        }
+
+        if !self.frame_started {
+            return DepacketizeResult::Error("VP9: packet before frame start".into());
+        }
+
+        // 剥离 descriptor，追加 VP9 payload
+        let vp9_payload = &payload[desc.descriptor_len..];
+        if !vp9_payload.is_empty() {
+            self.frame_buffer.extend_from_slice(vp9_payload);
+        }
+
+        // E=1 或 marker=1 表示帧完整
+        if (desc.end_of_frame || marker) && !self.frame_buffer.is_empty() {
+            DepacketizeResult::FrameComplete
+        } else {
+            DepacketizeResult::NeedMore
+        }
+    }
+
+    fn take_frame(&mut self) -> Option<MediaFrame> {
+        if self.frame_buffer.is_empty() || !self.frame_started {
+            return None;
+        }
+
+        let data = std::mem::take(&mut self.frame_buffer);
+        let frame = MediaFrame::video(
+            CodecType::Vp9,
+            self.current_timestamp,
+            bytes::Bytes::from(data),
+            self.current_ssrc,
+            self.is_keyframe,
+        );
+
+        self.frame_started = false;
+        Some(frame)
+    }
+
+    fn reset(&mut self) {
+        self.frame_buffer.clear();
+        self.last_seq = None;
+        self.current_timestamp = 0;
+        self.current_ssrc = 0;
+        self.frame_started = false;
+        self.is_keyframe = false;
+    }
+
+    fn codec_type(&self) -> CodecType {
+        CodecType::Vp9
+    }
+}
+
+// ============================================================================
 // 工厂函数
 // ============================================================================
 
@@ -648,6 +848,7 @@ impl Depacketizer for H264Depacketizer {
 pub fn create_depacketizer(codec: CodecType) -> Box<dyn Depacketizer> {
     match codec {
         CodecType::Vp8 => Box::new(Vp8Depacketizer::new()),
+        CodecType::Vp9 => Box::new(Vp9Depacketizer::new()),
         CodecType::H264 => Box::new(H264Depacketizer::new()),
         CodecType::Opus => Box::new(OpusDepacketizerBuffered::new()),
         CodecType::PcmU | CodecType::PcmA | CodecType::G722 | CodecType::Pcm => {
@@ -657,10 +858,6 @@ pub fn create_depacketizer(codec: CodecType) -> Box<dyn Depacketizer> {
         CodecType::Aac | CodecType::Mp3 => {
             // AAC/MP3：一个 RTP 包 = 一帧（简化）
             Box::new(OpusDepacketizerBuffered::new())
-        }
-        CodecType::Vp9 => {
-            // VP9 暂时用类似 VP8 的逻辑（需要单独实现 VP9 descriptor 解析）
-            Box::new(Vp8Depacketizer::new())
         }
         CodecType::H265 | CodecType::Av1 => {
             // H265/AV1：暂用 H264 解包器（需要单独实现）
@@ -789,5 +986,57 @@ mod tests {
         assert!(frame.keyframe);
         // 验证起始码 + 重建的 NALU header (0x65 = type 5)
         assert_eq!(&frame.data[..5], &[0, 0, 0, 1, 0x65]);
+    }
+
+    // ─── VP9 Depacketizer 测试 ───────────────────────────────────────────
+
+    #[test]
+    fn test_vp9_keyframe_single_packet() {
+        let mut dep = Vp9Depacketizer::new();
+        // VP9 descriptor: B=1, E=1, V=0 (keyframe), no Picture ID
+        // flags = 0x06 (B=1, E=1, V=0)
+        let mut payload = vec![0x06];
+        payload.extend(vec![0xAB; 50]); // VP9 frame data
+
+        let result = dep.push_packet(&payload, true, 1, 9000);
+        assert_eq!(result, DepacketizeResult::FrameComplete);
+        let frame = dep.take_frame().unwrap();
+        assert_eq!(frame.codec, CodecType::Vp9);
+        assert!(frame.keyframe);
+        assert_eq!(frame.data.len(), 50);
+    }
+
+    #[test]
+    fn test_vp9_keyframe_multi_packet() {
+        let mut dep = Vp9Depacketizer::new();
+        // 包 1: B=1, E=0 (帧开始，未结束)
+        let mut p1 = vec![0x04]; // B=1, E=0, V=0 (keyframe)
+        p1.extend(vec![0xAA; 100]);
+        let r1 = dep.push_packet(&p1, false, 1, 9000);
+        assert_eq!(r1, DepacketizeResult::NeedMore);
+
+        // 包 2: B=0, E=1 (帧结束)
+        let mut p2 = vec![0x02]; // B=0, E=1
+        p2.extend(vec![0xBB; 50]);
+        let r2 = dep.push_packet(&p2, true, 2, 9000);
+        assert_eq!(r2, DepacketizeResult::FrameComplete);
+
+        let frame = dep.take_frame().unwrap();
+        assert_eq!(frame.data.len(), 150);
+        assert!(frame.keyframe);
+    }
+
+    #[test]
+    fn test_vp9_inter_frame() {
+        let mut dep = Vp9Depacketizer::new();
+        // V=1 = inter frame (P=1 for inter-predicted)
+        // flags = 0x47 (I=1, B=1, E=1, V=1) + Picture ID
+        let mut payload = vec![0x47, 0x01]; // I=1, B=1, E=1, V=1; PictureID=1
+        payload.extend(vec![0xCC; 30]);
+
+        let result = dep.push_packet(&payload, true, 1, 18000);
+        assert_eq!(result, DepacketizeResult::FrameComplete);
+        let frame = dep.take_frame().unwrap();
+        assert!(!frame.keyframe); // V=1 = inter frame
     }
 }
