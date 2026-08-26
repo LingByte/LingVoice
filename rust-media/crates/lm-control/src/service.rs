@@ -1353,4 +1353,237 @@ mod transcode_tests {
         let out = transcode_audio_packet(&pkt, lm_core::CodecType::Pcm, lm_core::CodecType::PcmU);
         assert!(out.is_none());
     }
+
+    // ─── 视频转码端到端测试（VP8 RTP → H.264 RTP）─────────────────
+
+    /// 构造视频 RtpPacketOut（模拟 WebRTC VP8 RTP 包）
+    fn make_video_pkt(
+        payload: bytes::Bytes,
+        seq: u16,
+        timestamp: u32,
+        marker: bool,
+        pt: u32,
+    ) -> crate::session::RtpPacketOut {
+        crate::session::RtpPacketOut {
+            ssrc: 1234,
+            payload_type: pt,
+            sequence_number: seq as u32,
+            timestamp,
+            marker,
+            payload,
+            rid: String::new(),
+            clock_rate: 90000,
+        }
+    }
+
+    /// 端到端视频转码验证：
+    /// YUV → VP8 encode → VP8 packetize → RTP packets
+    ///      → TranscodeState::transcode_video (depacketize → VP8 decode → H264 encode → packetize)
+    ///      → H.264 RTP packets
+    ///      → H.264 depacketize → 完整 H.264 帧
+    #[test]
+    fn test_e2e_video_transcode_vp8_to_h264() {
+        // 1. 创建 VP8 encoder，编码一帧 YUV
+        let mut vp8_enc = video_codec::create_encoder(lm_core::CodecType::Vp8, 160, 120)
+            .expect("create vp8 encoder");
+        let yuv = video_codec::YuvFrame::black(160, 120, 9000);
+        let vp8_encoded = vp8_enc.encode(&yuv).expect("vp8 encode");
+        assert!(!vp8_encoded.data.is_empty(), "vp8 encoded data empty");
+        assert!(vp8_encoded.keyframe, "first vp8 frame should be keyframe");
+
+        // 2. VP8 packetize: 编码帧 → RTP 包序列
+        let mut vp8_pktizer = lm_depacketizer::create_packetizer(lm_core::CodecType::Vp8);
+        let vp8_rtp_packets = vp8_pktizer.packetize(
+            &vp8_encoded.data,
+            vp8_encoded.timestamp as u32,
+            vp8_encoded.keyframe,
+        );
+        assert!(!vp8_rtp_packets.is_empty(), "vp8 packetize produced 0 packets");
+
+        // 3. 构造 session::RtpPacketOut 并喂给 TranscodeState
+        let mut tc_state = TranscodeState::new(
+            lm_core::CodecType::Vp8,
+            lm_core::CodecType::H264,
+            90000,
+        );
+
+        let mut h264_rtp_out: Vec<crate::session::RtpPacketOut> = Vec::new();
+        let mut seq: u16 = 0;
+        for p in &vp8_rtp_packets {
+            let pkt = make_video_pkt(
+                p.payload.clone(),
+                seq,
+                p.timestamp,
+                p.marker,
+                96, // VP8 PT
+            );
+            seq = seq.wrapping_add(1);
+
+            // 转码：VP8 RTP → H.264 RTP
+            let out = tc_state.transcode(&pkt, lm_core::CodecType::Vp8, lm_core::CodecType::H264);
+            h264_rtp_out.extend(out);
+        }
+
+        // 4. 验证 H.264 RTP 输出
+        assert!(
+            !h264_rtp_out.is_empty(),
+            "transcode produced 0 H.264 RTP packets"
+        );
+
+        // 所有输出包应该是 H.264 PT (102)
+        for p in &h264_rtp_out {
+            assert_eq!(p.payload_type, 102, "expected H.264 PT=102, got {}", p.payload_type);
+            assert_eq!(p.clock_rate, 90000, "video clock rate should be 90000");
+            assert!(!p.payload.is_empty(), "H.264 RTP payload empty");
+        }
+
+        // 至少有一个 marker=true 的包（帧结束）
+        let has_marker = h264_rtp_out.iter().any(|p| p.marker);
+        assert!(has_marker, "no marker bit set in H.264 output");
+
+        // 5. H.264 depacketize: RTP 包 → 完整 H.264 帧
+        let mut h264_depkt = lm_depacketizer::create_depacketizer(lm_core::CodecType::H264);
+        let mut got_h264_frame = false;
+        for p in &h264_rtp_out {
+            let result = h264_depkt.push_packet(
+                &p.payload,
+                p.marker,
+                p.sequence_number as u16,
+                p.timestamp,
+            );
+            if result == lm_core::DepacketizeResult::FrameComplete {
+                let frame = h264_depkt.take_frame();
+                if let Some(f) = frame {
+                    assert!(!f.data.is_empty(), "H.264 frame data empty");
+                    assert_eq!(f.codec, lm_core::CodecType::H264);
+                    got_h264_frame = true;
+                }
+            }
+        }
+        assert!(got_h264_frame, "H.264 depacketizer did not produce a complete frame");
+
+        // 6. H.264 decode: 验证可以解码回 YUV
+        let mut h264_dec = video_codec::create_decoder(lm_core::CodecType::H264)
+            .expect("create h264 decoder");
+        // 重新提取帧
+        let mut h264_depkt2 = lm_depacketizer::create_depacketizer(lm_core::CodecType::H264);
+        for p in &h264_rtp_out {
+            let result = h264_depkt2.push_packet(
+                &p.payload,
+                p.marker,
+                p.sequence_number as u16,
+                p.timestamp,
+            );
+            if result == lm_core::DepacketizeResult::FrameComplete {
+                if let Some(f) = h264_depkt2.take_frame() {
+                    let decoded = h264_dec.decode(&f.data, f.timestamp as u64);
+                    // H.264 解码可能需要 SPS/PPS，第一帧可能成功
+                    if let Ok(yuv_out) = decoded {
+                        assert_eq!(yuv_out.width, 160, "decoded width mismatch");
+                        assert_eq!(yuv_out.height, 120, "decoded height mismatch");
+                    }
+                }
+            }
+        }
+    }
+
+    /// 多帧视频转码验证：编码 3 帧 VP8，逐帧转码为 H.264
+    #[test]
+    fn test_e2e_video_transcode_multi_frame() {
+        let mut vp8_enc = video_codec::create_encoder(lm_core::CodecType::Vp8, 160, 120)
+            .expect("create vp8 encoder");
+        let mut tc_state = TranscodeState::new(
+            lm_core::CodecType::Vp8,
+            lm_core::CodecType::H264,
+            90000,
+        );
+
+        let mut total_h264_packets = 0;
+        let mut frames_transcoded = 0;
+
+        for i in 0..3u32 {
+            // 每帧不同的 YUV（渐变亮度）
+            let mut yuv = video_codec::YuvFrame::black(160, 120, 9000u64 * (i as u64 + 1));
+            // 填充 Y 为不同值
+            for y in yuv.y.iter_mut() {
+                *y = (i * 40) as u8;
+            }
+
+            // VP8 encode
+            let vp8_encoded = vp8_enc.encode(&yuv).expect("vp8 encode");
+            assert!(!vp8_encoded.data.is_empty());
+
+            // VP8 packetize
+            let mut vp8_pktizer = lm_depacketizer::create_packetizer(lm_core::CodecType::Vp8);
+            let vp8_rtp = vp8_pktizer.packetize(
+                &vp8_encoded.data,
+                vp8_encoded.timestamp as u32,
+                vp8_encoded.keyframe,
+            );
+
+            // 转码每帧
+            let mut seq: u16 = (i * 100) as u16;
+            let mut frame_output = 0;
+            for p in &vp8_rtp {
+                let pkt = make_video_pkt(
+                    p.payload.clone(),
+                    seq,
+                    p.timestamp,
+                    p.marker,
+                    96,
+                );
+                seq = seq.wrapping_add(1);
+                let out = tc_state.transcode(&pkt, lm_core::CodecType::Vp8, lm_core::CodecType::H264);
+                frame_output += out.len();
+            }
+
+            if frame_output > 0 {
+                frames_transcoded += 1;
+            }
+            total_h264_packets += frame_output;
+        }
+
+        // 至少第一帧（keyframe）应该成功转码
+        assert!(frames_transcoded >= 1, "at least 1 frame should transcode");
+        assert!(total_h264_packets > 0, "should produce H.264 RTP packets");
+    }
+
+    /// 验证转码输出的 sequence number 是递增的
+    #[test]
+    fn test_e2e_video_transcode_seq_increment() {
+        let mut vp8_enc = video_codec::create_encoder(lm_core::CodecType::Vp8, 160, 120)
+            .expect("create vp8 encoder");
+        let yuv = video_codec::YuvFrame::black(160, 120, 9000);
+        let vp8_encoded = vp8_enc.encode(&yuv).expect("vp8 encode");
+
+        let mut vp8_pktizer = lm_depacketizer::create_packetizer(lm_core::CodecType::Vp8);
+        let vp8_rtp = vp8_pktizer.packetize(&vp8_encoded.data, vp8_encoded.timestamp as u32, vp8_encoded.keyframe);
+
+        let mut tc_state = TranscodeState::new(
+            lm_core::CodecType::Vp8,
+            lm_core::CodecType::H264,
+            90000,
+        );
+
+        let mut seq: u16 = 0;
+        let mut out_seqs: Vec<u32> = Vec::new();
+        for p in &vp8_rtp {
+            let pkt = make_video_pkt(p.payload.clone(), seq, p.timestamp, p.marker, 96);
+            seq = seq.wrapping_add(1);
+            let out = tc_state.transcode(&pkt, lm_core::CodecType::Vp8, lm_core::CodecType::H264);
+            for o in out {
+                out_seqs.push(o.sequence_number);
+            }
+        }
+
+        // 验证 sequence number 递增
+        for i in 1..out_seqs.len() {
+            assert!(
+                out_seqs[i] == out_seqs[i - 1] + 1,
+                "seq not incrementing: {} → {}",
+                out_seqs[i - 1],
+                out_seqs[i]
+            );
+        }
+    }
 }

@@ -11,6 +11,7 @@ lm-depacketizer = { path = "../lm-depacketizer" }
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+bytes.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

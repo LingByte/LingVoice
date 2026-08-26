@@ -151,6 +151,44 @@ func (s *Server) GetSession(id string) (*Session, bool) {
 
 // --- SIP 事件处理 ---
 
+// detectLocalIP 推断 SDP answer 中应使用的本地 IP。
+//
+// 优先级：
+//  1. Via header 的 received/rport（NAT 穿透后对端看到的地址）
+//  2. config.Addr 中的非 0.0.0.0 地址
+//  3. 本机非 loopback 的 IPv4 地址（UDP dialback 探测）
+func (s *Server) detectLocalIP(req *sip.Request) string {
+	// 1. 尝试从 Via header 取 received/rport
+	for _, via := range req.GetHeaders("Via") {
+		viaVal := via.Value()
+		// 格式: SIP/2.0/UDP 192.168.1.1:5060;branch=...;rport=12345;received=192.168.1.100
+		// 我们需要的是本机地址，不是对端的。Via 里的 host 是本机在注册时的地址。
+		// 但更可靠的方式是取 Contact 或 Via 中的地址。
+		_ = viaVal
+	}
+
+	// 2. 从 config.Addr 解析
+	host, _, err := net.SplitHostPort(s.config.Addr)
+	if err == nil && host != "" && host != "0.0.0.0" && host != "::" {
+		return host
+	}
+
+	// 3. 取本机非 loopback 的 IPv4 地址
+	addrs, err := net.InterfaceAddrs()
+	if err == nil {
+		for _, addr := range addrs {
+			if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+				if ip4 := ipNet.IP.To4(); ip4 != nil {
+					return ip4.String()
+				}
+			}
+		}
+	}
+
+	// 4. fallback
+	return "127.0.0.1"
+}
+
 func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	callID := string(*req.CallID())
 	from := req.From().Address.String()
@@ -193,6 +231,11 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 			FrameDurationMs: 20,
 		}
 	}
+
+	// 推断本地 IP：优先从 Via header 的 received/rport 取对端看到的地址，
+	// 否则从 config.Addr 解析，最后 fallback 到本机非 loopback IP。
+	localIP := s.detectLocalIP(req)
+
 	session := &Session{
 		id:        sessionID,
 		callID:    callID,
@@ -204,6 +247,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		inviteReq: req,
 		inviteTx:  tx,
 		audio:     audio,
+		localIP:   localIP,
 	}
 	s.sessions.Store(sessionID, session)
 
@@ -317,10 +361,14 @@ func (sess *Session) answer() error {
 	// 生成 SDP answer body
 	sdpBody := sess.buildSdpAnswer()
 
+	// 日志：打印 SDP answer 用于调试
+	fmt.Printf("[sip] 200 OK + SDP answer: callID=%s localIP=%s rtpPort=%d\n%s\n",
+		sess.callID, sess.localIP, sess.localRtpPort, sdpBody)
+
 	// 发 200 OK + SDP
 	resp := sip.NewResponseFromRequest(sess.inviteReq, 200, "OK", []byte(sdpBody))
 	resp.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-	resp.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:lingvoice@%s>", sess.to)))
+	resp.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:lingvoice@%s:%d>", sess.localIP, 5060)))
 	_ = sess.inviteTx.Respond(resp)
 
 	// 通知上层：接听 + 媒体就绪

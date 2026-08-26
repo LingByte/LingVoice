@@ -268,11 +268,20 @@ func (h *rustHandler) OnData(sessionID string, msg common.DataMessage) error {
 // rtpReadLoop 从 SIP 对端读 RTP → 推到 Rust
 func (h *rustHandler) rtpReadLoop(sessionID string, trackID common.TrackID, ss *sessionState) {
 	buf := make([]byte, 1500)
+	var pktCount uint64
 	for {
 		payload, seq, timestamp, ssrc, marker, err := ss.rtpConn.ReadRTP(buf)
 		if err != nil {
 			h.log.Debug("RTP read end", zap.String("session", sessionID), zap.Error(err))
 			return
+		}
+		pktCount++
+		if pktCount == 1 {
+			h.log.Info(">> 收到第一个 RTP 包",
+				zap.String("session", sessionID),
+				zap.Int("payloadLen", len(payload)),
+				zap.Uint16("seq", seq),
+				zap.Uint32("ssrc", ssrc))
 		}
 		frame := common.MediaFrame{
 			Type:      common.FrameAudio,
