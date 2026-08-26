@@ -18,6 +18,7 @@ lm-telemetry = { path = "../lm-telemetry" }
 lm-depacketizer = { path = "../lm-depacketizer" }
 lm-stream = { path = "../lm-stream" }
 audio-codec.workspace = true
+video-codec = { path = "../video-codec" }
 prost.workspace = true
 prost-types.workspace = true
 tonic.workspace = true

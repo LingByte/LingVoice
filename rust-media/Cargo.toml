@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/audio-codec",
+    "crates/video-codec",
     "crates/lm-core",
     "crates/lm-codecs",
     "crates/lm-transport",

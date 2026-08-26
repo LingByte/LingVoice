@@ -1,0 +1,24 @@
+[package]
+name = "video-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = ["vpx", "openh264"]
+vpx = []
+openh264 = ["dep:openh264"]
+
+[dependencies]
+lm-core = { path = "../lm-core" }
+openh264 = { version = "0.9", optional = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+libc = "0.2"
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[dev-dependencies]
