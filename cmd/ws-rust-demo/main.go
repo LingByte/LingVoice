@@ -115,13 +115,13 @@ func (h *rustHandler) OnEvent(event common.ProtocolEvent) error {
 		ss := h.getOrCreateSession(event.SessionID)
 		if !ss.created {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := h.bridge.CreateSession(ctx, event.SessionID, "ws-room", ""); err != nil {
+			if err := h.bridge.CreateSession(ctx, event.SessionID, "demo-room", ""); err != nil {
 				h.log.Error("rust CreateSession failed", zap.Error(err))
 			} else {
 				ss.created = true
 				h.log.Info("rust session created",
 					zap.String("session", event.SessionID),
-					zap.String("room", "ws-room"))
+					zap.String("room", "demo-room"))
 			}
 			cancel()
 		}
@@ -392,7 +392,7 @@ func main() {
 	fmt.Printf("  测试页面:    %s://%s\n", scheme, normalizeAddr(*addr))
 	fmt.Printf("  WebSocket:   %s://%s%s\n", wsScheme, normalizeAddr(*addr), *path)
 	fmt.Printf("  Rust 媒体:   %s\n", *rustAddr)
-	fmt.Printf("  Room:        ws-room\n")
+	fmt.Printf("  Room:        demo-room (与 webrtc-rust-demo 共享)\n")
 	if *tls {
 		fmt.Printf("  TLS:         已启用（自签证书，浏览器需点\"继续访问\"）\n")
 	}

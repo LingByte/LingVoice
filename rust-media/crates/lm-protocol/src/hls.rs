@@ -9,7 +9,7 @@
 //! 4. 更新 m3u8 playlist（滑动窗口）
 //! 5. LL-HLS 模式：使用 partial segments + `#EXT-X-PART` 标签
 
-use crate::{Protocol, Remuxer};
+use crate::{Protocol, Remuxer, TsMuxer};
 use lm_core::{CodecType, MediaFrame, TrackKind};
 use std::collections::VecDeque;
 use tracing::{info, warn};
@@ -159,11 +159,13 @@ impl HlsPlaylist {
 /// HLS Remuxer
 ///
 /// 将 MediaFrame 转为 HLS TS 分段 + m3u8 playlist。
-/// 简化实现：TS 封装使用基本 TS 包格式。
+/// 使用标准 MPEG-TS 封装（PAT/PMT/PES/PCR）。
 pub struct HlsRemuxer {
     config: HlsConfig,
     playlist: HlsPlaylist,
-    /// 当前分段缓冲
+    /// TS muxer
+    ts_muxer: TsMuxer,
+    /// 当前分段缓冲（TS 封装后的数据）
     current_segment_data: Vec<u8>,
     /// 当前分段起始时间戳
     current_segment_start_ts: Option<u32>,
@@ -182,9 +184,11 @@ pub struct HlsRemuxer {
 impl HlsRemuxer {
     pub fn new(config: HlsConfig, video_codec: CodecType, audio_codec: CodecType) -> Self {
         let playlist = HlsPlaylist::new(config.clone());
+        let ts_muxer = TsMuxer::new(video_codec, audio_codec);
         Self {
             config,
             playlist,
+            ts_muxer,
             current_segment_data: Vec::new(),
             current_segment_start_ts: None,
             first_timestamp: None,
@@ -283,12 +287,13 @@ impl Remuxer for HlsRemuxer {
         // 检查是否需要切分分段
         if self.should_split(frame) {
             let output = self.finalize_current_segment();
-            // 不立即返回，继续处理当前帧
-            // 在实际实现中，分段数据和 playlist 会通过 HTTP 分发
 
-            // 处理当前帧
+            // 新分段开始：写 PAT/PMT + 当前帧
             self.current_segment_start_ts = Some(frame.timestamp);
-            self.current_segment_data.extend_from_slice(&frame.data);
+            // 重置 TS muxer 以在新分段开头写 PAT/PMT
+            self.ts_muxer = TsMuxer::new(self.video_codec, self.audio_codec);
+            let ts_data = self.ts_muxer.write_frame(frame);
+            self.current_segment_data.extend_from_slice(&ts_data);
             return output;
         }
 
@@ -297,9 +302,9 @@ impl Remuxer for HlsRemuxer {
             self.current_segment_start_ts = Some(frame.timestamp);
         }
 
-        // 追加帧数据到当前分段
-        // 简化：直接追加原始帧数据（实际需要 TS 封装）
-        self.current_segment_data.extend_from_slice(&frame.data);
+        // 用 TS muxer 封装帧
+        let ts_data = self.ts_muxer.write_frame(frame);
+        self.current_segment_data.extend_from_slice(&ts_data);
 
         Vec::new()
     }

@@ -16,6 +16,8 @@ const (
 	ProtocolWHIP   ProtocolType = "whip"
 	ProtocolWHEP   ProtocolType = "whep"
 	ProtocolMQTT   ProtocolType = "mqtt"
+	ProtocolRTSP   ProtocolType = "rtsp"
+	ProtocolSRT    ProtocolType = "srt"
 )
 
 // ─── 事件 ───────────────────────────────────────────────────────────────────
@@ -167,6 +169,7 @@ const (
 	CodecVP9   CodecType = 0x07
 	CodecAV1   CodecType = 0x08
 	CodecRTX   CodecType = 0x09
+	CodecAAC   CodecType = 0x0a
 )
 
 func (c CodecType) String() string {
@@ -189,6 +192,8 @@ func (c CodecType) String() string {
 		return "av1"
 	case CodecRTX:
 		return "rtx"
+	case CodecAAC:
+		return "aac"
 	default:
 		return "unknown"
 	}
@@ -214,6 +219,8 @@ func CodecFromString(s string) (CodecType, error) {
 		return CodecAV1, nil
 	case "rtx":
 		return CodecRTX, nil
+	case "aac":
+		return CodecAAC, nil
 	default:
 		return 0, errors.New("unknown codec: " + s)
 	}
