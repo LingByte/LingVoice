@@ -99,14 +99,20 @@ CPU 恒定（不随 N 增长），音质好（只混有声音的人）。
 |------|------|------|
 | Opus 解码器 | ✅ 完整 | `audio-codec/src/opus.rs` OpusDecoder |
 | Opus 编码器 | ✅ 完整 | `audio-codec/src/opus.rs` OpusEncoder |
+| PCMU 编码器 (µ-law 查表) | ✅ 完整 | `audio-codec/src/pcmu.rs` linear_to_ulaw |
 | IngressPipeline (RTP→解码→PCM) | ✅ 完整 | `lm-pipeline/src/lib.rs` |
 | EgressPipeline (PCM→编码→Pacer) | ✅ 完整 | `lm-pipeline/src/lib.rs` |
-| ConferenceMixer (N-1 混音) | ✅ 完整 | `lm-mixer/src/lib.rs` |
+| ConferenceMixer (N-1 混音 + Top-K) | ✅ 完整 | `lm-mixer/src/lib.rs` |
 | VadDetector (能量VAD) | ✅ 完整 | `lm-dsp/src/lib.rs` |
 | proto Mix 接口 | ✅ 已定义 | `proto/media_node.proto` |
-| lm-control Mix gRPC | ❌ Stub | `lm-control/src/service.rs` |
-| Go rustbridge Mix 方法 | ❌ 缺失 | `pkg/media/rustbridge/client.go` |
-| Go demo 混音调用 | ❌ 缺失 | `cmd/webrtc-rust-demo/main.go` |
+| lm-control Mix gRPC | ✅ 完整实现 | `lm-control/src/service.rs` |
+| Go rustbridge Mix 方法 | ✅ 完整 | `pkg/media/rustbridge/client.go` |
+| Go demo 混音调用 | ✅ 完整 | `cmd/webrtc-rust-demo/main.go` |
+| Top-K VAD 混音优化 | ✅ 完整 | `lm-mixer/src/lib.rs` with_max_speakers |
+| 可配置输出编码 (Opus/PCMU) | ✅ 完整 | `lm-control/src/mixer.rs` run_egress_bridge |
+| 静音跳过 (silence skip) | ✅ 完整 | `lm-control/src/mixer.rs` run_egress_bridge |
+| 零拷贝混音 (zero-clone mix) | ✅ 完整 | `lm-mixer/src/lib.rs` mixing_loop |
+| LingEdge 混音压测 | ✅ 完整 | `LingEdge/src/protocol/media.rs` |
 
 ### 需要实现的工作
 
@@ -488,11 +494,12 @@ Node2 检测到 N 是主发言者:
 
 ```
 Phase 1 (音频混音)
-  ├── 1a. lm-control 混音 gRPC 真实实现          ← 先做这个
-  ├── 1b. Go rustbridge 添加 Mix 方法
-  ├── 1c. Go demo 混音模式自动切换
-  ├── 1d. Top-K VAD 混音优化
-  └── 1e. 压测验证 50/100 人音频
+  ├── 1a. lm-control 混音 gRPC 真实实现          ✅ 完成
+  ├── 1b. Go rustbridge 添加 Mix 方法            ✅ 完成
+  ├── 1c. Go demo 混音模式自动切换               ✅ 完成
+  ├── 1d. Top-K VAD 混音优化                    ✅ 完成
+  ├── 1e. 压测验证 50/100 人音频                 ✅ 完成
+  └── 1f. 混音性能优化 (多策略)                  ✅ 完成
 
 Phase 2 (视频按需订阅)
   ├── 2a. 前端 simulcast 发送
@@ -507,6 +514,61 @@ Phase 3 (分片 SFU)
   ├── 3c. 跨节点主发言者检测
   └── 3d. 分布式压测
 ```
+
+## Phase 1 压测结果
+
+### 测试环境
+
+- **媒体节点**: Rust media-node (release 模式), macOS Darwin 21.6.0
+- **压测工具**: LingEdge `media` 子命令 (release 模式)
+- **参数**: 50pps/session (Opus 20ms), 10s 持续, 160 bytes/packet (PCMU) 或 960 bytes (Opus 48kHz)
+- **混音输入**: PCMU 8kHz (raw payload 可直接 µ-law 解码)
+- **Top-K**: K=5, energy=varied (线性振幅梯度, session 0=最响→session N-1=最轻)
+
+### 优化策略
+
+| 策略 | 描述 | 实现位置 |
+|------|------|----------|
+| Top-K VAD | 每 tick 只混能量最高的 K 路 PCM, 300ms hysteresis hold | `lm-mixer/src/lib.rs` mixing_loop |
+| 可配置输出编码 | Opus (浏览器) 或 PCMU (SIP/极致性能, µ-law 查表零成本) | `lm-control/src/mixer.rs` run_egress_bridge |
+| 静音跳过 | RMS < 50 时不编码不发送, 只推进时间戳 | `lm-control/src/mixer.rs` run_egress_bridge |
+| 零拷贝混音 | 直接用引用混音到预分配 buffer, 消除 N×K Vec clone/tick | `lm-mixer/src/lib.rs` mixing_loop |
+
+### 50 人会议
+
+| 模式 | Push pps | Recv pps | Recv Mbps | Delivery | 带宽 vs SFU |
+|------|----------|----------|-----------|----------|-------------|
+| SFU (N²转发) | 2501 | 102,031 | 130.6 | 83.3% | 1× (基准) |
+| Mix-Opus (全混音) | 2503 | 1,893 | 2.4 | 75.6% | **54.4× 节省** |
+| Mix-PCMU (全混音) | 2500 | 1,861 | 2.4 | 74.5% | **54.4× 节省** |
+| TopK-Opus K=5 | 2503 | 2,124 | 2.7 | **84.8%** | **48.4× 节省** |
+| TopK-PCMU K=5 | 2501 | 2,102 | 2.7 | 84.0% | **48.4× 节省** |
+
+### 100 人会议
+
+| 模式 | Push pps | Recv pps | Recv Mbps | Delivery | 带宽 vs SFU |
+|------|----------|----------|-----------|----------|-------------|
+| SFU (N²转发) | 4938 | 395,845 | 506.7 | 81.0% | 1× (基准) |
+| Mix-Opus (全混音) | 4997 | 2,473 | 3.2 | 49.5% | **158× 节省** |
+| Mix-PCMU (全混音) | 4997 | 2,743 | 3.5 | 54.9% | **145× 节省** |
+| TopK-Opus K=5 | 5001 | 3,883 | 5.0 | **77.6%** | **101× 节省** |
+| TopK-PCMU K=5 | 5000 | 3,862 | 4.9 | 77.3% | **103× 节省** |
+
+### 关键发现
+
+1. **SFU 带宽爆炸**: 100 人 SFU 需要 506.7 Mbps (O(N²)=9900 路转发), 生产环境不可行
+2. **Top-K 显著优于全混音**: 100 人时 Top-K delivery 77.6% vs 全混音 49.5%, 因为 mixing loop 只处理 5 路而非 100 路
+3. **带宽节省巨大**: TopK 100 人仅 5.0 Mbps vs SFU 506.7 Mbps = **101× 带宽节省**
+4. **PCMU vs Opus**: PCMU 在全混音模式有轻微优势 (54.9% vs 49.5%), Top-K 模式差异不大 (77.3% vs 77.6%)
+5. **瓶颈分析**: 100 人 Top-K 的 77.6% delivery 瓶颈在于 100 个独立 egress bridge task 的调度开销, 非编码本身
+6. **静音跳过有效**: 无 active speaker 的目的地跳过编码, 减少 CPU 浪费
+
+### 结论与下一步
+
+- **8-100 人会议**: Top-K (K=5) + Opus 输出是最佳方案, delivery >77%, 带宽节省 100×
+- **SIP 场景**: 使用 PCMU 输出, 零成本编码, 适合内部通信
+- **100+ 人**: 需要进入 Phase 3 (分片 SFU), 单节点 100 人 Top-K 已接近极限
+- **进一步优化方向**: 单任务批量编码 (消除 100 个 task 调度), 共享编码器池 (极限模式, 牺牲音质)
 
 ## 不做的事
 
