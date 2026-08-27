@@ -402,6 +402,63 @@ message HealthCheckResponse {
   uint64 memory_usage_mb = 7;
 }
 
+// === 视频转码 ===
+
+// TranscodeVideoRequest 视频转码请求（client streaming）
+// Go 层持续推送编码帧（如 H.264），Rust 层解码→YUV→编码为目标格式（如 VP8）
+// 使用 client streaming：每帧一个请求，Rust 返回转码后的帧
+message TranscodeVideoRequest {
+  string transcode_id = 1;   // 转码会话 ID（用于复用解码器/编码器）
+  string from_codec = 2;     // 源编码：h264 | vp8 | vp9 | h265 | av1
+  string to_codec = 3;       // 目标编码：h264 | vp8 | vp9 | h265 | av1
+  uint32 width = 4;
+  uint32 height = 5;
+  bool prefer_hardware = 6;  // 优先使用硬件编码器
+  bytes encoded_frame = 7;   // 编码后的视频帧
+  uint64 timestamp = 8;      // 时间戳（RTP 时钟基准）
+  bool keyframe = 9;         // 是否关键帧
+  // 配置（仅首帧需要设置）
+  uint32 bitrate = 10;       // 目标比特率（bps）
+  uint32 framerate = 11;     // 目标帧率
+}
+
+message TranscodeVideoResponse {
+  string transcode_id = 1;
+  bytes encoded_frame = 2;   // 转码后的视频帧
+  uint64 timestamp = 3;
+  bool keyframe = 4;
+  uint32 width = 5;
+  uint32 height = 6;
+  uint64 frames_processed = 7;
+  bool hardware_used = 8;    // 是否使用硬件编码器
+}
+
+// CreateTranscodeSessionRequest 创建转码会话（持久化解码器/编码器）
+message CreateTranscodeSessionRequest {
+  string transcode_id = 1;
+  string from_codec = 2;
+  string to_codec = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+  bool prefer_hardware = 6;
+  uint32 bitrate = 7;
+  uint32 framerate = 8;
+}
+
+message CreateTranscodeSessionResponse {
+  string transcode_id = 1;
+  bool hardware_used = 2;
+}
+
+// DestroyTranscodeSessionRequest 销毁转码会话
+message DestroyTranscodeSessionRequest {
+  string transcode_id = 1;
+}
+
+message DestroyTranscodeSessionResponse {
+  uint64 frames_processed = 1;
+}
+
 // === 服务定义 ===
 
 // MediaNode 服务 — Go 控制面 → Rust 媒体面
@@ -449,4 +506,10 @@ service MediaNode {
 
   // 统计
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+
+  // 视频转码（client streaming：Go 推送编码帧，Rust 返回转码后帧）
+  rpc TranscodeVideo(stream TranscodeVideoRequest) returns (stream TranscodeVideoResponse);
+  // 转码会话管理（持久化解码器/编码器，避免每帧重建）
+  rpc CreateTranscodeSession(CreateTranscodeSessionRequest) returns (CreateTranscodeSessionResponse);
+  rpc DestroyTranscodeSession(DestroyTranscodeSessionRequest) returns (DestroyTranscodeSessionResponse);
 }

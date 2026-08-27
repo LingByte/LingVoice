@@ -206,11 +206,91 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		})
 		w.WriteHeader(http.StatusOK)
 	case http.MethodPatch:
-		// ICE restart 等场景，暂不实现
-		http.Error(w, "PATCH not supported yet", http.StatusNotImplemented)
+		s.handlePatchICERestart(w, r, sessionID, session)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// handlePatchICERestart 处理 PATCH 请求，执行 ICE restart。
+//
+// WHIP PATCH 用于 ICE restart：客户端发送一个新的 SDP offer（包含新的 ICE ufrag），
+// 服务端重新协商并返回新的 SDP answer。
+func (s *Server) handlePatchICERestart(w http.ResponseWriter, r *http.Request, sessionID string, session *Session) {
+	// 读取 PATCH body（新的 SDP offer，含 ICE restart 标识）
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.log.Error("whip patch read body", zap.String("session", sessionID), zap.Error(err))
+		http.Error(w, "read body failed", http.StatusBadRequest)
+		return
+	}
+
+	if len(body) == 0 {
+		s.log.Error("whip patch empty body", zap.String("session", sessionID))
+		http.Error(w, "empty SDP body", http.StatusBadRequest)
+		return
+	}
+
+	// 加锁保护 PeerConnection 操作
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if session.closed {
+		s.log.Error("whip patch session closed", zap.String("session", sessionID))
+		http.Error(w, "session closed", http.StatusGone)
+		return
+	}
+
+	pc := session.pc
+
+	// 设置远端 SDP（新的 offer，含 ICE restart）
+	offer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: string(body)}
+	if err := pc.SetRemoteDescription(offer); err != nil {
+		s.log.Error("whip patch set remote desc", zap.String("session", sessionID), zap.Error(err))
+		http.Error(w, "set remote desc failed", http.StatusBadRequest)
+		return
+	}
+
+	// 创建新的 Answer
+	answer, err := pc.CreateAnswer(nil)
+	if err != nil {
+		s.log.Error("whip patch create answer", zap.String("session", sessionID), zap.Error(err))
+		http.Error(w, "create answer failed", http.StatusInternalServerError)
+		return
+	}
+
+	// 设置本地描述（触发 ICE 重新 gathering）
+	if err := pc.SetLocalDescription(answer); err != nil {
+		s.log.Error("whip patch set local desc", zap.String("session", sessionID), zap.Error(err))
+		http.Error(w, "set local desc failed", http.StatusInternalServerError)
+		return
+	}
+
+	// 等待 ICE gathering 完成
+	gatherComplete := webrtc.GatheringCompletePromise(pc)
+	<-gatherComplete
+
+	// 返回最终 answer（含所有新 ICE candidates）
+	finalAnswer := pc.LocalDescription()
+	if finalAnswer == nil {
+		s.log.Error("whip patch nil local description", zap.String("session", sessionID))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/sdp")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(finalAnswer.SDP))
+
+	s.log.Info("whip ICE restart completed", zap.String("session", sessionID))
+
+	// 通知上层 ICE 重启完成
+	s.handler.OnEvent(common.ProtocolEvent{
+		Type:      common.EventReconnect,
+		Protocol:  common.ProtocolWHIP,
+		SessionID: sessionID,
+		Timestamp: time.Now(),
+	})
 }
 
 func (s *Server) setupPeerConnection(session *Session) {

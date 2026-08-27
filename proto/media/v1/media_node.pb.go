@@ -3616,6 +3616,476 @@ func (x *HealthCheckResponse) GetMemoryUsageMb() uint64 {
 	return 0
 }
 
+// TranscodeVideoRequest 视频转码请求（client streaming）
+// Go 层持续推送编码帧（如 H.264），Rust 层解码→YUV→编码为目标格式（如 VP8）
+// 使用 client streaming：每帧一个请求，Rust 返回转码后的帧
+type TranscodeVideoRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	TranscodeId    string                 `protobuf:"bytes,1,opt,name=transcode_id,json=transcodeId,proto3" json:"transcode_id,omitempty"` // 转码会话 ID（用于复用解码器/编码器）
+	FromCodec      string                 `protobuf:"bytes,2,opt,name=from_codec,json=fromCodec,proto3" json:"from_codec,omitempty"`       // 源编码：h264 | vp8 | vp9 | h265 | av1
+	ToCodec        string                 `protobuf:"bytes,3,opt,name=to_codec,json=toCodec,proto3" json:"to_codec,omitempty"`             // 目标编码：h264 | vp8 | vp9 | h265 | av1
+	Width          uint32                 `protobuf:"varint,4,opt,name=width,proto3" json:"width,omitempty"`
+	Height         uint32                 `protobuf:"varint,5,opt,name=height,proto3" json:"height,omitempty"`
+	PreferHardware bool                   `protobuf:"varint,6,opt,name=prefer_hardware,json=preferHardware,proto3" json:"prefer_hardware,omitempty"` // 优先使用硬件编码器
+	EncodedFrame   []byte                 `protobuf:"bytes,7,opt,name=encoded_frame,json=encodedFrame,proto3" json:"encoded_frame,omitempty"`        // 编码后的视频帧
+	Timestamp      uint64                 `protobuf:"varint,8,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                                 // 时间戳（RTP 时钟基准）
+	Keyframe       bool                   `protobuf:"varint,9,opt,name=keyframe,proto3" json:"keyframe,omitempty"`                                   // 是否关键帧
+	// 配置（仅首帧需要设置）
+	Bitrate       uint32 `protobuf:"varint,10,opt,name=bitrate,proto3" json:"bitrate,omitempty"`     // 目标比特率（bps）
+	Framerate     uint32 `protobuf:"varint,11,opt,name=framerate,proto3" json:"framerate,omitempty"` // 目标帧率
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TranscodeVideoRequest) Reset() {
+	*x = TranscodeVideoRequest{}
+	mi := &file_media_node_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TranscodeVideoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TranscodeVideoRequest) ProtoMessage() {}
+
+func (x *TranscodeVideoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_media_node_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TranscodeVideoRequest.ProtoReflect.Descriptor instead.
+func (*TranscodeVideoRequest) Descriptor() ([]byte, []int) {
+	return file_media_node_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *TranscodeVideoRequest) GetTranscodeId() string {
+	if x != nil {
+		return x.TranscodeId
+	}
+	return ""
+}
+
+func (x *TranscodeVideoRequest) GetFromCodec() string {
+	if x != nil {
+		return x.FromCodec
+	}
+	return ""
+}
+
+func (x *TranscodeVideoRequest) GetToCodec() string {
+	if x != nil {
+		return x.ToCodec
+	}
+	return ""
+}
+
+func (x *TranscodeVideoRequest) GetWidth() uint32 {
+	if x != nil {
+		return x.Width
+	}
+	return 0
+}
+
+func (x *TranscodeVideoRequest) GetHeight() uint32 {
+	if x != nil {
+		return x.Height
+	}
+	return 0
+}
+
+func (x *TranscodeVideoRequest) GetPreferHardware() bool {
+	if x != nil {
+		return x.PreferHardware
+	}
+	return false
+}
+
+func (x *TranscodeVideoRequest) GetEncodedFrame() []byte {
+	if x != nil {
+		return x.EncodedFrame
+	}
+	return nil
+}
+
+func (x *TranscodeVideoRequest) GetTimestamp() uint64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+func (x *TranscodeVideoRequest) GetKeyframe() bool {
+	if x != nil {
+		return x.Keyframe
+	}
+	return false
+}
+
+func (x *TranscodeVideoRequest) GetBitrate() uint32 {
+	if x != nil {
+		return x.Bitrate
+	}
+	return 0
+}
+
+func (x *TranscodeVideoRequest) GetFramerate() uint32 {
+	if x != nil {
+		return x.Framerate
+	}
+	return 0
+}
+
+type TranscodeVideoResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	TranscodeId     string                 `protobuf:"bytes,1,opt,name=transcode_id,json=transcodeId,proto3" json:"transcode_id,omitempty"`
+	EncodedFrame    []byte                 `protobuf:"bytes,2,opt,name=encoded_frame,json=encodedFrame,proto3" json:"encoded_frame,omitempty"` // 转码后的视频帧
+	Timestamp       uint64                 `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	Keyframe        bool                   `protobuf:"varint,4,opt,name=keyframe,proto3" json:"keyframe,omitempty"`
+	Width           uint32                 `protobuf:"varint,5,opt,name=width,proto3" json:"width,omitempty"`
+	Height          uint32                 `protobuf:"varint,6,opt,name=height,proto3" json:"height,omitempty"`
+	FramesProcessed uint64                 `protobuf:"varint,7,opt,name=frames_processed,json=framesProcessed,proto3" json:"frames_processed,omitempty"`
+	HardwareUsed    bool                   `protobuf:"varint,8,opt,name=hardware_used,json=hardwareUsed,proto3" json:"hardware_used,omitempty"` // 是否使用硬件编码器
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *TranscodeVideoResponse) Reset() {
+	*x = TranscodeVideoResponse{}
+	mi := &file_media_node_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TranscodeVideoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TranscodeVideoResponse) ProtoMessage() {}
+
+func (x *TranscodeVideoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_media_node_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TranscodeVideoResponse.ProtoReflect.Descriptor instead.
+func (*TranscodeVideoResponse) Descriptor() ([]byte, []int) {
+	return file_media_node_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *TranscodeVideoResponse) GetTranscodeId() string {
+	if x != nil {
+		return x.TranscodeId
+	}
+	return ""
+}
+
+func (x *TranscodeVideoResponse) GetEncodedFrame() []byte {
+	if x != nil {
+		return x.EncodedFrame
+	}
+	return nil
+}
+
+func (x *TranscodeVideoResponse) GetTimestamp() uint64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+func (x *TranscodeVideoResponse) GetKeyframe() bool {
+	if x != nil {
+		return x.Keyframe
+	}
+	return false
+}
+
+func (x *TranscodeVideoResponse) GetWidth() uint32 {
+	if x != nil {
+		return x.Width
+	}
+	return 0
+}
+
+func (x *TranscodeVideoResponse) GetHeight() uint32 {
+	if x != nil {
+		return x.Height
+	}
+	return 0
+}
+
+func (x *TranscodeVideoResponse) GetFramesProcessed() uint64 {
+	if x != nil {
+		return x.FramesProcessed
+	}
+	return 0
+}
+
+func (x *TranscodeVideoResponse) GetHardwareUsed() bool {
+	if x != nil {
+		return x.HardwareUsed
+	}
+	return false
+}
+
+// CreateTranscodeSessionRequest 创建转码会话（持久化解码器/编码器）
+type CreateTranscodeSessionRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	TranscodeId    string                 `protobuf:"bytes,1,opt,name=transcode_id,json=transcodeId,proto3" json:"transcode_id,omitempty"`
+	FromCodec      string                 `protobuf:"bytes,2,opt,name=from_codec,json=fromCodec,proto3" json:"from_codec,omitempty"`
+	ToCodec        string                 `protobuf:"bytes,3,opt,name=to_codec,json=toCodec,proto3" json:"to_codec,omitempty"`
+	Width          uint32                 `protobuf:"varint,4,opt,name=width,proto3" json:"width,omitempty"`
+	Height         uint32                 `protobuf:"varint,5,opt,name=height,proto3" json:"height,omitempty"`
+	PreferHardware bool                   `protobuf:"varint,6,opt,name=prefer_hardware,json=preferHardware,proto3" json:"prefer_hardware,omitempty"`
+	Bitrate        uint32                 `protobuf:"varint,7,opt,name=bitrate,proto3" json:"bitrate,omitempty"`
+	Framerate      uint32                 `protobuf:"varint,8,opt,name=framerate,proto3" json:"framerate,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *CreateTranscodeSessionRequest) Reset() {
+	*x = CreateTranscodeSessionRequest{}
+	mi := &file_media_node_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateTranscodeSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateTranscodeSessionRequest) ProtoMessage() {}
+
+func (x *CreateTranscodeSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_media_node_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateTranscodeSessionRequest.ProtoReflect.Descriptor instead.
+func (*CreateTranscodeSessionRequest) Descriptor() ([]byte, []int) {
+	return file_media_node_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *CreateTranscodeSessionRequest) GetTranscodeId() string {
+	if x != nil {
+		return x.TranscodeId
+	}
+	return ""
+}
+
+func (x *CreateTranscodeSessionRequest) GetFromCodec() string {
+	if x != nil {
+		return x.FromCodec
+	}
+	return ""
+}
+
+func (x *CreateTranscodeSessionRequest) GetToCodec() string {
+	if x != nil {
+		return x.ToCodec
+	}
+	return ""
+}
+
+func (x *CreateTranscodeSessionRequest) GetWidth() uint32 {
+	if x != nil {
+		return x.Width
+	}
+	return 0
+}
+
+func (x *CreateTranscodeSessionRequest) GetHeight() uint32 {
+	if x != nil {
+		return x.Height
+	}
+	return 0
+}
+
+func (x *CreateTranscodeSessionRequest) GetPreferHardware() bool {
+	if x != nil {
+		return x.PreferHardware
+	}
+	return false
+}
+
+func (x *CreateTranscodeSessionRequest) GetBitrate() uint32 {
+	if x != nil {
+		return x.Bitrate
+	}
+	return 0
+}
+
+func (x *CreateTranscodeSessionRequest) GetFramerate() uint32 {
+	if x != nil {
+		return x.Framerate
+	}
+	return 0
+}
+
+type CreateTranscodeSessionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TranscodeId   string                 `protobuf:"bytes,1,opt,name=transcode_id,json=transcodeId,proto3" json:"transcode_id,omitempty"`
+	HardwareUsed  bool                   `protobuf:"varint,2,opt,name=hardware_used,json=hardwareUsed,proto3" json:"hardware_used,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateTranscodeSessionResponse) Reset() {
+	*x = CreateTranscodeSessionResponse{}
+	mi := &file_media_node_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateTranscodeSessionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateTranscodeSessionResponse) ProtoMessage() {}
+
+func (x *CreateTranscodeSessionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_media_node_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateTranscodeSessionResponse.ProtoReflect.Descriptor instead.
+func (*CreateTranscodeSessionResponse) Descriptor() ([]byte, []int) {
+	return file_media_node_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *CreateTranscodeSessionResponse) GetTranscodeId() string {
+	if x != nil {
+		return x.TranscodeId
+	}
+	return ""
+}
+
+func (x *CreateTranscodeSessionResponse) GetHardwareUsed() bool {
+	if x != nil {
+		return x.HardwareUsed
+	}
+	return false
+}
+
+// DestroyTranscodeSessionRequest 销毁转码会话
+type DestroyTranscodeSessionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TranscodeId   string                 `protobuf:"bytes,1,opt,name=transcode_id,json=transcodeId,proto3" json:"transcode_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DestroyTranscodeSessionRequest) Reset() {
+	*x = DestroyTranscodeSessionRequest{}
+	mi := &file_media_node_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DestroyTranscodeSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DestroyTranscodeSessionRequest) ProtoMessage() {}
+
+func (x *DestroyTranscodeSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_media_node_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DestroyTranscodeSessionRequest.ProtoReflect.Descriptor instead.
+func (*DestroyTranscodeSessionRequest) Descriptor() ([]byte, []int) {
+	return file_media_node_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *DestroyTranscodeSessionRequest) GetTranscodeId() string {
+	if x != nil {
+		return x.TranscodeId
+	}
+	return ""
+}
+
+type DestroyTranscodeSessionResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	FramesProcessed uint64                 `protobuf:"varint,1,opt,name=frames_processed,json=framesProcessed,proto3" json:"frames_processed,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *DestroyTranscodeSessionResponse) Reset() {
+	*x = DestroyTranscodeSessionResponse{}
+	mi := &file_media_node_proto_msgTypes[63]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DestroyTranscodeSessionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DestroyTranscodeSessionResponse) ProtoMessage() {}
+
+func (x *DestroyTranscodeSessionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_media_node_proto_msgTypes[63]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DestroyTranscodeSessionResponse.ProtoReflect.Descriptor instead.
+func (*DestroyTranscodeSessionResponse) Descriptor() ([]byte, []int) {
+	return file_media_node_proto_rawDescGZIP(), []int{63}
+}
+
+func (x *DestroyTranscodeSessionResponse) GetFramesProcessed() uint64 {
+	if x != nil {
+		return x.FramesProcessed
+	}
+	return 0
+}
+
 var File_media_node_proto protoreflect.FileDescriptor
 
 const file_media_node_proto_rawDesc = "" +
@@ -3892,7 +4362,47 @@ const file_media_node_proto_rawDesc = "" +
 	"\x16total_packets_received\x18\x04 \x01(\x04R\x14totalPacketsReceived\x12,\n" +
 	"\x12total_packets_sent\x18\x05 \x01(\x04R\x10totalPacketsSent\x12\x1b\n" +
 	"\tcpu_usage\x18\x06 \x01(\x01R\bcpuUsage\x12&\n" +
-	"\x0fmemory_usage_mb\x18\a \x01(\x04R\rmemoryUsageMb*\x9b\x01\n" +
+	"\x0fmemory_usage_mb\x18\a \x01(\x04R\rmemoryUsageMb\"\xe2\x02\n" +
+	"\x15TranscodeVideoRequest\x12!\n" +
+	"\ftranscode_id\x18\x01 \x01(\tR\vtranscodeId\x12\x1d\n" +
+	"\n" +
+	"from_codec\x18\x02 \x01(\tR\tfromCodec\x12\x19\n" +
+	"\bto_codec\x18\x03 \x01(\tR\atoCodec\x12\x14\n" +
+	"\x05width\x18\x04 \x01(\rR\x05width\x12\x16\n" +
+	"\x06height\x18\x05 \x01(\rR\x06height\x12'\n" +
+	"\x0fprefer_hardware\x18\x06 \x01(\bR\x0epreferHardware\x12#\n" +
+	"\rencoded_frame\x18\a \x01(\fR\fencodedFrame\x12\x1c\n" +
+	"\ttimestamp\x18\b \x01(\x04R\ttimestamp\x12\x1a\n" +
+	"\bkeyframe\x18\t \x01(\bR\bkeyframe\x12\x18\n" +
+	"\abitrate\x18\n" +
+	" \x01(\rR\abitrate\x12\x1c\n" +
+	"\tframerate\x18\v \x01(\rR\tframerate\"\x98\x02\n" +
+	"\x16TranscodeVideoResponse\x12!\n" +
+	"\ftranscode_id\x18\x01 \x01(\tR\vtranscodeId\x12#\n" +
+	"\rencoded_frame\x18\x02 \x01(\fR\fencodedFrame\x12\x1c\n" +
+	"\ttimestamp\x18\x03 \x01(\x04R\ttimestamp\x12\x1a\n" +
+	"\bkeyframe\x18\x04 \x01(\bR\bkeyframe\x12\x14\n" +
+	"\x05width\x18\x05 \x01(\rR\x05width\x12\x16\n" +
+	"\x06height\x18\x06 \x01(\rR\x06height\x12)\n" +
+	"\x10frames_processed\x18\a \x01(\x04R\x0fframesProcessed\x12#\n" +
+	"\rhardware_used\x18\b \x01(\bR\fhardwareUsed\"\x8b\x02\n" +
+	"\x1dCreateTranscodeSessionRequest\x12!\n" +
+	"\ftranscode_id\x18\x01 \x01(\tR\vtranscodeId\x12\x1d\n" +
+	"\n" +
+	"from_codec\x18\x02 \x01(\tR\tfromCodec\x12\x19\n" +
+	"\bto_codec\x18\x03 \x01(\tR\atoCodec\x12\x14\n" +
+	"\x05width\x18\x04 \x01(\rR\x05width\x12\x16\n" +
+	"\x06height\x18\x05 \x01(\rR\x06height\x12'\n" +
+	"\x0fprefer_hardware\x18\x06 \x01(\bR\x0epreferHardware\x12\x18\n" +
+	"\abitrate\x18\a \x01(\rR\abitrate\x12\x1c\n" +
+	"\tframerate\x18\b \x01(\rR\tframerate\"h\n" +
+	"\x1eCreateTranscodeSessionResponse\x12!\n" +
+	"\ftranscode_id\x18\x01 \x01(\tR\vtranscodeId\x12#\n" +
+	"\rhardware_used\x18\x02 \x01(\bR\fhardwareUsed\"C\n" +
+	"\x1eDestroyTranscodeSessionRequest\x12!\n" +
+	"\ftranscode_id\x18\x01 \x01(\tR\vtranscodeId\"L\n" +
+	"\x1fDestroyTranscodeSessionResponse\x12)\n" +
+	"\x10frames_processed\x18\x01 \x01(\x04R\x0fframesProcessed*\x9b\x01\n" +
 	"\fEndpointType\x12\x18\n" +
 	"\x14ENDPOINT_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fENDPOINT_WEBRTC\x10\x01\x12\x10\n" +
@@ -3906,7 +4416,7 @@ const file_media_node_proto_rawDesc = "" +
 	"\x12DIRECTION_SENDRECV\x10\x01\x12\x16\n" +
 	"\x12DIRECTION_SENDONLY\x10\x02\x12\x16\n" +
 	"\x12DIRECTION_RECVONLY\x10\x03\x12\x16\n" +
-	"\x12DIRECTION_INACTIVE\x10\x042\xdb\x10\n" +
+	"\x12DIRECTION_INACTIVE\x10\x042\xce\x13\n" +
 	"\tMediaNode\x12^\n" +
 	"\vHealthCheck\x12&.lingvoice.media.v1.HealthCheckRequest\x1a'.lingvoice.media.v1.HealthCheckResponse\x12d\n" +
 	"\rCreateSession\x12(.lingvoice.media.v1.CreateSessionRequest\x1a).lingvoice.media.v1.CreateSessionResponse\x12g\n" +
@@ -3930,7 +4440,10 @@ const file_media_node_proto_rawDesc = "" +
 	"\x10UnbridgeSessions\x12+.lingvoice.media.v1.UnbridgeSessionsRequest\x1a,.lingvoice.media.v1.UnbridgeSessionsResponse\x12U\n" +
 	"\bSendDtmf\x12#.lingvoice.media.v1.SendDtmfRequest\x1a$.lingvoice.media.v1.SendDtmfResponse\x12M\n" +
 	"\x06Events\x12!.lingvoice.media.v1.EventsRequest\x1a\x1e.lingvoice.media.v1.MediaEvent0\x01\x12U\n" +
-	"\bGetStats\x12#.lingvoice.media.v1.GetStatsRequest\x1a$.lingvoice.media.v1.GetStatsResponseB6Z4github.com/LingByte/LingVoice/proto/media/v1;mediav1b\x06proto3"
+	"\bGetStats\x12#.lingvoice.media.v1.GetStatsRequest\x1a$.lingvoice.media.v1.GetStatsResponse\x12k\n" +
+	"\x0eTranscodeVideo\x12).lingvoice.media.v1.TranscodeVideoRequest\x1a*.lingvoice.media.v1.TranscodeVideoResponse(\x010\x01\x12\x7f\n" +
+	"\x16CreateTranscodeSession\x121.lingvoice.media.v1.CreateTranscodeSessionRequest\x1a2.lingvoice.media.v1.CreateTranscodeSessionResponse\x12\x82\x01\n" +
+	"\x17DestroyTranscodeSession\x122.lingvoice.media.v1.DestroyTranscodeSessionRequest\x1a3.lingvoice.media.v1.DestroyTranscodeSessionResponseB6Z4github.com/LingByte/LingVoice/proto/media/v1;mediav1b\x06proto3"
 
 var (
 	file_media_node_proto_rawDescOnce sync.Once
@@ -3945,69 +4458,75 @@ func file_media_node_proto_rawDescGZIP() []byte {
 }
 
 var file_media_node_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_media_node_proto_msgTypes = make([]protoimpl.MessageInfo, 58)
+var file_media_node_proto_msgTypes = make([]protoimpl.MessageInfo, 64)
 var file_media_node_proto_goTypes = []any{
-	(EndpointType)(0),                    // 0: lingvoice.media.v1.EndpointType
-	(Direction)(0),                       // 1: lingvoice.media.v1.Direction
-	(*RtpPacket)(nil),                    // 2: lingvoice.media.v1.RtpPacket
-	(*PcmFrame)(nil),                     // 3: lingvoice.media.v1.PcmFrame
-	(*TrackInfo)(nil),                    // 4: lingvoice.media.v1.TrackInfo
-	(*CodecInfo)(nil),                    // 5: lingvoice.media.v1.CodecInfo
-	(*CreateSessionRequest)(nil),         // 6: lingvoice.media.v1.CreateSessionRequest
-	(*CreateSessionResponse)(nil),        // 7: lingvoice.media.v1.CreateSessionResponse
-	(*DestroySessionRequest)(nil),        // 8: lingvoice.media.v1.DestroySessionRequest
-	(*DestroySessionResponse)(nil),       // 9: lingvoice.media.v1.DestroySessionResponse
-	(*AddEndpointRequest)(nil),           // 10: lingvoice.media.v1.AddEndpointRequest
-	(*AddEndpointResponse)(nil),          // 11: lingvoice.media.v1.AddEndpointResponse
-	(*RemoveEndpointRequest)(nil),        // 12: lingvoice.media.v1.RemoveEndpointRequest
-	(*RemoveEndpointResponse)(nil),       // 13: lingvoice.media.v1.RemoveEndpointResponse
-	(*AddTrackRequest)(nil),              // 14: lingvoice.media.v1.AddTrackRequest
-	(*AddTrackResponse)(nil),             // 15: lingvoice.media.v1.AddTrackResponse
-	(*RemoveTrackRequest)(nil),           // 16: lingvoice.media.v1.RemoveTrackRequest
-	(*RemoveTrackResponse)(nil),          // 17: lingvoice.media.v1.RemoveTrackResponse
-	(*PushRtpRequest)(nil),               // 18: lingvoice.media.v1.PushRtpRequest
-	(*PushRtpResponse)(nil),              // 19: lingvoice.media.v1.PushRtpResponse
-	(*PullRtpRequest)(nil),               // 20: lingvoice.media.v1.PullRtpRequest
-	(*StartRecordingRequest)(nil),        // 21: lingvoice.media.v1.StartRecordingRequest
-	(*StartRecordingResponse)(nil),       // 22: lingvoice.media.v1.StartRecordingResponse
-	(*StopRecordingRequest)(nil),         // 23: lingvoice.media.v1.StopRecordingRequest
-	(*StopRecordingResponse)(nil),        // 24: lingvoice.media.v1.StopRecordingResponse
-	(*StartMixRequest)(nil),              // 25: lingvoice.media.v1.StartMixRequest
-	(*StartMixResponse)(nil),             // 26: lingvoice.media.v1.StartMixResponse
-	(*StopMixRequest)(nil),               // 27: lingvoice.media.v1.StopMixRequest
-	(*StopMixResponse)(nil),              // 28: lingvoice.media.v1.StopMixResponse
-	(*AddMixParticipantRequest)(nil),     // 29: lingvoice.media.v1.AddMixParticipantRequest
-	(*AddMixParticipantResponse)(nil),    // 30: lingvoice.media.v1.AddMixParticipantResponse
-	(*RemoveMixParticipantRequest)(nil),  // 31: lingvoice.media.v1.RemoveMixParticipantRequest
-	(*RemoveMixParticipantResponse)(nil), // 32: lingvoice.media.v1.RemoveMixParticipantResponse
-	(*SetMixGainRequest)(nil),            // 33: lingvoice.media.v1.SetMixGainRequest
-	(*SetMixGainResponse)(nil),           // 34: lingvoice.media.v1.SetMixGainResponse
-	(*BridgeSessionsRequest)(nil),        // 35: lingvoice.media.v1.BridgeSessionsRequest
-	(*BridgeSessionsResponse)(nil),       // 36: lingvoice.media.v1.BridgeSessionsResponse
-	(*UnbridgeSessionsRequest)(nil),      // 37: lingvoice.media.v1.UnbridgeSessionsRequest
-	(*UnbridgeSessionsResponse)(nil),     // 38: lingvoice.media.v1.UnbridgeSessionsResponse
-	(*InjectAudioRequest)(nil),           // 39: lingvoice.media.v1.InjectAudioRequest
-	(*InjectAudioResponse)(nil),          // 40: lingvoice.media.v1.InjectAudioResponse
-	(*SendDtmfRequest)(nil),              // 41: lingvoice.media.v1.SendDtmfRequest
-	(*SendDtmfResponse)(nil),             // 42: lingvoice.media.v1.SendDtmfResponse
-	(*MediaEvent)(nil),                   // 43: lingvoice.media.v1.MediaEvent
-	(*TrackAdded)(nil),                   // 44: lingvoice.media.v1.TrackAdded
-	(*TrackRemoved)(nil),                 // 45: lingvoice.media.v1.TrackRemoved
-	(*VadEvent)(nil),                     // 46: lingvoice.media.v1.VadEvent
-	(*DtmfEvent)(nil),                    // 47: lingvoice.media.v1.DtmfEvent
-	(*RecordingCompleted)(nil),           // 48: lingvoice.media.v1.RecordingCompleted
-	(*RtpTimeout)(nil),                   // 49: lingvoice.media.v1.RtpTimeout
-	(*ErrorEvent)(nil),                   // 50: lingvoice.media.v1.ErrorEvent
-	(*MixParticipantJoined)(nil),         // 51: lingvoice.media.v1.MixParticipantJoined
-	(*MixParticipantLeft)(nil),           // 52: lingvoice.media.v1.MixParticipantLeft
-	(*DominantSpeakerChanged)(nil),       // 53: lingvoice.media.v1.DominantSpeakerChanged
-	(*EventsRequest)(nil),                // 54: lingvoice.media.v1.EventsRequest
-	(*GetStatsRequest)(nil),              // 55: lingvoice.media.v1.GetStatsRequest
-	(*GetStatsResponse)(nil),             // 56: lingvoice.media.v1.GetStatsResponse
-	(*TrackStats)(nil),                   // 57: lingvoice.media.v1.TrackStats
-	(*HealthCheckRequest)(nil),           // 58: lingvoice.media.v1.HealthCheckRequest
-	(*HealthCheckResponse)(nil),          // 59: lingvoice.media.v1.HealthCheckResponse
-	(*timestamppb.Timestamp)(nil),        // 60: google.protobuf.Timestamp
+	(EndpointType)(0),                       // 0: lingvoice.media.v1.EndpointType
+	(Direction)(0),                          // 1: lingvoice.media.v1.Direction
+	(*RtpPacket)(nil),                       // 2: lingvoice.media.v1.RtpPacket
+	(*PcmFrame)(nil),                        // 3: lingvoice.media.v1.PcmFrame
+	(*TrackInfo)(nil),                       // 4: lingvoice.media.v1.TrackInfo
+	(*CodecInfo)(nil),                       // 5: lingvoice.media.v1.CodecInfo
+	(*CreateSessionRequest)(nil),            // 6: lingvoice.media.v1.CreateSessionRequest
+	(*CreateSessionResponse)(nil),           // 7: lingvoice.media.v1.CreateSessionResponse
+	(*DestroySessionRequest)(nil),           // 8: lingvoice.media.v1.DestroySessionRequest
+	(*DestroySessionResponse)(nil),          // 9: lingvoice.media.v1.DestroySessionResponse
+	(*AddEndpointRequest)(nil),              // 10: lingvoice.media.v1.AddEndpointRequest
+	(*AddEndpointResponse)(nil),             // 11: lingvoice.media.v1.AddEndpointResponse
+	(*RemoveEndpointRequest)(nil),           // 12: lingvoice.media.v1.RemoveEndpointRequest
+	(*RemoveEndpointResponse)(nil),          // 13: lingvoice.media.v1.RemoveEndpointResponse
+	(*AddTrackRequest)(nil),                 // 14: lingvoice.media.v1.AddTrackRequest
+	(*AddTrackResponse)(nil),                // 15: lingvoice.media.v1.AddTrackResponse
+	(*RemoveTrackRequest)(nil),              // 16: lingvoice.media.v1.RemoveTrackRequest
+	(*RemoveTrackResponse)(nil),             // 17: lingvoice.media.v1.RemoveTrackResponse
+	(*PushRtpRequest)(nil),                  // 18: lingvoice.media.v1.PushRtpRequest
+	(*PushRtpResponse)(nil),                 // 19: lingvoice.media.v1.PushRtpResponse
+	(*PullRtpRequest)(nil),                  // 20: lingvoice.media.v1.PullRtpRequest
+	(*StartRecordingRequest)(nil),           // 21: lingvoice.media.v1.StartRecordingRequest
+	(*StartRecordingResponse)(nil),          // 22: lingvoice.media.v1.StartRecordingResponse
+	(*StopRecordingRequest)(nil),            // 23: lingvoice.media.v1.StopRecordingRequest
+	(*StopRecordingResponse)(nil),           // 24: lingvoice.media.v1.StopRecordingResponse
+	(*StartMixRequest)(nil),                 // 25: lingvoice.media.v1.StartMixRequest
+	(*StartMixResponse)(nil),                // 26: lingvoice.media.v1.StartMixResponse
+	(*StopMixRequest)(nil),                  // 27: lingvoice.media.v1.StopMixRequest
+	(*StopMixResponse)(nil),                 // 28: lingvoice.media.v1.StopMixResponse
+	(*AddMixParticipantRequest)(nil),        // 29: lingvoice.media.v1.AddMixParticipantRequest
+	(*AddMixParticipantResponse)(nil),       // 30: lingvoice.media.v1.AddMixParticipantResponse
+	(*RemoveMixParticipantRequest)(nil),     // 31: lingvoice.media.v1.RemoveMixParticipantRequest
+	(*RemoveMixParticipantResponse)(nil),    // 32: lingvoice.media.v1.RemoveMixParticipantResponse
+	(*SetMixGainRequest)(nil),               // 33: lingvoice.media.v1.SetMixGainRequest
+	(*SetMixGainResponse)(nil),              // 34: lingvoice.media.v1.SetMixGainResponse
+	(*BridgeSessionsRequest)(nil),           // 35: lingvoice.media.v1.BridgeSessionsRequest
+	(*BridgeSessionsResponse)(nil),          // 36: lingvoice.media.v1.BridgeSessionsResponse
+	(*UnbridgeSessionsRequest)(nil),         // 37: lingvoice.media.v1.UnbridgeSessionsRequest
+	(*UnbridgeSessionsResponse)(nil),        // 38: lingvoice.media.v1.UnbridgeSessionsResponse
+	(*InjectAudioRequest)(nil),              // 39: lingvoice.media.v1.InjectAudioRequest
+	(*InjectAudioResponse)(nil),             // 40: lingvoice.media.v1.InjectAudioResponse
+	(*SendDtmfRequest)(nil),                 // 41: lingvoice.media.v1.SendDtmfRequest
+	(*SendDtmfResponse)(nil),                // 42: lingvoice.media.v1.SendDtmfResponse
+	(*MediaEvent)(nil),                      // 43: lingvoice.media.v1.MediaEvent
+	(*TrackAdded)(nil),                      // 44: lingvoice.media.v1.TrackAdded
+	(*TrackRemoved)(nil),                    // 45: lingvoice.media.v1.TrackRemoved
+	(*VadEvent)(nil),                        // 46: lingvoice.media.v1.VadEvent
+	(*DtmfEvent)(nil),                       // 47: lingvoice.media.v1.DtmfEvent
+	(*RecordingCompleted)(nil),              // 48: lingvoice.media.v1.RecordingCompleted
+	(*RtpTimeout)(nil),                      // 49: lingvoice.media.v1.RtpTimeout
+	(*ErrorEvent)(nil),                      // 50: lingvoice.media.v1.ErrorEvent
+	(*MixParticipantJoined)(nil),            // 51: lingvoice.media.v1.MixParticipantJoined
+	(*MixParticipantLeft)(nil),              // 52: lingvoice.media.v1.MixParticipantLeft
+	(*DominantSpeakerChanged)(nil),          // 53: lingvoice.media.v1.DominantSpeakerChanged
+	(*EventsRequest)(nil),                   // 54: lingvoice.media.v1.EventsRequest
+	(*GetStatsRequest)(nil),                 // 55: lingvoice.media.v1.GetStatsRequest
+	(*GetStatsResponse)(nil),                // 56: lingvoice.media.v1.GetStatsResponse
+	(*TrackStats)(nil),                      // 57: lingvoice.media.v1.TrackStats
+	(*HealthCheckRequest)(nil),              // 58: lingvoice.media.v1.HealthCheckRequest
+	(*HealthCheckResponse)(nil),             // 59: lingvoice.media.v1.HealthCheckResponse
+	(*TranscodeVideoRequest)(nil),           // 60: lingvoice.media.v1.TranscodeVideoRequest
+	(*TranscodeVideoResponse)(nil),          // 61: lingvoice.media.v1.TranscodeVideoResponse
+	(*CreateTranscodeSessionRequest)(nil),   // 62: lingvoice.media.v1.CreateTranscodeSessionRequest
+	(*CreateTranscodeSessionResponse)(nil),  // 63: lingvoice.media.v1.CreateTranscodeSessionResponse
+	(*DestroyTranscodeSessionRequest)(nil),  // 64: lingvoice.media.v1.DestroyTranscodeSessionRequest
+	(*DestroyTranscodeSessionResponse)(nil), // 65: lingvoice.media.v1.DestroyTranscodeSessionResponse
+	(*timestamppb.Timestamp)(nil),           // 66: google.protobuf.Timestamp
 }
 var file_media_node_proto_depIdxs = []int32{
 	0,  // 0: lingvoice.media.v1.AddEndpointRequest.type:type_name -> lingvoice.media.v1.EndpointType
@@ -4016,7 +4535,7 @@ var file_media_node_proto_depIdxs = []int32{
 	4,  // 3: lingvoice.media.v1.AddTrackRequest.track:type_name -> lingvoice.media.v1.TrackInfo
 	2,  // 4: lingvoice.media.v1.PushRtpRequest.packet:type_name -> lingvoice.media.v1.RtpPacket
 	3,  // 5: lingvoice.media.v1.InjectAudioRequest.frame:type_name -> lingvoice.media.v1.PcmFrame
-	60, // 6: lingvoice.media.v1.MediaEvent.timestamp:type_name -> google.protobuf.Timestamp
+	66, // 6: lingvoice.media.v1.MediaEvent.timestamp:type_name -> google.protobuf.Timestamp
 	44, // 7: lingvoice.media.v1.MediaEvent.track_added:type_name -> lingvoice.media.v1.TrackAdded
 	45, // 8: lingvoice.media.v1.MediaEvent.track_removed:type_name -> lingvoice.media.v1.TrackRemoved
 	46, // 9: lingvoice.media.v1.MediaEvent.vad:type_name -> lingvoice.media.v1.VadEvent
@@ -4051,30 +4570,36 @@ var file_media_node_proto_depIdxs = []int32{
 	41, // 38: lingvoice.media.v1.MediaNode.SendDtmf:input_type -> lingvoice.media.v1.SendDtmfRequest
 	54, // 39: lingvoice.media.v1.MediaNode.Events:input_type -> lingvoice.media.v1.EventsRequest
 	55, // 40: lingvoice.media.v1.MediaNode.GetStats:input_type -> lingvoice.media.v1.GetStatsRequest
-	59, // 41: lingvoice.media.v1.MediaNode.HealthCheck:output_type -> lingvoice.media.v1.HealthCheckResponse
-	7,  // 42: lingvoice.media.v1.MediaNode.CreateSession:output_type -> lingvoice.media.v1.CreateSessionResponse
-	9,  // 43: lingvoice.media.v1.MediaNode.DestroySession:output_type -> lingvoice.media.v1.DestroySessionResponse
-	11, // 44: lingvoice.media.v1.MediaNode.AddEndpoint:output_type -> lingvoice.media.v1.AddEndpointResponse
-	13, // 45: lingvoice.media.v1.MediaNode.RemoveEndpoint:output_type -> lingvoice.media.v1.RemoveEndpointResponse
-	15, // 46: lingvoice.media.v1.MediaNode.AddTrack:output_type -> lingvoice.media.v1.AddTrackResponse
-	17, // 47: lingvoice.media.v1.MediaNode.RemoveTrack:output_type -> lingvoice.media.v1.RemoveTrackResponse
-	19, // 48: lingvoice.media.v1.MediaNode.PushRtp:output_type -> lingvoice.media.v1.PushRtpResponse
-	2,  // 49: lingvoice.media.v1.MediaNode.PullRtp:output_type -> lingvoice.media.v1.RtpPacket
-	40, // 50: lingvoice.media.v1.MediaNode.InjectAudio:output_type -> lingvoice.media.v1.InjectAudioResponse
-	22, // 51: lingvoice.media.v1.MediaNode.StartRecording:output_type -> lingvoice.media.v1.StartRecordingResponse
-	24, // 52: lingvoice.media.v1.MediaNode.StopRecording:output_type -> lingvoice.media.v1.StopRecordingResponse
-	26, // 53: lingvoice.media.v1.MediaNode.StartMix:output_type -> lingvoice.media.v1.StartMixResponse
-	28, // 54: lingvoice.media.v1.MediaNode.StopMix:output_type -> lingvoice.media.v1.StopMixResponse
-	30, // 55: lingvoice.media.v1.MediaNode.AddMixParticipant:output_type -> lingvoice.media.v1.AddMixParticipantResponse
-	32, // 56: lingvoice.media.v1.MediaNode.RemoveMixParticipant:output_type -> lingvoice.media.v1.RemoveMixParticipantResponse
-	34, // 57: lingvoice.media.v1.MediaNode.SetMixGain:output_type -> lingvoice.media.v1.SetMixGainResponse
-	36, // 58: lingvoice.media.v1.MediaNode.BridgeSessions:output_type -> lingvoice.media.v1.BridgeSessionsResponse
-	38, // 59: lingvoice.media.v1.MediaNode.UnbridgeSessions:output_type -> lingvoice.media.v1.UnbridgeSessionsResponse
-	42, // 60: lingvoice.media.v1.MediaNode.SendDtmf:output_type -> lingvoice.media.v1.SendDtmfResponse
-	43, // 61: lingvoice.media.v1.MediaNode.Events:output_type -> lingvoice.media.v1.MediaEvent
-	56, // 62: lingvoice.media.v1.MediaNode.GetStats:output_type -> lingvoice.media.v1.GetStatsResponse
-	41, // [41:63] is the sub-list for method output_type
-	19, // [19:41] is the sub-list for method input_type
+	60, // 41: lingvoice.media.v1.MediaNode.TranscodeVideo:input_type -> lingvoice.media.v1.TranscodeVideoRequest
+	62, // 42: lingvoice.media.v1.MediaNode.CreateTranscodeSession:input_type -> lingvoice.media.v1.CreateTranscodeSessionRequest
+	64, // 43: lingvoice.media.v1.MediaNode.DestroyTranscodeSession:input_type -> lingvoice.media.v1.DestroyTranscodeSessionRequest
+	59, // 44: lingvoice.media.v1.MediaNode.HealthCheck:output_type -> lingvoice.media.v1.HealthCheckResponse
+	7,  // 45: lingvoice.media.v1.MediaNode.CreateSession:output_type -> lingvoice.media.v1.CreateSessionResponse
+	9,  // 46: lingvoice.media.v1.MediaNode.DestroySession:output_type -> lingvoice.media.v1.DestroySessionResponse
+	11, // 47: lingvoice.media.v1.MediaNode.AddEndpoint:output_type -> lingvoice.media.v1.AddEndpointResponse
+	13, // 48: lingvoice.media.v1.MediaNode.RemoveEndpoint:output_type -> lingvoice.media.v1.RemoveEndpointResponse
+	15, // 49: lingvoice.media.v1.MediaNode.AddTrack:output_type -> lingvoice.media.v1.AddTrackResponse
+	17, // 50: lingvoice.media.v1.MediaNode.RemoveTrack:output_type -> lingvoice.media.v1.RemoveTrackResponse
+	19, // 51: lingvoice.media.v1.MediaNode.PushRtp:output_type -> lingvoice.media.v1.PushRtpResponse
+	2,  // 52: lingvoice.media.v1.MediaNode.PullRtp:output_type -> lingvoice.media.v1.RtpPacket
+	40, // 53: lingvoice.media.v1.MediaNode.InjectAudio:output_type -> lingvoice.media.v1.InjectAudioResponse
+	22, // 54: lingvoice.media.v1.MediaNode.StartRecording:output_type -> lingvoice.media.v1.StartRecordingResponse
+	24, // 55: lingvoice.media.v1.MediaNode.StopRecording:output_type -> lingvoice.media.v1.StopRecordingResponse
+	26, // 56: lingvoice.media.v1.MediaNode.StartMix:output_type -> lingvoice.media.v1.StartMixResponse
+	28, // 57: lingvoice.media.v1.MediaNode.StopMix:output_type -> lingvoice.media.v1.StopMixResponse
+	30, // 58: lingvoice.media.v1.MediaNode.AddMixParticipant:output_type -> lingvoice.media.v1.AddMixParticipantResponse
+	32, // 59: lingvoice.media.v1.MediaNode.RemoveMixParticipant:output_type -> lingvoice.media.v1.RemoveMixParticipantResponse
+	34, // 60: lingvoice.media.v1.MediaNode.SetMixGain:output_type -> lingvoice.media.v1.SetMixGainResponse
+	36, // 61: lingvoice.media.v1.MediaNode.BridgeSessions:output_type -> lingvoice.media.v1.BridgeSessionsResponse
+	38, // 62: lingvoice.media.v1.MediaNode.UnbridgeSessions:output_type -> lingvoice.media.v1.UnbridgeSessionsResponse
+	42, // 63: lingvoice.media.v1.MediaNode.SendDtmf:output_type -> lingvoice.media.v1.SendDtmfResponse
+	43, // 64: lingvoice.media.v1.MediaNode.Events:output_type -> lingvoice.media.v1.MediaEvent
+	56, // 65: lingvoice.media.v1.MediaNode.GetStats:output_type -> lingvoice.media.v1.GetStatsResponse
+	61, // 66: lingvoice.media.v1.MediaNode.TranscodeVideo:output_type -> lingvoice.media.v1.TranscodeVideoResponse
+	63, // 67: lingvoice.media.v1.MediaNode.CreateTranscodeSession:output_type -> lingvoice.media.v1.CreateTranscodeSessionResponse
+	65, // 68: lingvoice.media.v1.MediaNode.DestroyTranscodeSession:output_type -> lingvoice.media.v1.DestroyTranscodeSessionResponse
+	44, // [44:69] is the sub-list for method output_type
+	19, // [19:44] is the sub-list for method input_type
 	19, // [19:19] is the sub-list for extension type_name
 	19, // [19:19] is the sub-list for extension extendee
 	0,  // [0:19] is the sub-list for field type_name
@@ -4103,7 +4628,7 @@ func file_media_node_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_media_node_proto_rawDesc), len(file_media_node_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   58,
+			NumMessages:   64,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

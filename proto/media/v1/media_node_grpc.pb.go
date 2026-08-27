@@ -19,28 +19,31 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	MediaNode_HealthCheck_FullMethodName          = "/lingvoice.media.v1.MediaNode/HealthCheck"
-	MediaNode_CreateSession_FullMethodName        = "/lingvoice.media.v1.MediaNode/CreateSession"
-	MediaNode_DestroySession_FullMethodName       = "/lingvoice.media.v1.MediaNode/DestroySession"
-	MediaNode_AddEndpoint_FullMethodName          = "/lingvoice.media.v1.MediaNode/AddEndpoint"
-	MediaNode_RemoveEndpoint_FullMethodName       = "/lingvoice.media.v1.MediaNode/RemoveEndpoint"
-	MediaNode_AddTrack_FullMethodName             = "/lingvoice.media.v1.MediaNode/AddTrack"
-	MediaNode_RemoveTrack_FullMethodName          = "/lingvoice.media.v1.MediaNode/RemoveTrack"
-	MediaNode_PushRtp_FullMethodName              = "/lingvoice.media.v1.MediaNode/PushRtp"
-	MediaNode_PullRtp_FullMethodName              = "/lingvoice.media.v1.MediaNode/PullRtp"
-	MediaNode_InjectAudio_FullMethodName          = "/lingvoice.media.v1.MediaNode/InjectAudio"
-	MediaNode_StartRecording_FullMethodName       = "/lingvoice.media.v1.MediaNode/StartRecording"
-	MediaNode_StopRecording_FullMethodName        = "/lingvoice.media.v1.MediaNode/StopRecording"
-	MediaNode_StartMix_FullMethodName             = "/lingvoice.media.v1.MediaNode/StartMix"
-	MediaNode_StopMix_FullMethodName              = "/lingvoice.media.v1.MediaNode/StopMix"
-	MediaNode_AddMixParticipant_FullMethodName    = "/lingvoice.media.v1.MediaNode/AddMixParticipant"
-	MediaNode_RemoveMixParticipant_FullMethodName = "/lingvoice.media.v1.MediaNode/RemoveMixParticipant"
-	MediaNode_SetMixGain_FullMethodName           = "/lingvoice.media.v1.MediaNode/SetMixGain"
-	MediaNode_BridgeSessions_FullMethodName       = "/lingvoice.media.v1.MediaNode/BridgeSessions"
-	MediaNode_UnbridgeSessions_FullMethodName     = "/lingvoice.media.v1.MediaNode/UnbridgeSessions"
-	MediaNode_SendDtmf_FullMethodName             = "/lingvoice.media.v1.MediaNode/SendDtmf"
-	MediaNode_Events_FullMethodName               = "/lingvoice.media.v1.MediaNode/Events"
-	MediaNode_GetStats_FullMethodName             = "/lingvoice.media.v1.MediaNode/GetStats"
+	MediaNode_HealthCheck_FullMethodName             = "/lingvoice.media.v1.MediaNode/HealthCheck"
+	MediaNode_CreateSession_FullMethodName           = "/lingvoice.media.v1.MediaNode/CreateSession"
+	MediaNode_DestroySession_FullMethodName          = "/lingvoice.media.v1.MediaNode/DestroySession"
+	MediaNode_AddEndpoint_FullMethodName             = "/lingvoice.media.v1.MediaNode/AddEndpoint"
+	MediaNode_RemoveEndpoint_FullMethodName          = "/lingvoice.media.v1.MediaNode/RemoveEndpoint"
+	MediaNode_AddTrack_FullMethodName                = "/lingvoice.media.v1.MediaNode/AddTrack"
+	MediaNode_RemoveTrack_FullMethodName             = "/lingvoice.media.v1.MediaNode/RemoveTrack"
+	MediaNode_PushRtp_FullMethodName                 = "/lingvoice.media.v1.MediaNode/PushRtp"
+	MediaNode_PullRtp_FullMethodName                 = "/lingvoice.media.v1.MediaNode/PullRtp"
+	MediaNode_InjectAudio_FullMethodName             = "/lingvoice.media.v1.MediaNode/InjectAudio"
+	MediaNode_StartRecording_FullMethodName          = "/lingvoice.media.v1.MediaNode/StartRecording"
+	MediaNode_StopRecording_FullMethodName           = "/lingvoice.media.v1.MediaNode/StopRecording"
+	MediaNode_StartMix_FullMethodName                = "/lingvoice.media.v1.MediaNode/StartMix"
+	MediaNode_StopMix_FullMethodName                 = "/lingvoice.media.v1.MediaNode/StopMix"
+	MediaNode_AddMixParticipant_FullMethodName       = "/lingvoice.media.v1.MediaNode/AddMixParticipant"
+	MediaNode_RemoveMixParticipant_FullMethodName    = "/lingvoice.media.v1.MediaNode/RemoveMixParticipant"
+	MediaNode_SetMixGain_FullMethodName              = "/lingvoice.media.v1.MediaNode/SetMixGain"
+	MediaNode_BridgeSessions_FullMethodName          = "/lingvoice.media.v1.MediaNode/BridgeSessions"
+	MediaNode_UnbridgeSessions_FullMethodName        = "/lingvoice.media.v1.MediaNode/UnbridgeSessions"
+	MediaNode_SendDtmf_FullMethodName                = "/lingvoice.media.v1.MediaNode/SendDtmf"
+	MediaNode_Events_FullMethodName                  = "/lingvoice.media.v1.MediaNode/Events"
+	MediaNode_GetStats_FullMethodName                = "/lingvoice.media.v1.MediaNode/GetStats"
+	MediaNode_TranscodeVideo_FullMethodName          = "/lingvoice.media.v1.MediaNode/TranscodeVideo"
+	MediaNode_CreateTranscodeSession_FullMethodName  = "/lingvoice.media.v1.MediaNode/CreateTranscodeSession"
+	MediaNode_DestroyTranscodeSession_FullMethodName = "/lingvoice.media.v1.MediaNode/DestroyTranscodeSession"
 )
 
 // MediaNodeClient is the client API for MediaNode service.
@@ -82,6 +85,11 @@ type MediaNodeClient interface {
 	Events(ctx context.Context, in *EventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[MediaEvent], error)
 	// 统计
 	GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*GetStatsResponse, error)
+	// 视频转码（client streaming：Go 推送编码帧，Rust 返回转码后帧）
+	TranscodeVideo(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[TranscodeVideoRequest, TranscodeVideoResponse], error)
+	// 转码会话管理（持久化解码器/编码器，避免每帧重建）
+	CreateTranscodeSession(ctx context.Context, in *CreateTranscodeSessionRequest, opts ...grpc.CallOption) (*CreateTranscodeSessionResponse, error)
+	DestroyTranscodeSession(ctx context.Context, in *DestroyTranscodeSessionRequest, opts ...grpc.CallOption) (*DestroyTranscodeSessionResponse, error)
 }
 
 type mediaNodeClient struct {
@@ -336,6 +344,39 @@ func (c *mediaNodeClient) GetStats(ctx context.Context, in *GetStatsRequest, opt
 	return out, nil
 }
 
+func (c *mediaNodeClient) TranscodeVideo(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[TranscodeVideoRequest, TranscodeVideoResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &MediaNode_ServiceDesc.Streams[4], MediaNode_TranscodeVideo_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[TranscodeVideoRequest, TranscodeVideoResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type MediaNode_TranscodeVideoClient = grpc.BidiStreamingClient[TranscodeVideoRequest, TranscodeVideoResponse]
+
+func (c *mediaNodeClient) CreateTranscodeSession(ctx context.Context, in *CreateTranscodeSessionRequest, opts ...grpc.CallOption) (*CreateTranscodeSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateTranscodeSessionResponse)
+	err := c.cc.Invoke(ctx, MediaNode_CreateTranscodeSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *mediaNodeClient) DestroyTranscodeSession(ctx context.Context, in *DestroyTranscodeSessionRequest, opts ...grpc.CallOption) (*DestroyTranscodeSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DestroyTranscodeSessionResponse)
+	err := c.cc.Invoke(ctx, MediaNode_DestroyTranscodeSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MediaNodeServer is the server API for MediaNode service.
 // All implementations must embed UnimplementedMediaNodeServer
 // for forward compatibility.
@@ -375,6 +416,11 @@ type MediaNodeServer interface {
 	Events(*EventsRequest, grpc.ServerStreamingServer[MediaEvent]) error
 	// 统计
 	GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error)
+	// 视频转码（client streaming：Go 推送编码帧，Rust 返回转码后帧）
+	TranscodeVideo(grpc.BidiStreamingServer[TranscodeVideoRequest, TranscodeVideoResponse]) error
+	// 转码会话管理（持久化解码器/编码器，避免每帧重建）
+	CreateTranscodeSession(context.Context, *CreateTranscodeSessionRequest) (*CreateTranscodeSessionResponse, error)
+	DestroyTranscodeSession(context.Context, *DestroyTranscodeSessionRequest) (*DestroyTranscodeSessionResponse, error)
 	mustEmbedUnimplementedMediaNodeServer()
 }
 
@@ -450,6 +496,15 @@ func (UnimplementedMediaNodeServer) Events(*EventsRequest, grpc.ServerStreamingS
 }
 func (UnimplementedMediaNodeServer) GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetStats not implemented")
+}
+func (UnimplementedMediaNodeServer) TranscodeVideo(grpc.BidiStreamingServer[TranscodeVideoRequest, TranscodeVideoResponse]) error {
+	return status.Error(codes.Unimplemented, "method TranscodeVideo not implemented")
+}
+func (UnimplementedMediaNodeServer) CreateTranscodeSession(context.Context, *CreateTranscodeSessionRequest) (*CreateTranscodeSessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateTranscodeSession not implemented")
+}
+func (UnimplementedMediaNodeServer) DestroyTranscodeSession(context.Context, *DestroyTranscodeSessionRequest) (*DestroyTranscodeSessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DestroyTranscodeSession not implemented")
 }
 func (UnimplementedMediaNodeServer) mustEmbedUnimplementedMediaNodeServer() {}
 func (UnimplementedMediaNodeServer) testEmbeddedByValue()                   {}
@@ -832,6 +887,49 @@ func _MediaNode_GetStats_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _MediaNode_TranscodeVideo_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(MediaNodeServer).TranscodeVideo(&grpc.GenericServerStream[TranscodeVideoRequest, TranscodeVideoResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type MediaNode_TranscodeVideoServer = grpc.BidiStreamingServer[TranscodeVideoRequest, TranscodeVideoResponse]
+
+func _MediaNode_CreateTranscodeSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateTranscodeSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MediaNodeServer).CreateTranscodeSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MediaNode_CreateTranscodeSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MediaNodeServer).CreateTranscodeSession(ctx, req.(*CreateTranscodeSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _MediaNode_DestroyTranscodeSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DestroyTranscodeSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MediaNodeServer).DestroyTranscodeSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MediaNode_DestroyTranscodeSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MediaNodeServer).DestroyTranscodeSession(ctx, req.(*DestroyTranscodeSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // MediaNode_ServiceDesc is the grpc.ServiceDesc for MediaNode service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -911,6 +1009,14 @@ var MediaNode_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetStats",
 			Handler:    _MediaNode_GetStats_Handler,
 		},
+		{
+			MethodName: "CreateTranscodeSession",
+			Handler:    _MediaNode_CreateTranscodeSession_Handler,
+		},
+		{
+			MethodName: "DestroyTranscodeSession",
+			Handler:    _MediaNode_DestroyTranscodeSession_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -932,6 +1038,12 @@ var MediaNode_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "Events",
 			Handler:       _MediaNode_Events_Handler,
 			ServerStreams: true,
+		},
+		{
+			StreamName:    "TranscodeVideo",
+			Handler:       _MediaNode_TranscodeVideo_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "media_node.proto",

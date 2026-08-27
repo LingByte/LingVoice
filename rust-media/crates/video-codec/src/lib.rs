@@ -635,5 +635,8 @@ pub mod videotoolbox_codec;
 #[cfg(all(feature = "nvenc", target_os = "linux"))]
 pub mod nvenc_codec;
 
+/// 视频转码管道 — 解码→YUV→编码
+pub mod transcoder;
+
 #[cfg(test)]
 mod tests;

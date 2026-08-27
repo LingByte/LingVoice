@@ -9,6 +9,8 @@ logs/
 *.out
 webrtc-demo
 /webrtc-rust-demo
+/protocol-server
+/sip-rust-demo
 
 # Rust
 rust-media/target/

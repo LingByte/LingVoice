@@ -508,3 +508,96 @@ func (c *Client) WaitForReady(timeout time.Duration) error {
 	_, err := c.HealthCheck(ctx)
 	return err
 }
+
+// CreateTranscodeSession creates a persistent video transcode session on the Rust node.
+// The session reuses decoder/encoder across frames for efficiency.
+func (c *Client) CreateTranscodeSession(ctx context.Context, transcodeID, fromCodec, toCodec string, width, height uint32, preferHardware bool, bitrate, framerate uint32) (*mediav1.CreateTranscodeSessionResponse, error) {
+	return c.stub.CreateTranscodeSession(ctx, &mediav1.CreateTranscodeSessionRequest{
+		TranscodeId:    transcodeID,
+		FromCodec:      fromCodec,
+		ToCodec:        toCodec,
+		Width:          width,
+		Height:         height,
+		PreferHardware: preferHardware,
+		Bitrate:        bitrate,
+		Framerate:      framerate,
+	})
+}
+
+// DestroyTranscodeSession destroys a video transcode session.
+func (c *Client) DestroyTranscodeSession(ctx context.Context, transcodeID string) (*mediav1.DestroyTranscodeSessionResponse, error) {
+	return c.stub.DestroyTranscodeSession(ctx, &mediav1.DestroyTranscodeSessionRequest{
+		TranscodeId: transcodeID,
+	})
+}
+
+// TranscodeVideoClient is a bidirectional streaming client for video transcoding.
+// Go pushes encoded frames; Rust returns transcoded frames.
+type TranscodeVideoClient interface {
+	Send(frame []byte, timestamp uint64, keyframe bool) error
+	Recv() (*mediav1.TranscodeVideoResponse, error)
+	CloseSend() error
+}
+
+type transcodeVideoStream struct {
+	stream mediav1.MediaNode_TranscodeVideoClient
+	// first-frame metadata
+	transcodeID  string
+	fromCodec    string
+	toCodec      string
+	width        uint32
+	height       uint32
+	preferHW     bool
+	bitrate      uint32
+	framerate    uint32
+	headerSent   bool
+}
+
+func (s *transcodeVideoStream) Send(frame []byte, timestamp uint64, keyframe bool) error {
+	req := &mediav1.TranscodeVideoRequest{
+		TranscodeId:  s.transcodeID,
+		EncodedFrame: frame,
+		Timestamp:    timestamp,
+		Keyframe:     keyframe,
+	}
+	if !s.headerSent {
+		req.FromCodec = s.fromCodec
+		req.ToCodec = s.toCodec
+		req.Width = s.width
+		req.Height = s.height
+		req.PreferHardware = s.preferHW
+		req.Bitrate = s.bitrate
+		req.Framerate = s.framerate
+		s.headerSent = true
+	}
+	return s.stream.Send(req)
+}
+
+func (s *transcodeVideoStream) Recv() (*mediav1.TranscodeVideoResponse, error) {
+	return s.stream.Recv()
+}
+
+func (s *transcodeVideoStream) CloseSend() error {
+	return s.stream.CloseSend()
+}
+
+// TranscodeVideo opens a bidirectional streaming video transcode session.
+// The first Send() will include codec/width/height metadata to auto-create
+// the transcode session on the Rust side.
+func (c *Client) TranscodeVideo(ctx context.Context, transcodeID, fromCodec, toCodec string, width, height uint32, preferHardware bool, bitrate, framerate uint32) (TranscodeVideoClient, error) {
+	stream, err := c.stub.TranscodeVideo(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open transcode_video stream: %w", err)
+	}
+	return &transcodeVideoStream{
+		stream:      stream,
+		transcodeID: transcodeID,
+		fromCodec:   fromCodec,
+		toCodec:     toCodec,
+		width:       width,
+		height:      height,
+		preferHW:    preferHardware,
+		bitrate:     bitrate,
+		framerate:   framerate,
+	}, nil
+}

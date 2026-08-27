@@ -618,5 +618,5 @@ func TestConnMediaSessionInterface(t *testing.T) {
 	_ = srvConn.MediaStats()
 }
 
-// 确保 io 包被使用（用于可能的未来扩展）
-var _ = io.EOF
+// 确保 bytes 包被使用
+var _ = bytes.NewBuffer

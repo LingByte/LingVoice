@@ -13,11 +13,19 @@ import (
 	"go.uber.org/zap"
 )
 
+// AuthConfig 设备认证配置（SIP 401 Digest 认证）。
+// 若 Username/Password 为空，则跳过认证（向后兼容）。
+type AuthConfig struct {
+	Username string // 设备认证用户名（通常为设备 ID）
+	Password string // 设备认证密码
+}
+
 // Config GB28181 SIP 服务配置
 type Config struct {
 	Addr     string // SIP 监听地址，如 ":5060"
 	ServerID string // 本端 SIP server ID（域 ID），如 "34020000002000000001"
 	Realm    string // SIP 域，默认与 ServerID 同
+	Auth     AuthConfig // 设备认证配置（为空则跳过认证）
 }
 
 // DefaultConfig 默认配置（端口 5060）
@@ -50,6 +58,11 @@ type Server struct {
 	mu       sync.Mutex
 	devices  map[string]*Device // key=deviceID
 	sessions sync.Map           // map[callID]*mediaSession
+
+	// Digest 认证 nonce 管理
+	authMu     sync.Mutex
+	nonces     map[string]time.Time // key=nonce, value=过期时间
+	vodSessions sync.Map            // map[callID]*VODSession
 }
 
 // mediaSession 一个 INVITE 协商出的媒体会话。
@@ -100,6 +113,7 @@ func NewServer(config Config, handler common.EventHandler, log *zap.Logger) *Ser
 		handler: handler,
 		log:     log.With(zap.String("component", "gb28181-server")),
 		devices: make(map[string]*Device),
+		nonces:  make(map[string]time.Time),
 	}
 }
 
@@ -270,6 +284,24 @@ func (s *Server) handleRegister(req *SipRequest, addr *net.UDPAddr) {
 		return
 	}
 
+	// 若配置了认证，则校验 Authorization 头
+	if s.config.Auth.Username != "" || s.config.Auth.Password != "" {
+		authHeader, hasAuth := req.Headers["authorization"]
+		if !hasAuth {
+			// 未带 Authorization，回 401 并附带 WWW-Authenticate 挑战
+			s.sendAuthChallenge(req, addr)
+			return
+		}
+		// 校验 digest
+		if !s.validateDigest(authHeader, req.Method, req.URI) {
+			s.log.Warn("gb28181 register auth failed",
+				zap.String("device", deviceID),
+				zap.String("remote", addr.String()))
+			s.sendResponse(req, addr, StatusForbidden)
+			return
+		}
+	}
+
 	expires := 3600
 	if v, ok := req.Headers["expires"]; ok {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -305,6 +337,72 @@ func (s *Server) handleRegister(req *SipRequest, addr *net.UDPAddr) {
 	})
 
 	s.sendResponse(req, addr, StatusOK)
+}
+
+// sendAuthChallenge 发送 401 Unauthorized 响应，附带 WWW-Authenticate 头。
+func (s *Server) sendAuthChallenge(req *SipRequest, addr *net.UDPAddr) {
+	nonce := s.generateNonce()
+	realm := s.config.Realm
+	resp := newSipResponse(StatusUnauthorized)
+	resp.Via = req.Via
+	resp.From = req.From
+	resp.To = req.To
+	resp.CallID = req.CallID
+	resp.CSeq = req.CSeq
+	resp.Headers["WWW-Authenticate"] = fmt.Sprintf(
+		`Digest realm="%s", nonce="%s", algorithm=MD5`, realm, nonce)
+	_ = s.writeTo(addr, resp)
+}
+
+// generateNonce 生成随机 nonce 并存储（带过期）。
+func (s *Server) generateNonce() string {
+	b := make([]byte, 16)
+	for i := range b {
+		b[i] = byte(time.Now().UnixNano() >> uint(i))
+	}
+	nonce := hexEncode(b)
+	s.authMu.Lock()
+	s.nonces[nonce] = time.Now().Add(5 * time.Minute)
+	s.authMu.Unlock()
+	return nonce
+}
+
+// validateDigest 校验 Authorization 头中的 digest 响应。
+func (s *Server) validateDigest(authHeader, method, uri string) bool {
+	params, ok := ParseDigestHeader(authHeader)
+	if !ok {
+		return false
+	}
+	nonce := params["nonce"]
+	if nonce == "" {
+		return false
+	}
+	// 校验 nonce 是否存在且未过期
+	s.authMu.Lock()
+	expiry, ok := s.nonces[nonce]
+	if ok && time.Now().After(expiry) {
+		delete(s.nonces, nonce)
+		ok = false
+	}
+	s.authMu.Unlock()
+	if !ok {
+		return false
+	}
+
+	username := params["username"]
+	response := params["response"]
+	if username == "" || response == "" {
+		return false
+	}
+
+	// 用户名必须与配置一致
+	expectedUser := s.config.Auth.Username
+	if expectedUser != "" && username != expectedUser {
+		return false
+	}
+
+	expected := ComputeDigestResponse(username, s.config.Auth.Password, s.config.Realm, nonce, method, uri)
+	return response == expected
 }
 
 // ─── MESSAGE ─────────────────────────────────────────────────────────────────

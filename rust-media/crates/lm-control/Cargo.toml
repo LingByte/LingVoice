@@ -25,6 +25,7 @@ tonic.workspace = true
 tonic-types.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+futures-core = "0.3"
 dashmap.workspace = true
 parking_lot.workspace = true
 bytes.workspace = true

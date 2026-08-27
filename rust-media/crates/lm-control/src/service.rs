@@ -9,6 +9,7 @@ use crate::events::{EventBus, MediaNodeEvent};
 use crate::mixer::MixManager;
 use crate::recorder::RecordingManager;
 use crate::session::SessionManager;
+use crate::transcode_manager::{parse_codec, TranscodeManager};
 use lm_core::{EndpointId, SessionId, TrackId};
 use lm_stream::{MediaStream, StreamId, StreamRegistry};
 use lm_telemetry::StatsCollector;
@@ -35,6 +36,8 @@ pub struct MediaNodeServer {
     bridges: Arc<BridgeManager>,
     /// 统计收集器
     stats: Arc<StatsCollector>,
+    /// 视频转码管理器
+    transcoders: Arc<TranscodeManager>,
 }
 
 impl MediaNodeServer {
@@ -48,6 +51,7 @@ impl MediaNodeServer {
             events: Arc::new(EventBus::new(1024)),
             bridges: Arc::new(BridgeManager::new()),
             stats: Arc::new(StatsCollector::new()),
+            transcoders: Arc::new(TranscodeManager::new()),
         }
     }
 
@@ -1202,6 +1206,199 @@ impl media_node_server::MediaNode for MediaNodeServer {
             session_id: req.session_id,
             duration_ms,
             tracks: track_stats,
+        }))
+    }
+
+    // --- 视频转码 ---
+
+    type TranscodeVideoStream = std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<TranscodeVideoResponse, Status>> + Send>,
+    >;
+
+    async fn transcode_video(
+        &self,
+        request: Request<Streaming<TranscodeVideoRequest>>,
+    ) -> Result<Response<Self::TranscodeVideoStream>, Status> {
+        let mut stream = request.into_inner();
+        let transcoders = self.transcoders.clone();
+
+        let (tx, rx) = mpsc::channel::<Result<TranscodeVideoResponse, Status>>(64);
+
+        tokio::spawn(async move {
+            while let Some(req) = stream.next().await {
+                let req = match req {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        break;
+                    }
+                };
+
+                let transcode_id = req.transcode_id.clone();
+
+                // 如果会话不存在且首帧包含 from/to codec，自动创建
+                if transcoders.path(&transcode_id).is_none() {
+                    let from = match parse_codec(&req.from_codec) {
+                        Some(c) => c,
+                        None => {
+                            let _ = tx
+                                .send(Err(Status::invalid_argument(format!(
+                                    "unknown from_codec: {}",
+                                    req.from_codec
+                                ))))
+                                .await;
+                            break;
+                        }
+                    };
+                    let to = match parse_codec(&req.to_codec) {
+                        Some(c) => c,
+                        None => {
+                            let _ = tx
+                                .send(Err(Status::invalid_argument(format!(
+                                    "unknown to_codec: {}",
+                                    req.to_codec
+                                ))))
+                                .await;
+                            break;
+                        }
+                    };
+                    if req.width == 0 || req.height == 0 {
+                        let _ = tx
+                            .send(Err(Status::invalid_argument(
+                                "width and height must be > 0 on first frame",
+                            )))
+                            .await;
+                        break;
+                    }
+                    if let Err(e) = transcoders.create_session(
+                        &transcode_id,
+                        from,
+                        to,
+                        req.width,
+                        req.height,
+                        req.prefer_hardware,
+                        req.bitrate,
+                        req.framerate,
+                    ) {
+                        let _ = tx
+                            .send(Err(Status::internal(format!(
+                                "create transcode session failed: {}",
+                                e
+                            ))))
+                            .await;
+                        break;
+                    }
+                    info!(
+                        transcode_id = %transcode_id,
+                        from = %req.from_codec,
+                        to = %req.to_codec,
+                        width = req.width,
+                        height = req.height,
+                        "transcode session auto-created"
+                    );
+                }
+
+                // 请求关键帧
+                if req.keyframe {
+                    transcoders.request_keyframe(&transcode_id, req.timestamp);
+                }
+
+                // 转码
+                match transcoders.transcode(&transcode_id, &req.encoded_frame, req.timestamp) {
+                    Ok(result) => {
+                        let resp = TranscodeVideoResponse {
+                            transcode_id: transcode_id.clone(),
+                            encoded_frame: result.encoded_frame.into(),
+                            timestamp: result.timestamp,
+                            keyframe: result.keyframe,
+                            width: result.width,
+                            height: result.height,
+                            frames_processed: result.frames_processed,
+                            hardware_used: result.hardware_used,
+                        };
+                        if tx.send(Ok(resp)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(crate::transcode_manager::TranscodeError::SessionNotFound) => {
+                        let _ = tx
+                            .send(Err(Status::not_found(format!(
+                                "transcode session {} not found",
+                                transcode_id
+                            ))))
+                            .await;
+                        break;
+                    }
+                    Err(crate::transcode_manager::TranscodeError::Codec(e)) => {
+                        // 编码错误不中断流，跳过此帧
+                        warn!(
+                            transcode_id = %transcode_id,
+                            error = %e,
+                            "transcode frame failed, skipping"
+                        );
+                    }
+                }
+            }
+            info!("transcode_video stream ended");
+        });
+
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    async fn create_transcode_session(
+        &self,
+        request: Request<CreateTranscodeSessionRequest>,
+    ) -> Result<Response<CreateTranscodeSessionResponse>, Status> {
+        let req = request.into_inner();
+        let from = parse_codec(&req.from_codec).ok_or_else(|| {
+            Status::invalid_argument(format!("unknown from_codec: {}", req.from_codec))
+        })?;
+        let to = parse_codec(&req.to_codec).ok_or_else(|| {
+            Status::invalid_argument(format!("unknown to_codec: {}", req.to_codec))
+        })?;
+
+        info!(
+            transcode_id = %req.transcode_id,
+            from = %req.from_codec,
+            to = %req.to_codec,
+            width = req.width,
+            height = req.height,
+            "gRPC create_transcode_session"
+        );
+
+        let hardware_used = self
+            .transcoders
+            .create_session(
+                &req.transcode_id,
+                from,
+                to,
+                req.width,
+                req.height,
+                req.prefer_hardware,
+                req.bitrate,
+                req.framerate,
+            )
+            .map_err(|e| Status::internal(format!("create transcode session failed: {}", e)))?;
+
+        Ok(Response::new(CreateTranscodeSessionResponse {
+            transcode_id: req.transcode_id,
+            hardware_used,
+        }))
+    }
+
+    async fn destroy_transcode_session(
+        &self,
+        request: Request<DestroyTranscodeSessionRequest>,
+    ) -> Result<Response<DestroyTranscodeSessionResponse>, Status> {
+        let req = request.into_inner();
+        let frames = self.transcoders.destroy_session(&req.transcode_id);
+        info!(
+            transcode_id = %req.transcode_id,
+            frames = frames.unwrap_or(0),
+            "gRPC destroy_transcode_session"
+        );
+        Ok(Response::new(DestroyTranscodeSessionResponse {
+            frames_processed: frames.unwrap_or(0),
         }))
     }
 }

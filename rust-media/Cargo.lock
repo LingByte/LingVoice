@@ -844,6 +844,7 @@ dependencies = [
  "bytemuck",
  "bytes",
  "dashmap",
+ "futures-core",
  "lm-codecs",
  "lm-core",
  "lm-depacketizer",

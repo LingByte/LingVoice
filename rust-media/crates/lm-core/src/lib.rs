@@ -641,3 +641,6 @@ mod tests {
         assert_eq!(kind, deserialized);
     }
 }
+
+/// 无锁 SPSC 队列 — 用于媒体帧零等待传递
+pub mod spsc;

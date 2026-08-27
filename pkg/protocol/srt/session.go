@@ -28,6 +28,7 @@ type Session struct {
 	// TS 解析状态
 	tsBuffer   []byte
 	tsPackets  int
+	tsParser   *tsParser
 }
 
 func newSession(id string, addr *net.UDPAddr, socketID uint32, streamID string, handler common.EventHandler, server *Server) *Session {
@@ -39,6 +40,7 @@ func newSession(id string, addr *net.UDPAddr, socketID uint32, streamID string, 
 		handler:   handler,
 		server:    server,
 		createdAt: time.Now(),
+		tsParser:  newTSParser(),
 	}
 	s.touch()
 	return s

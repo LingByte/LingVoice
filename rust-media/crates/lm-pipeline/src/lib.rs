@@ -207,14 +207,12 @@ impl EgressPipeline {
             tokio::time::sleep(interval).await;
 
             // 拉取所有可用帧，取最后一帧
-            let frame = loop {
-                match self.input_rx.try_recv() {
-                    Ok(f) => break Some(f),
-                    Err(mpsc::error::TryRecvError::Empty) => break None,
-                    Err(mpsc::error::TryRecvError::Disconnected) => {
-                        debug!("egress input channel closed, stopping");
-                        return;
-                    }
+            let frame = match self.input_rx.try_recv() {
+                Ok(f) => Some(f),
+                Err(mpsc::error::TryRecvError::Empty) => None,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    debug!("egress input channel closed, stopping");
+                    return;
                 }
             };
 

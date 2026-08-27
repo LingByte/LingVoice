@@ -54,9 +54,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// 初始化日志：同时输出到 stdout 和 logs/rust-media/（按天滚动）
+///
+/// 默认级别 info。可通过 RUST_LOG 环境变量覆盖，如:
+///   RUST_LOG=info         — 仅 info 及以上
+///   RUST_LOG=debug        — 全局 debug
+///   RUST_LOG=lm_control=debug  — 仅 lm_control debug
 fn init_logging() -> WorkerGuard {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,lm_control=debug".into());
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
 
     // 文件日志：按天滚动
     let file_appender = tracing_appender::rolling::daily("logs/rust-media", "media-node.log");

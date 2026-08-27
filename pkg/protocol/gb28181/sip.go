@@ -8,11 +8,23 @@
 package gb28181
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 )
+
+// md5Sum 包装 crypto/md5.Sum。
+func md5Sum(data []byte) [16]byte {
+	return md5.Sum(data)
+}
+
+// hexEncode 包装 encoding/hex.EncodeToString。
+func hexEncode(b []byte) string {
+	return hex.EncodeToString(b)
+}
 
 // ─── SIP 方法 / 状态码 ───────────────────────────────────────────────────────
 
@@ -493,4 +505,143 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// ─── SIP 请求构造（server 主动向设备发 MESSAGE / INFO） ──────────────────────
+
+// SipRequestBuilder 构造一个发往设备的 SIP 请求。
+type SipRequestBuilder struct {
+	Method     string
+	URI        string
+	From       string
+	FromTag    string
+	To         string
+	CallID     string
+	CSeqNum    int
+	CSeqMethod string
+	Via        string
+	Branch     string
+	MaxForwards int
+	Body       []byte
+	ContentType string
+	// 额外头
+	ExtraHeaders map[string]string
+}
+
+// BuildSipRequest 序列化为 SIP 请求字节。
+func (b *SipRequestBuilder) Build() []byte {
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "%s %s SIP/2.0\r\n", b.Method, b.URI)
+	if b.Via != "" {
+		fmt.Fprintf(&buf, "Via: %s\r\n", b.Via)
+	}
+	if b.From != "" {
+		from := b.From
+		if b.FromTag != "" && !strings.Contains(from, "tag=") {
+			from = from + ";tag=" + b.FromTag
+		}
+		fmt.Fprintf(&buf, "From: %s\r\n", from)
+	}
+	if b.To != "" {
+		fmt.Fprintf(&buf, "To: %s\r\n", b.To)
+	}
+	if b.CallID != "" {
+		fmt.Fprintf(&buf, "Call-ID: %s\r\n", b.CallID)
+	}
+	if b.CSeqMethod != "" {
+		fmt.Fprintf(&buf, "CSeq: %d %s\r\n", b.CSeqNum, b.CSeqMethod)
+	}
+	mf := b.MaxForwards
+	if mf == 0 {
+		mf = 70
+	}
+	fmt.Fprintf(&buf, "Max-Forwards: %d\r\n", mf)
+	for k, v := range b.ExtraHeaders {
+		fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
+	}
+	if len(b.Body) > 0 {
+		if b.ContentType != "" {
+			fmt.Fprintf(&buf, "Content-Type: %s\r\n", b.ContentType)
+		}
+		fmt.Fprintf(&buf, "Content-Length: %d\r\n", len(b.Body))
+	} else {
+		fmt.Fprintf(&buf, "Content-Length: 0\r\n")
+	}
+	buf.WriteString("\r\n")
+	if len(b.Body) > 0 {
+		buf.Write(b.Body)
+	}
+	return []byte(buf.String())
+}
+
+// ─── Digest 认证工具 ─────────────────────────────────────────────────────────
+
+// DigestParams 解析 Authorization / WWW-Authenticate 头中的参数。
+type DigestParams map[string]string
+
+// ParseDigestHeader 解析 Digest 头值，如：
+//   Digest realm="3402000000",nonce="abc",algorithm=MD5,username="dev",uri="sip:...",response="..."
+func ParseDigestHeader(headerVal string) (DigestParams, bool) {
+	headerVal = strings.TrimSpace(headerVal)
+	if !strings.HasPrefix(headerVal, "Digest") {
+		return nil, false
+	}
+	headerVal = strings.TrimPrefix(headerVal, "Digest")
+	headerVal = strings.TrimSpace(headerVal)
+	params := DigestParams{}
+	// 按逗号拆分，但注意引号内可能含逗号（此处简化处理）
+	for _, kv := range splitDigestParams(headerVal) {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		eq := strings.IndexByte(kv, '=')
+		if eq < 0 {
+			continue
+		}
+		key := strings.TrimSpace(kv[:eq])
+		val := strings.TrimSpace(kv[eq+1:])
+		val = strings.Trim(val, `"`)
+		params[key] = val
+	}
+	return params, true
+}
+
+// splitDigestParams 按逗号拆分 Digest 参数（兼容引号内逗号的简单实现）。
+func splitDigestParams(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '"' {
+			inQuote = !inQuote
+			cur.WriteByte(c)
+			continue
+		}
+		if c == ',' && !inQuote {
+			out = append(out, cur.String())
+			cur.Reset()
+			continue
+		}
+		cur.WriteByte(c)
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
+}
+
+// ComputeDigestResponse 计算 SIP Digest 认证响应值。
+// response = MD5( MD5(user:realm:pass) : nonce : MD5(method:uri) )
+func ComputeDigestResponse(username, password, realm, nonce, method, uri string) string {
+	ha1 := md5Hex(username + ":" + realm + ":" + password)
+	ha2 := md5Hex(method + ":" + uri)
+	return md5Hex(ha1 + ":" + nonce + ":" + ha2)
+}
+
+// md5Hex 计算 MD5 并返回 32 位小写十六进制字符串。
+func md5Hex(s string) string {
+	h := md5Sum([]byte(s))
+	return hexEncode(h[:])
 }

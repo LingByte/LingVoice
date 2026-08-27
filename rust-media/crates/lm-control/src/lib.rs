@@ -9,7 +9,9 @@ pub mod mixer;
 pub mod recorder;
 pub mod service;
 pub mod session;
+pub mod transcode_manager;
 
 pub use bridge::BridgeManager;
 pub use events::EventBus;
 pub use service::MediaNodeServer;
+pub use transcode_manager::TranscodeManager;
