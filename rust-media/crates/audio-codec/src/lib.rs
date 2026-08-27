@@ -127,7 +127,8 @@ pub fn create_decoder(codec: CodecType) -> Box<dyn Decoder> {
         CodecType::Opus => Box::new(opus::OpusDecoder::new_default()),
         CodecType::TelephoneEvent => Box::new(telephone_event::TelephoneEventDecoder::new()),
         CodecType::Aac => {
-            panic!("AAC ADTS does not implement the Decoder trait; use aac::AacAdtsDemuxer instead")
+            // AAC 不通过 Decoder trait 提供，请使用 aac::AacAdtsDemuxer
+            Box::new(UnsupportedDecoder::new("AAC"))
         }
     }
 }
@@ -143,7 +144,8 @@ pub fn create_encoder(codec: CodecType) -> Box<dyn Encoder> {
         CodecType::Opus => Box::new(opus::OpusEncoder::new_default()),
         CodecType::TelephoneEvent => Box::new(telephone_event::TelephoneEventEncoder::new()),
         CodecType::Aac => {
-            panic!("AAC ADTS does not implement the Encoder trait; use aac::AacAdtsMuxer instead")
+            // AAC 不通过 Encoder trait 提供，请使用 aac::AacAdtsMuxer
+            Box::new(UnsupportedEncoder::new("AAC"))
         }
     }
 }
@@ -409,4 +411,70 @@ pub fn bytes_to_samples(u8_data: &[u8]) -> PcmBuf {
     let mut out = vec![0i16; n];
     let _ = bytes_to_samples_into(u8_data, &mut out);
     out
+}
+
+// ============================================================================
+// Unsupported codec stubs (返回错误而非 panic)
+// ============================================================================
+
+/// 不支持的解码器占位 — decode 时返回错误
+pub struct UnsupportedDecoder {
+    name: &'static str,
+}
+
+impl UnsupportedDecoder {
+    pub fn new(name: &'static str) -> Self {
+        Self { name }
+    }
+}
+
+impl Decoder for UnsupportedDecoder {
+    fn decode_into(&mut self, _data: &[u8], _out: &mut [Sample]) -> Result<usize, CodecError> {
+        // {} decoder not available via Decoder trait; use dedicated API
+        let _ = &self.name;
+        Err(CodecError::InvalidInput)
+    }
+
+    fn max_decode_samples(&self, _n_bytes: usize) -> usize {
+        0
+    }
+
+    fn sample_rate(&self) -> u32 {
+        0
+    }
+
+    fn channels(&self) -> u16 {
+        0
+    }
+}
+
+/// 不支持的编码器占位 — encode 时返回错误
+pub struct UnsupportedEncoder {
+    name: &'static str,
+}
+
+impl UnsupportedEncoder {
+    pub fn new(name: &'static str) -> Self {
+        Self { name }
+    }
+}
+
+impl Encoder for UnsupportedEncoder {
+    fn encode_into(&mut self, _samples: &[Sample], _out: &mut [u8]) -> Result<usize, CodecError> {
+        // {} encoder not available via Encoder trait; use dedicated API
+        let _ = &self.name;
+        Err(CodecError::InvalidInput)
+    }
+
+    fn max_encode_bytes(&self, _n_samples: usize) -> usize {
+        0
+    }
+
+    fn sample_rate(&self) -> u32 {
+        0
+    }
+
+    fn channels(&self) -> u16 {
+        0
+    }
 }

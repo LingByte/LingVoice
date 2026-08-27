@@ -108,11 +108,17 @@ pub struct DataChannel {
 }
 
 impl DataChannel {
-    /// 从配置创建（通常由 PeerConnection.create_data_channel 调用）
-    pub fn new(_config: DataChannelConfig) -> Self {
-        // 注意：无底层 RTCDataChannel 时仅用于占位/测试。
-        // 实际使用应通过 [`from_rtc`]。
-        unimplemented!("使用 PeerConnection::create_data_channel 创建 DataChannel")
+    /// 从配置创建（用于测试/占位，无底层 RTCDataChannel）
+    ///
+    /// 实际使用应通过 [`PeerConnection::create_data_channel`]。
+    pub fn new(config: DataChannelConfig) -> Self {
+        Self {
+            id: config.id.unwrap_or(0),
+            label: config.label.clone(),
+            config,
+            inner: Arc::new(webrtc::data_channel::RTCDataChannel::default()),
+            state: Arc::new(parking_lot::RwLock::new(DataChannelState::Connecting)),
+        }
     }
 
     /// 从 webrtc-rs 的 [`RTCDataChannel`] 构造封装
