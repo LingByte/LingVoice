@@ -212,12 +212,46 @@ pub fn create_encoder_with_config(
         lm_core::CodecType::Vp8 => Ok(Box::new(crate::vpx_codec::VpxEncoder::new_vp8(config)?)),
         #[cfg(feature = "vpx")]
         lm_core::CodecType::Vp9 => Ok(Box::new(crate::vpx_codec::VpxEncoder::new_vp9(config)?)),
-        #[cfg(feature = "openh264")]
+        #[cfg(all(feature = "videotoolbox", target_os = "macos"))]
+        lm_core::CodecType::H264 => {
+            match crate::videotoolbox_codec::VideoToolboxEncoder::new_h264(config.clone()) {
+                Ok(enc) => Ok(Box::new(enc)),
+                Err(_) => {
+                    #[cfg(feature = "openh264")]
+                    {
+                        Ok(Box::new(crate::openh264_codec::Openh264Encoder::new(
+                            config,
+                        )?))
+                    }
+                    #[cfg(not(feature = "openh264"))]
+                    {
+                        Err(VideoCodecError::Unsupported(
+                            "H264 encoder not available".into(),
+                        ))
+                    }
+                }
+            }
+        }
+        #[cfg(all(not(feature = "videotoolbox"), feature = "openh264"))]
         lm_core::CodecType::H264 => Ok(Box::new(crate::openh264_codec::Openh264Encoder::new(
             config,
         )?)),
+        #[cfg(all(
+            feature = "videotoolbox",
+            target_os = "macos",
+            not(feature = "openh264")
+        ))]
+        lm_core::CodecType::H264 => Ok(Box::new(
+            crate::videotoolbox_codec::VideoToolboxEncoder::new_h264(config)?,
+        )),
+        // H.265: always use x265 (software) for reliability.
+        // VideoToolbox HEVC encoder is not reliable on all macOS versions.
         #[cfg(feature = "x265")]
         lm_core::CodecType::H265 => Ok(Box::new(crate::x265_codec::X265Encoder::new(config)?)),
+        #[cfg(all(feature = "videotoolbox", target_os = "macos", not(feature = "x265")))]
+        lm_core::CodecType::H265 => Ok(Box::new(
+            crate::videotoolbox_codec::VideoToolboxEncoder::new_h265(config)?,
+        )),
         #[cfg(feature = "libaom")]
         lm_core::CodecType::Av1 => Ok(Box::new(crate::aom_codec::AomEncoder::new(config)?)),
         _ => Err(VideoCodecError::Unsupported(format!("{:?}", codec))),
@@ -287,6 +321,9 @@ pub mod dav1d_codec;
 
 #[cfg(feature = "libaom")]
 pub mod aom_codec;
+
+#[cfg(all(feature = "videotoolbox", target_os = "macos"))]
+pub mod videotoolbox_codec;
 
 #[cfg(test)]
 mod tests;
