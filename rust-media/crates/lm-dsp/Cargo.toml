@@ -7,11 +7,11 @@ authors.workspace = true
 
 [features]
 default = []
-silero = ["dep:ort"]
+silero = ["dep:silero-vad-pure"]
 
 [dependencies]
 lm-core = { path = "../lm-core" }
 audio-codec.workspace = true
 anyhow.workspace = true
 rustfft.workspace = true
-ort = { version = "2.0.0-rc.13", optional = true }
+silero-vad-pure = { version = "0.1.1", default-features = false, optional = true }
