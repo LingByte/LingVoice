@@ -29,6 +29,11 @@ type Session struct {
 	tsBuffer   []byte
 	tsPackets  int
 	tsParser   *tsParser
+
+	// 统计
+	statsMu        sync.Mutex
+	bytesReceived  uint64
+	packetsReceived uint64
 }
 
 func newSession(id string, addr *net.UDPAddr, socketID uint32, streamID string, handler common.EventHandler, server *Server) *Session {
@@ -90,7 +95,22 @@ func (s *Session) Tracks() []common.TrackInfo {
 
 // MediaStats 返回轨道统计。
 func (s *Session) MediaStats() map[common.TrackID]common.TrackStats {
-	return nil
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	stats := make(map[common.TrackID]common.TrackStats)
+	stats["video"] = common.TrackStats{
+		PacketsReceived: s.packetsReceived,
+		BytesReceived:   s.bytesReceived,
+	}
+	return stats
+}
+
+// recordStats 记录接收统计（由 data handler 调用）。
+func (s *Session) recordStats(payloadLen int) {
+	s.statsMu.Lock()
+	s.packetsReceived++
+	s.bytesReceived += uint64(payloadLen)
+	s.statsMu.Unlock()
 }
 
 // SendCommand 处理上层指令。

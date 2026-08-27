@@ -305,28 +305,219 @@ impl StatsCollector {
 
 /// 获取 CPU 使用率（0.0-1.0）
 ///
-/// 简化实现：读取 /proc/stat（Linux）或使用 sysinfo（跨平台）。
-/// 当前返回 0.0，生产环境应接入实际采集。
+/// 实现策略：
+/// - Linux: 读取 `/proc/stat` 两次采样，计算 delta 得到区间 CPU 使用率
+/// - macOS: 使用 `host_processor_info` (Mach API) 两次采样计算
+/// - 跨平台 fallback: 使用进程自身的 CPU 时间（user + system / elapsed）
+///
+/// 返回值范围: 0.0..=1.0
 fn get_cpu_usage() -> f64 {
+    let usage = get_cpu_usage_inner();
+    // clamp 到 [0.0, 1.0] 避免异常值
+    usage.clamp(0.0, 1.0)
+}
+
+/// 内部实现：返回原始 CPU 使用率（可能略超 1.0，由调用方 clamp）
+fn get_cpu_usage_inner() -> f64 {
     #[cfg(target_os = "linux")]
     {
-        if let Ok(content) = std::fs::read_to_string("/proc/stat") {
-            if let Some(first_line) = content.lines().next() {
-                let parts: Vec<&str> = first_line.split_whitespace().collect();
-                if parts.len() >= 5 && parts[0] == "cpu" {
-                    let user: f64 = parts[1].parse().unwrap_or(0.0);
-                    let nice: f64 = parts[2].parse().unwrap_or(0.0);
-                    let system: f64 = parts[3].parse().unwrap_or(0.0);
-                    let idle: f64 = parts[4].parse().unwrap_or(0.0);
-                    let total = user + nice + system + idle;
-                    if total > 0.0 {
-                        return (total - idle) / total;
-                    }
-                }
-            }
+        if let Some(usage) = get_cpu_usage_linux() {
+            return usage;
         }
     }
-    0.0
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(usage) = get_cpu_usage_macos() {
+            return usage;
+        }
+    }
+    // 跨平台 fallback: 进程自身 CPU 使用率
+    get_cpu_usage_process_fallback()
+}
+
+/// Linux: 读取 /proc/stat 两次采样计算 CPU 使用率
+#[cfg(target_os = "linux")]
+fn get_cpu_usage_linux() -> Option<f64> {
+    fn read_cpu_times() -> Option<(u64, u64)> {
+        let content = std::fs::read_to_string("/proc/stat").ok()?;
+        let first_line = content.lines().next()?;
+        let parts: Vec<&str> = first_line.split_whitespace().collect();
+        if parts.len() < 5 || parts[0] != "cpu" {
+            return None;
+        }
+        // user, nice, system, idle, iowait, irq, softirq, steal...
+        let mut fields: Vec<u64> = Vec::with_capacity(parts.len() - 1);
+        for i in 1..parts.len() {
+            fields.push(parts[i].parse().ok()?);
+        }
+        let idle = fields.get(3).copied().unwrap_or(0) + fields.get(4).copied().unwrap_or(0); // idle + iowait
+        let total: u64 = fields.iter().sum();
+        if total == 0 {
+            return None;
+        }
+        Some((idle, total))
+    }
+
+    let (idle1, total1) = read_cpu_times()?;
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let (idle2, total2) = read_cpu_times()?;
+
+    let total_delta = total2.saturating_sub(total1);
+    let idle_delta = idle2.saturating_sub(idle1);
+    if total_delta == 0 {
+        return Some(0.0);
+    }
+    let usage = 1.0 - (idle_delta as f64 / total_delta as f64);
+    Some(usage)
+}
+
+/// macOS: 使用 host_processor_info (Mach API) 两次采样计算 CPU 使用率
+#[cfg(target_os = "macos")]
+fn get_cpu_usage_macos() -> Option<f64> {
+    extern "C" {
+        fn mach_host_self() -> u32;
+        fn host_processor_info(
+            host: u32,
+            flavor: u32,
+            out_processor_count: *mut u32,
+            cpu_info: *mut *mut i32,
+            cpu_info_count: *mut u32,
+        ) -> i32;
+        fn vm_deallocate(target_task: u32, address: *mut i32, size: u32) -> i32;
+    }
+
+    const PROCESSOR_CPU_LOAD_INFO: u32 = 2;
+    const HOST_CPU_LOAD_INFO_COUNT: u32 = 4; // CPU_STATE_MAX
+
+    fn read_cpu_ticks() -> Option<(u64, u64)> {
+        unsafe {
+            let host = mach_host_self();
+            let mut processor_count: u32 = 0;
+            let mut cpu_info_ptr: *mut i32 = std::ptr::null_mut();
+            let mut cpu_info_count: u32 = 0;
+
+            let kr = host_processor_info(
+                host,
+                PROCESSOR_CPU_LOAD_INFO,
+                &mut processor_count as *mut u32,
+                &mut cpu_info_ptr as *mut *mut i32,
+                &mut cpu_info_count as *mut u32,
+            );
+            if kr != 0 || cpu_info_ptr.is_null() || processor_count == 0 {
+                return None;
+            }
+
+            // cpu_info_count = processor_count * HOST_CPU_LOAD_INFO_COUNT
+            // 每个 CPU 有 4 个 tick 值: user, nice, system, idle
+            let mut total_user: u64 = 0;
+            let mut total_system: u64 = 0;
+            let mut total_idle: u64 = 0;
+
+            let info_slice =
+                std::slice::from_raw_parts(cpu_info_ptr as *const i32, cpu_info_count as usize);
+            for i in 0..processor_count as usize {
+                let base = i * HOST_CPU_LOAD_INFO_COUNT as usize;
+                total_user += info_slice[base] as u64;
+                let _nice = info_slice[base + 1] as u64;
+                total_system += info_slice[base + 2] as u64;
+                total_idle += info_slice[base + 3] as u64;
+            }
+
+            // 释放 Mach 内存
+            vm_deallocate(mach_host_self(), cpu_info_ptr, cpu_info_count * 4);
+
+            let total = total_user + total_system + total_idle;
+            if total == 0 {
+                return None;
+            }
+            Some((total_idle, total))
+        }
+    }
+
+    let (idle1, total1) = read_cpu_ticks()?;
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let (idle2, total2) = read_cpu_ticks()?;
+
+    let total_delta = total2.saturating_sub(total1);
+    let idle_delta = idle2.saturating_sub(idle1);
+    if total_delta == 0 {
+        return Some(0.0);
+    }
+    let usage = 1.0 - (idle_delta as f64 / total_delta as f64);
+    Some(usage)
+}
+
+/// 跨平台 fallback: 使用进程自身的 CPU 时间计算使用率
+///
+/// - Linux: 两次采样 /proc/self/stat，计算 (utime+stime delta) / elapsed
+/// - macOS/其他: 使用 `ps -o %cpu=` 获取进程 CPU 百分比
+///
+/// 这是单进程的 CPU 占用，多核环境下可能 > 1.0（由调用方 clamp）。
+fn get_cpu_usage_process_fallback() -> f64 {
+    #[cfg(target_os = "linux")]
+    {
+        use std::time::Instant;
+
+        fn read_process_ticks() -> Option<u64> {
+            let content = std::fs::read_to_string("/proc/self/stat").ok()?;
+            let fields: Vec<&str> = content.split_whitespace().collect();
+            // /proc/[pid]/stat: field 14=utime, 15=stime (clock ticks, 1-based)
+            // 0-based index: 13, 14
+            let utime: u64 = fields.get(13).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let stime: u64 = fields.get(14).and_then(|s| s.parse().ok()).unwrap_or(0);
+            Some(utime + stime)
+        }
+
+        let clk_tck = unsafe { libc_clk_tck() } as f64;
+        let (ticks1, t1) = match read_process_ticks() {
+            Some(t) => (t, Instant::now()),
+            None => return 0.0,
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let (ticks2, t2) = match read_process_ticks() {
+            Some(t) => (t, Instant::now()),
+            None => return 0.0,
+        };
+        let elapsed = t2.duration_since(t1).as_secs_f64();
+        if elapsed <= 0.0 {
+            return 0.0;
+        }
+        let tick_delta = ticks2.saturating_sub(ticks1) as f64;
+        let cpu_seconds = tick_delta / clk_tck;
+        cpu_seconds / elapsed
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // macOS/其他: 使用 ps 命令获取进程 CPU 百分比
+        use std::process::Command;
+        let pid = std::process::id().to_string();
+        let output = Command::new("ps")
+            .args(["-p", &pid, "-o", "%cpu="])
+            .output();
+        match output {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let pct: f64 = text.trim().parse().unwrap_or(0.0);
+                pct / 100.0
+            }
+            Err(_) => 0.0,
+        }
+    }
+}
+
+/// 获取 Linux clock ticks per second (sysconf(_SC_CLK_TCK))
+#[cfg(target_os = "linux")]
+unsafe fn libc_clk_tck() -> i64 {
+    extern "C" {
+        fn sysconf(name: i32) -> i64;
+    }
+    const SC_CLK_TCK: i32 = 2;
+    let ticks = sysconf(SC_CLK_TCK);
+    if ticks > 0 {
+        ticks
+    } else {
+        100
+    }
 }
 
 /// 获取内存使用（MB）
@@ -515,5 +706,28 @@ mod tests {
         let stats = counter.snapshot();
         assert_eq!(stats.packets_received, 4000);
         assert_eq!(stats.bytes_received, 4000 * 160);
+    }
+
+    #[test]
+    fn test_cpu_usage_range() {
+        let usage = get_cpu_usage();
+        // CPU 使用率应在 0.0..=1.0 范围内
+        assert!(
+            (0.0..=1.0).contains(&usage),
+            "cpu_usage should be in [0.0, 1.0], got {}",
+            usage
+        );
+    }
+
+    #[test]
+    fn test_cpu_usage_health_snapshot() {
+        let collector = StatsCollector::new();
+        let health = collector.health_snapshot("node-1", 0, 0);
+        // health_snapshot 内部调用 get_cpu_usage，应返回有效值
+        assert!(
+            (0.0..=1.0).contains(&health.cpu_usage),
+            "health.cpu_usage should be in [0.0, 1.0], got {}",
+            health.cpu_usage
+        );
     }
 }

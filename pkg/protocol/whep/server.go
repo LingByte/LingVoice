@@ -60,6 +60,10 @@ type Session struct {
 	// 轨道管理
 	tracksMu sync.Mutex
 	tracks   map[common.TrackID]*webrtc.TrackLocalStaticRTP
+	// 统计
+	statsMu       sync.Mutex
+	packetsSent   map[common.TrackID]uint64
+	bytesSent     map[common.TrackID]uint64
 }
 
 // NewServer 创建 WHEP 服务
@@ -121,11 +125,13 @@ func (s *Server) handleWHEP(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := uuid.NewString()
 	session := &Session{
-		id:        sessionID,
-		pc:        pc,
-		handler:   s.handler,
-		createdAt: time.Now(),
-		tracks:    make(map[common.TrackID]*webrtc.TrackLocalStaticRTP),
+		id:          sessionID,
+		pc:          pc,
+		handler:     s.handler,
+		createdAt:   time.Now(),
+		tracks:      make(map[common.TrackID]*webrtc.TrackLocalStaticRTP),
+		packetsSent: make(map[common.TrackID]uint64),
+		bytesSent:   make(map[common.TrackID]uint64),
 	}
 	s.sessions.Store(sessionID, session)
 
@@ -304,7 +310,13 @@ func (sess *Session) SendMediaFrame(trackID common.TrackID, frame common.MediaFr
 	if !ok {
 		return fmt.Errorf("whep: track %s not found", trackID)
 	}
-	_, err := t.Write(frame.Payload)
+	n, err := t.Write(frame.Payload)
+	if err == nil {
+		sess.statsMu.Lock()
+		sess.packetsSent[trackID]++
+		sess.bytesSent[trackID] += uint64(n)
+		sess.statsMu.Unlock()
+	}
 	return err
 }
 
@@ -343,11 +355,14 @@ func (sess *Session) Tracks() []common.TrackInfo {
 
 // MediaStats 返回所有轨道的统计信息
 func (sess *Session) MediaStats() map[common.TrackID]common.TrackStats {
-	sess.tracksMu.Lock()
-	defer sess.tracksMu.Unlock()
-	stats := make(map[common.TrackID]common.TrackStats)
-	for id := range sess.tracks {
-		stats[id] = common.TrackStats{}
+	sess.statsMu.Lock()
+	defer sess.statsMu.Unlock()
+	stats := make(map[common.TrackID]common.TrackStats, len(sess.packetsSent))
+	for id, pkts := range sess.packetsSent {
+		stats[id] = common.TrackStats{
+			PacketsSent: pkts,
+			BytesSent:   sess.bytesSent[id],
+		}
 	}
 	return stats
 }

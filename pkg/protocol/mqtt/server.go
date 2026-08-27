@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
@@ -66,6 +67,11 @@ type Session struct {
 	mu        sync.Mutex
 	closed    bool
 	createdAt time.Time
+	// 统计
+	audioPacketsSent atomic.Uint64
+	audioBytesSent   atomic.Uint64
+	videoPacketsSent atomic.Uint64
+	videoBytesSent   atomic.Uint64
 }
 
 // --- 信令消息类型 ---
@@ -553,11 +559,20 @@ func (sess *Session) SendMediaFrame(trackID common.TrackID, frame common.MediaFr
 		return fmt.Errorf("session closed")
 	}
 	// MQTT 只有单个 media/out topic，trackID 仅用于校验/路由
-	_ = trackID
 	data := encodeFrame(frame)
 	topic := fmt.Sprintf("%s/%s/media/out", sess.server.config.TopicPrefix, sess.id)
 	token := sess.server.client.Publish(topic, sess.server.config.QoS, false, data)
 	token.Wait()
+	if token.Error() == nil {
+		n := uint64(len(data))
+		if trackID == "audio" {
+			sess.audioPacketsSent.Add(1)
+			sess.audioBytesSent.Add(n)
+		} else if trackID == "video" {
+			sess.videoPacketsSent.Add(1)
+			sess.videoBytesSent.Add(n)
+		}
+	}
 	return token.Error()
 }
 
@@ -589,10 +604,16 @@ func (sess *Session) Tracks() []common.TrackInfo {
 func (sess *Session) MediaStats() map[common.TrackID]common.TrackStats {
 	stats := make(map[common.TrackID]common.TrackStats)
 	if sess.audio != nil {
-		stats["audio"] = common.TrackStats{}
+		stats["audio"] = common.TrackStats{
+			PacketsSent: sess.audioPacketsSent.Load(),
+			BytesSent:   sess.audioBytesSent.Load(),
+		}
 	}
 	if sess.video != nil {
-		stats["video"] = common.TrackStats{}
+		stats["video"] = common.TrackStats{
+			PacketsSent: sess.videoPacketsSent.Load(),
+			BytesSent:   sess.videoBytesSent.Load(),
+		}
 	}
 	return stats
 }

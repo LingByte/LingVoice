@@ -65,6 +65,19 @@ type NodeInfo struct {
 	StreamCount  atomic.Int64
 	LastHeartbeat time.Time
 	Metadata     map[string]string
+
+	// relayClient 是到该 peer 的 HTTP/JSON relay 客户端, 懒创建并复用。
+	// 仅对 peer 节点有意义, 本地节点为 nil。
+	relayClient *GrpcRelayClient
+}
+
+// RelayClient 返回该节点的 GrpcRelayClient, 若不存在则懒创建。
+// 对本地节点返回 nil。
+func (n *NodeInfo) RelayClient() *GrpcRelayClient {
+	if n.relayClient == nil {
+		n.relayClient = NewGrpcRelayClient(n.Address)
+	}
+	return n.relayClient
 }
 
 // StreamLocation 流的位置信息
@@ -326,12 +339,43 @@ func (m *Manager) heartbeatLoop() {
 
 func (m *Manager) sendHeartbeats() {
 	m.local.LastHeartbeat = time.Now()
-	// 在实际实现中, 这里会通过 gRPC 向所有 peer 发送心跳
-	// 包含: 节点状态、负载分数、会话数、流数
+
+	req := HeartbeatRequest{
+		NodeID:       m.config.NodeID,
+		Address:      m.config.Address,
+		LoadScore:    m.local.LoadScore.Load(),
+		SessionCount: m.local.SessionCount.Load(),
+		StreamCount:  m.local.StreamCount.Load(),
+	}
+
 	m.peers.Range(func(key, value any) bool {
 		peer := value.(*NodeInfo)
-		// gRPC heartbeat call would go here
-		_ = peer
+		// 仅向 online/degraded peer 发送心跳, 离线节点跳过
+		if peer.Status == NodeOffline {
+			return true
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		resp, err := peer.RelayClient().SendHeartbeat(ctx, req)
+		cancel()
+		if err != nil {
+			m.log.Warn("heartbeat failed",
+				zap.String("peer", peer.ID),
+				zap.String("addr", peer.Address),
+				zap.Error(err))
+			// 心跳失败, 标记为降级, 由 checkPeerHealth 进一步处理
+			if peer.Status != NodeDegraded {
+				peer.Status = NodeDegraded
+			}
+			return true
+		}
+
+		// 收到响应后更新 peer 的负载信息和最近心跳时间
+		peer.LastHeartbeat = time.Now()
+		peer.LoadScore.Store(resp.LoadScore)
+		m.log.Debug("heartbeat ok",
+			zap.String("peer", peer.ID),
+			zap.Int64("load", resp.LoadScore))
 		return true
 	})
 }
@@ -410,7 +454,8 @@ type RelayMessage struct {
 	Payload  []byte
 }
 
-// RelayToNode 转发消息到指定节点
+// RelayToNode 转发消息到指定节点。
+// 根据 msg.Type 选择 RelayMedia 或 RelaySignal, 连接失败时标记 peer 为降级。
 func (m *Manager) RelayToNode(ctx context.Context, nodeID string, msg RelayMessage) error {
 	peer, ok := m.GetPeer(nodeID)
 	if !ok {
@@ -420,8 +465,6 @@ func (m *Manager) RelayToNode(ctx context.Context, nodeID string, msg RelayMessa
 		return fmt.Errorf("peer offline: %s", nodeID)
 	}
 
-	// 在实际实现中, 这里通过 gRPC 转发消息到 peer 节点
-	// peer.RelayClient.Relay(ctx, &pb.RelayRequest{...})
 	m.log.Debug("relay message",
 		zap.String("from", msg.FromNode),
 		zap.String("to", msg.ToNode),
@@ -429,5 +472,56 @@ func (m *Manager) RelayToNode(ctx context.Context, nodeID string, msg RelayMessa
 		zap.String("type", msg.Type),
 		zap.Int("payload_size", len(msg.Payload)))
 
-	return nil
+	client := peer.RelayClient()
+
+	switch msg.Type {
+	case "media":
+		req := RelayMediaRequest{
+			FromNode: msg.FromNode,
+			ToNode:   msg.ToNode,
+			StreamID: msg.StreamID,
+			Payload:  msg.Payload,
+		}
+		resp, err := client.RelayMedia(ctx, req)
+		if err != nil {
+			m.markPeerDegraded(peer, err)
+			return fmt.Errorf("relay media: %w", err)
+		}
+		if !resp.Success {
+			return fmt.Errorf("relay media rejected: %s", resp.Error)
+		}
+		return nil
+
+	case "signal":
+		req := RelaySignalRequest{
+			FromNode:   msg.FromNode,
+			ToNode:     msg.ToNode,
+			StreamID:   msg.StreamID,
+			SignalType: msg.Type,
+			Payload:    msg.Payload,
+		}
+		resp, err := client.RelaySignal(ctx, req)
+		if err != nil {
+			m.markPeerDegraded(peer, err)
+			return fmt.Errorf("relay signal: %w", err)
+		}
+		if !resp.Success {
+			return fmt.Errorf("relay signal rejected")
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported relay type: %s", msg.Type)
+	}
+}
+
+// markPeerDegraded 在转发/心跳失败时将 peer 标记为降级。
+func (m *Manager) markPeerDegraded(peer *NodeInfo, cause error) {
+	if peer.Status == NodeOnline {
+		peer.Status = NodeDegraded
+		m.log.Warn("peer marked degraded due to relay failure",
+			zap.String("peer", peer.ID),
+			zap.String("addr", peer.Address),
+			zap.Error(cause))
+	}
 }

@@ -8,9 +8,9 @@
 use crate::{VideoCodecError, VideoDecoder, YuvFrame};
 use libde265_sys2::{
     de265_decode, de265_decoder_context, de265_flush_data, de265_free_decoder,
-    de265_get_chroma_format, de265_get_image_NAL_header, de265_get_image_height,
-    de265_get_image_plane, de265_get_image_width, de265_get_next_picture, de265_image,
-    de265_new_decoder, de265_push_data, de265_release_next_picture,
+    de265_get_bits_per_pixel, de265_get_chroma_format, de265_get_image_NAL_header,
+    de265_get_image_height, de265_get_image_plane, de265_get_image_width, de265_get_next_picture,
+    de265_image, de265_new_decoder, de265_push_data, de265_release_next_picture,
 };
 use std::os::raw::c_int;
 use std::ptr;
@@ -133,6 +133,8 @@ impl VideoDecoder for Libde265Decoder {
 /// Extract YUV data from a de265 image into pre-allocated frame buffers.
 /// When `frame` is Some, writes directly into its planes (pool mode, zero extra allocation).
 /// When `frame` is None, allocates new Vecs (legacy mode).
+///
+/// 支持 8-bit 和 10-bit 色深。10-bit 时从 u16 平面填充 y16/u16/v16。
 unsafe fn extract_yuv_into(
     img: *const de265_image,
     timestamp: u64,
@@ -151,6 +153,10 @@ unsafe fn extract_yuv_into(
             chroma as c_int
         )));
     }
+
+    // 检查色深: de265_get_bits_per_pixel 返回每个像素的位数
+    let bits_per_pixel = de265_get_bits_per_pixel(img, 0);
+    let bit_depth = if bits_per_pixel > 8 { 10 } else { 8 };
 
     let uv_w = (width / 2) as usize;
     let uv_h = (height / 2) as usize;
@@ -186,8 +192,60 @@ unsafe fn extract_yuv_into(
     );
     let is_keyframe = (19..=21).contains(&nal_type);
 
-    if let Some(f) = frame {
-        // Pool mode: write directly into pre-allocated planes
+    if bit_depth > 8 {
+        // 10-bit: 从 u16 平面填充 y16/u16/v16
+        // de265 的 stride 以字节为单位，u16 stride = stride / 2
+        let y_stride_u16 = y_stride / 2;
+        let u_stride_u16 = u_stride / 2;
+        let v_stride_u16 = v_stride / 2;
+
+        let y_ptr16 = y_ptr as *const u16;
+        let u_ptr16 = u_ptr as *const u16;
+        let v_ptr16 = v_ptr as *const u16;
+
+        let mut y16 = vec![0u16; y_size];
+        let mut u16 = vec![0u16; uv_size];
+        let mut v16 = vec![0u16; uv_size];
+
+        if y_stride_u16 == w {
+            let src = std::slice::from_raw_parts(y_ptr16, y_size);
+            y16.copy_from_slice(src);
+        } else {
+            for row in 0..h {
+                let src = std::slice::from_raw_parts(y_ptr16.add(row * y_stride_u16), w);
+                y16[row * w..(row + 1) * w].copy_from_slice(src);
+            }
+        }
+        if u_stride_u16 == uv_w && v_stride_u16 == uv_w {
+            let src_u = std::slice::from_raw_parts(u_ptr16, uv_size);
+            u16.copy_from_slice(src_u);
+            let src_v = std::slice::from_raw_parts(v_ptr16, uv_size);
+            v16.copy_from_slice(src_v);
+        } else {
+            for row in 0..uv_h {
+                let src_u = std::slice::from_raw_parts(u_ptr16.add(row * u_stride_u16), uv_w);
+                u16[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
+                let src_v = std::slice::from_raw_parts(v_ptr16.add(row * v_stride_u16), uv_w);
+                v16[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+            }
+        }
+
+        // 10-bit 帧不使用 pool (pool 当前仅支持 8-bit 布局)
+        Ok(YuvFrame {
+            y: Vec::new(),
+            u: Vec::new(),
+            v: Vec::new(),
+            width,
+            height,
+            timestamp,
+            keyframe: is_keyframe,
+            bit_depth: 10,
+            y16,
+            u16,
+            v16,
+        })
+    } else if let Some(f) = frame {
+        // 8-bit Pool mode: write directly into pre-allocated planes
         if y_stride == w {
             let src = std::slice::from_raw_parts(y_ptr, y_size);
             f.y.copy_from_slice(src);
@@ -226,7 +284,7 @@ unsafe fn extract_yuv_into(
             v16: Vec::new(),
         })
     } else {
-        // Legacy mode: allocate new Vecs
+        // 8-bit Legacy mode: allocate new Vecs
         let mut y = vec![0u8; y_size];
         let mut u = vec![0u8; uv_size];
         let mut v = vec![0u8; uv_size];

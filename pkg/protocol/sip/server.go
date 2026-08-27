@@ -217,7 +217,8 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 			_ = tx.Respond(resp)
 			return
 		}
-		_ = target // 后续用于转发或转接
+		// target 保存到 session 用于后续 SIP 代理转发（当前仅做信令终结）
+		s.log.Debug("sip invite routed", zap.String("to", to), zap.String("target", target))
 	}
 
 	// 创建会话

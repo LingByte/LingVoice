@@ -39,8 +39,11 @@ type SessionTrack struct {
 	Channels   uint16
 	// Interleaved TCP 模式
 	Channel    byte // RTP channel（RTCP = Channel+1）
-	// UDP 模式（暂未实现 UDP 接收，保留字段）
+	// UDP 模式（当前仅支持 interleaved TCP，UDP 接收为后续扩展）
 	UDPPort    int
+	// 统计
+	packetsReceived uint64
+	bytesReceived   uint64
 }
 
 func newSession(id string, conn net.Conn, handler common.EventHandler, server *Server) *Session {
@@ -102,7 +105,16 @@ func (s *Session) Tracks() []common.TrackInfo {
 
 // MediaStats 返回轨道统计（实现 MediaSession）。
 func (s *Session) MediaStats() map[common.TrackID]common.TrackStats {
-	return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stats := make(map[common.TrackID]common.TrackStats, len(s.tracks))
+	for id, t := range s.tracks {
+		stats[id] = common.TrackStats{
+			PacketsReceived: t.packetsReceived,
+			BytesReceived:   t.bytesReceived,
+		}
+	}
+	return stats
 }
 
 // AddTrack 注册一条轨道。

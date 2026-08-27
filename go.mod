@@ -14,6 +14,7 @@ require (
 	github.com/pion/rtp v1.10.5
 	github.com/pion/webrtc/v4 v4.2.18
 	github.com/prometheus/client_golang v1.20.5
+	github.com/quic-go/quic-go v0.61.0
 	go.uber.org/zap v1.28.0
 	google.golang.org/grpc v1.83.1
 	google.golang.org/protobuf v1.36.12
@@ -46,7 +47,6 @@ require (
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
-	github.com/quic-go/quic-go v0.61.0 // indirect
 	github.com/stretchr/testify v1.12.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

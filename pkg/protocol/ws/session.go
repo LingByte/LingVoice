@@ -22,6 +22,11 @@ type Session struct {
 	closed     atomic.Bool
 	sendSeq    atomic.Uint32 // 发送序列号（用 Uint32 避免 Go 1.26 移除的 AddUint16）
 	createdAt  time.Time
+	// 统计
+	audioPacketsSent atomic.Uint64
+	audioBytesSent   atomic.Uint64
+	videoPacketsSent atomic.Uint64
+	videoBytesSent   atomic.Uint64
 }
 
 func newSession(id string, conn *websocket.Conn, handler common.EventHandler) *Session {
@@ -77,7 +82,18 @@ func (s *Session) SendMediaFrame(trackID common.TrackID, frame common.MediaFrame
 	data := EncodeFrame(frame)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.conn.WriteMessage(websocket.BinaryMessage, data)
+	err := s.conn.WriteMessage(websocket.BinaryMessage, data)
+	if err == nil {
+		n := uint64(len(data))
+		if trackID == TrackIDAudio {
+			s.audioPacketsSent.Add(1)
+			s.audioBytesSent.Add(n)
+		} else if trackID == TrackIDVideo {
+			s.videoPacketsSent.Add(1)
+			s.videoBytesSent.Add(n)
+		}
+	}
+	return err
 }
 
 // Tracks 返回当前协商的轨道信息（实现 MediaSession 接口）
@@ -108,10 +124,16 @@ func (s *Session) Tracks() []common.TrackInfo {
 func (s *Session) MediaStats() map[common.TrackID]common.TrackStats {
 	stats := make(map[common.TrackID]common.TrackStats)
 	if s.audio != nil {
-		stats[TrackIDAudio] = common.TrackStats{}
+		stats[TrackIDAudio] = common.TrackStats{
+			PacketsSent: s.audioPacketsSent.Load(),
+			BytesSent:   s.audioBytesSent.Load(),
+		}
 	}
 	if s.video != nil {
-		stats[TrackIDVideo] = common.TrackStats{}
+		stats[TrackIDVideo] = common.TrackStats{
+			PacketsSent: s.videoPacketsSent.Load(),
+			BytesSent:   s.videoBytesSent.Load(),
+		}
 	}
 	return stats
 }

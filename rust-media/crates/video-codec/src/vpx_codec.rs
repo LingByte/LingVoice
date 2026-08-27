@@ -129,6 +129,8 @@ impl Default for VpxCodecCxPktData {
 }
 
 const VPX_IMG_FMT_I420: c_int = 258;
+/// VPX image format for I420 16-bit (10-bit/12-bit stored as u16)
+const VPX_IMG_FMT_I42016: c_int = 268;
 
 const VPX_DECODER_ABI_VERSION: c_int = 12;
 const VPX_ENCODER_ABI_VERSION: c_int = 37;
@@ -237,24 +239,50 @@ fn copy_yuv_from_image(
     let uv_h = (height / 2) as usize;
     let uv_size = uv_w * uv_h;
 
-    let mut y = vec![0u8; y_size];
-    let mut u = vec![0u8; uv_size];
-    let mut v = vec![0u8; uv_size];
+    // 检查图像色深: bit_depth > 8 时使用 16-bit 平面
+    let bit_depth = img.bit_depth as u8;
+    if bit_depth > 8 {
+        // 10-bit/12-bit: 从 u16 平面填充 y16/u16/v16
+        let mut y16 = vec![0u16; y_size];
+        let mut u16 = vec![0u16; uv_size];
+        let mut v16 = vec![0u16; uv_size];
 
-    fill_yuv_planes(img, &mut y, &mut u, &mut v, width, height, uv_w, uv_h);
+        fill_yuv_planes_16bit(img, &mut y16, &mut u16, &mut v16, width, height, uv_w, uv_h);
 
-    YuvFrame {
-        y,
-        u,
-        v,
-        width,
-        height,
-        timestamp,
-        keyframe,
-        bit_depth: 8,
-        y16: Vec::new(),
-        u16: Vec::new(),
-        v16: Vec::new(),
+        YuvFrame {
+            y: Vec::new(),
+            u: Vec::new(),
+            v: Vec::new(),
+            width,
+            height,
+            timestamp,
+            keyframe,
+            bit_depth,
+            y16,
+            u16,
+            v16,
+        }
+    } else {
+        // 8-bit: 从 u8 平面填充 y/u/v
+        let mut y = vec![0u8; y_size];
+        let mut u = vec![0u8; uv_size];
+        let mut v = vec![0u8; uv_size];
+
+        fill_yuv_planes(img, &mut y, &mut u, &mut v, width, height, uv_w, uv_h);
+
+        YuvFrame {
+            y,
+            u,
+            v,
+            width,
+            height,
+            timestamp,
+            keyframe,
+            bit_depth: 8,
+            y16: Vec::new(),
+            u16: Vec::new(),
+            v16: Vec::new(),
+        }
     }
 }
 
@@ -300,6 +328,56 @@ fn fill_yuv_planes(
             let src_v =
                 unsafe { std::slice::from_raw_parts(img.planes[2].add(row * v_stride), uv_w) };
             v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+        }
+    }
+}
+
+/// Fill pre-allocated Y/U/V 16-bit planes from a vpx image (10-bit/12-bit).
+/// The plane pointers are cast to `*const u16` since vpx stores high bit-depth
+/// samples as little-endian u16 in I42016 format.
+#[allow(clippy::too_many_arguments)]
+fn fill_yuv_planes_16bit(
+    img: &VpxImage,
+    y16: &mut [u16],
+    u16: &mut [u16],
+    v16: &mut [u16],
+    width: u32,
+    height: u32,
+    uv_w: usize,
+    uv_h: usize,
+) {
+    // For 16-bit formats, stride is in bytes, so divide by 2 for u16 stride
+    let y_stride = (img.stride[0] as usize) / 2;
+    let w = width as usize;
+    let y_size = w * height as usize;
+    let uv_size = uv_w * uv_h;
+
+    let y_ptr = img.planes[0] as *const u16;
+    if y_stride == w {
+        let src = unsafe { std::slice::from_raw_parts(y_ptr, y_size) };
+        y16.copy_from_slice(src);
+    } else {
+        for row in 0..height as usize {
+            let src = unsafe { std::slice::from_raw_parts(y_ptr.add(row * y_stride), w) };
+            y16[row * w..(row + 1) * w].copy_from_slice(src);
+        }
+    }
+
+    let u_stride = (img.stride[1] as usize) / 2;
+    let v_stride = (img.stride[2] as usize) / 2;
+    let u_ptr = img.planes[1] as *const u16;
+    let v_ptr = img.planes[2] as *const u16;
+    if u_stride == uv_w && v_stride == uv_w {
+        let src_u = unsafe { std::slice::from_raw_parts(u_ptr, uv_size) };
+        u16.copy_from_slice(src_u);
+        let src_v = unsafe { std::slice::from_raw_parts(v_ptr, uv_size) };
+        v16.copy_from_slice(src_v);
+    } else {
+        for row in 0..uv_h {
+            let src_u = unsafe { std::slice::from_raw_parts(u_ptr.add(row * u_stride), uv_w) };
+            u16[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
+            let src_v = unsafe { std::slice::from_raw_parts(v_ptr.add(row * v_stride), uv_w) };
+            v16[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
         }
     }
 }
@@ -505,6 +583,15 @@ impl VpxEncoder {
         cfg.g_threads = config.threads;
         cfg.g_error_resilient = 1;
 
+        // VP9 支持 10-bit 编码: 根据 config.bit_depth 设置 g_bit_depth 和 g_input_bit_depth
+        // VP8 只支持 8-bit，保持默认值不变
+        if codec_type == lm_core::CodecType::Vp9 && config.bit_depth > 8 {
+            cfg.g_bit_depth = config.bit_depth as c_uint;
+            cfg.g_input_bit_depth = config.bit_depth as c_uint;
+            // 10-bit VP9 使用 profile 2 (I420 16-bit)
+            cfg.g_profile = 2;
+        }
+
         let mut ctx = VpxCodecCtx {
             name: ptr::null(),
             iface: ptr::null_mut(),
@@ -527,8 +614,13 @@ impl VpxEncoder {
         }
 
         let mut img = VpxImage::default();
-        let img_ptr =
-            unsafe { vpx_img_alloc(&mut img, VPX_IMG_FMT_I420, config.width, config.height, 32) };
+        // 10-bit VP9 使用 I42016 格式，8-bit 使用 I420
+        let img_fmt = if codec_type == lm_core::CodecType::Vp9 && config.bit_depth > 8 {
+            VPX_IMG_FMT_I42016
+        } else {
+            VPX_IMG_FMT_I420
+        };
+        let img_ptr = unsafe { vpx_img_alloc(&mut img, img_fmt, config.width, config.height, 32) };
         if img_ptr.is_null() {
             unsafe { vpx_codec_destroy(&mut ctx) };
             return Err(VideoCodecError::EncodeFailed("vpx_img_alloc failed".into()));

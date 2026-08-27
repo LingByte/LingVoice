@@ -545,9 +545,24 @@ func TestSession_MediaStats(t *testing.T) {
 	addr := &net.UDPAddr{IP: net.IPv4(1, 2, 3, 4), Port: 80}
 	s := newSession("s1", addr, 100, "stream", nil, nil)
 
+	// 初始状态应返回包含 video track 的统计（零值）
 	stats := s.MediaStats()
-	if stats != nil {
-		t.Errorf("MediaStats should return nil, got %v", stats)
+	if stats == nil {
+		t.Fatal("MediaStats should not return nil")
+	}
+	if _, ok := stats["video"]; !ok {
+		t.Errorf("MediaStats should contain video track, got %v", stats)
+	}
+
+	// 记录一些统计后验证
+	s.recordStats(100)
+	s.recordStats(200)
+	stats = s.MediaStats()
+	if stats["video"].PacketsReceived != 2 {
+		t.Errorf("PacketsReceived = %d, want 2", stats["video"].PacketsReceived)
+	}
+	if stats["video"].BytesReceived != 300 {
+		t.Errorf("BytesReceived = %d, want 300", stats["video"].BytesReceived)
 	}
 }
 

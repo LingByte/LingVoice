@@ -19,13 +19,20 @@ package moq
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
+	"net"
 	"sync"
 	"time"
 
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
 	"github.com/LingByte/ling-base/common/logger"
 	"github.com/google/uuid"
+	"github.com/quic-go/quic-go"
 	"go.uber.org/zap"
 )
 
@@ -129,7 +136,11 @@ type Server struct {
 	config   Config
 	handler  common.EventHandler
 	sessions sync.Map // map[string]*Session
+	conns    sync.Map // map[string]*quic.Conn (sessionID -> conn)
+	listener *quic.Listener
 	log      *zap.Logger
+	mu       sync.Mutex
+	closed   bool
 }
 
 // NewServer 创建 MoQ 服务
@@ -148,22 +159,229 @@ func NewServer(config Config, handler common.EventHandler, log *zap.Logger) *Ser
 	}
 }
 
-// Start 启动 MoQ 服务
-// 当前为框架实现, 实际 QUIC 监听需要 quic-go 库
+// Start 启动 MoQ 服务, 创建实际 QUIC listener 并开始接受连接。
 func (s *Server) Start() error {
-	s.log.Info("moq server starting (framework mode)",
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tlsConfig, err := s.loadOrGenerateTLSConfig()
+	if err != nil {
+		return fmt.Errorf("load TLS config: %w", err)
+	}
+
+	quicConfig := &quic.Config{
+		MaxIncomingStreams: int64(s.config.MaxStreams),
+		KeepAlivePeriod:    30 * time.Second,
+	}
+
+	s.log.Info("moq server starting",
 		zap.String("addr", s.config.Addr),
 		zap.Int("maxStreams", s.config.MaxStreams))
-	// TODO: 实际 QUIC 监听需要 quic-go 库
-	// listener, err := quic.ListenAddr(s.config.Addr, tlsConfig, quicConfig)
-	// go s.acceptLoop(listener)
+
+	listener, err := quic.ListenAddr(s.config.Addr, tlsConfig, quicConfig)
+	if err != nil {
+		return fmt.Errorf("quic listen %s: %w", s.config.Addr, err)
+	}
+	s.listener = listener
+
+	go s.acceptLoop(listener)
 	return nil
 }
 
-// Close 关闭服务
+// Close 关闭服务及 QUIC listener。
 func (s *Server) Close() error {
-	s.log.Info("moq server closing")
+	s.mu.Lock()
+	s.closed = true
+	listener := s.listener
+	s.listener = nil
+	s.mu.Unlock()
+
+	if listener != nil {
+		if err := listener.Close(); err != nil {
+			s.log.Warn("close quic listener", zap.Error(err))
+		}
+	}
+
+	// 关闭所有活跃 QUIC 连接
+	s.conns.Range(func(key, value any) bool {
+		if conn, ok := value.(*quic.Conn); ok {
+			_ = conn.CloseWithError(0, "server shutdown")
+		}
+		s.conns.Delete(key)
+		return true
+	})
+
+	s.log.Info("moq server closed")
 	return nil
+}
+
+// loadOrGenerateTLSConfig 加载证书文件, 若未配置则生成自签名证书。
+func (s *Server) loadOrGenerateTLSConfig() (*tls.Config, error) {
+	if s.config.TLSCertFile != "" && s.config.TLSKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(s.config.TLSCertFile, s.config.TLSKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load key pair: %w", err)
+		}
+		return &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			NextProtos:   []string{"moq-transport"},
+		}, nil
+	}
+
+	// 生成自签名证书
+	cert, err := generateSelfSignedCert()
+	if err != nil {
+		return nil, fmt.Errorf("generate self-signed cert: %w", err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		NextProtos:   []string{"moq-transport"},
+	}, nil
+}
+
+// generateSelfSignedCert 生成内存中的自签名 TLS 证书 (用于开发/测试)。
+func generateSelfSignedCert() (tls.Certificate, error) {
+	// 使用 ecdsa 生成密钥对
+	priv, err := ecdsaGenerateKey()
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"LingVoice MoQ"},
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+		DNSNames:              []string{"localhost"},
+	}
+
+	derBytes, err := x509.CreateCertificate(nil, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("create certificate: %w", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	keyPEM, err := encodeECDSAKey(priv)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("encode key: %w", err)
+	}
+
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+// acceptLoop 接受 QUIC 连接, 每个连接创建一个 MoQ session 并启动处理 goroutine。
+func (s *Server) acceptLoop(listener *quic.Listener) {
+	for {
+		conn, err := listener.Accept(context.Background())
+		if err != nil {
+			s.mu.Lock()
+			closed := s.closed
+			s.mu.Unlock()
+			if closed {
+				return
+			}
+			s.log.Warn("accept quic connection", zap.Error(err))
+			return
+		}
+		go s.handleConnection(conn)
+	}
+}
+
+// handleConnection 处理单个 QUIC 连接: 创建 MoQ session, 接受信令流并解析消息。
+func (s *Server) handleConnection(conn *quic.Conn) {
+	sess := s.CreateSession()
+	s.conns.Store(sess.id, conn)
+
+	s.log.Info("moq connection accepted",
+		zap.String("session", sess.id),
+		zap.String("remote", conn.RemoteAddr().String()))
+
+	defer func() {
+		s.conns.Delete(sess.id)
+		_ = conn.CloseWithError(0, "session closed")
+	}()
+
+	// 接受并处理所有 stream (stream 0 为信令流, 其余为媒体流)
+	for {
+		stream, err := conn.AcceptStream(context.Background())
+		if err != nil {
+			s.log.Debug("accept stream ended",
+				zap.String("session", sess.id),
+				zap.Error(err))
+			return
+		}
+		go s.handleStream(sess.id, stream)
+	}
+}
+
+// handleStream 处理单个 QUIC stream 上的 MoQ 消息。
+func (s *Server) handleStream(sessionID string, stream *quic.Stream) {
+	defer stream.Close()
+
+	for {
+		msgType, body, err := ReadMessage(stream)
+		if err != nil {
+			s.log.Debug("read message ended",
+				zap.String("session", sessionID),
+				zap.Error(err))
+			return
+		}
+
+		s.log.Debug("moq message received",
+			zap.String("session", sessionID),
+			zap.String("type", msgType.String()))
+
+		switch msgType {
+		case MsgSubscribe:
+			msg, err := DecodeMessageBody(msgType, body)
+			if err != nil {
+				s.log.Warn("decode subscribe", zap.Error(err))
+				continue
+			}
+			sub := msg.(*SubscribeMessage)
+			if _, err := s.HandleSubscribe(sessionID, sub.TrackName, sub.TrackAlias); err != nil {
+				s.log.Warn("handle subscribe", zap.Error(err))
+			}
+
+		case MsgAnnounce:
+			msg, err := DecodeMessageBody(msgType, body)
+			if err != nil {
+				s.log.Warn("decode announce", zap.Error(err))
+				continue
+			}
+			ann := msg.(*AnnounceMessage)
+			if err := s.HandleAnnounce(sessionID, ann.TrackNamespace); err != nil {
+				s.log.Warn("handle announce", zap.Error(err))
+			}
+
+		case MsgGoAway:
+			if err := s.HandleGoAway(sessionID); err != nil {
+				s.log.Warn("handle goaway", zap.Error(err))
+			}
+			return
+
+		case MsgObject:
+			msg, err := DecodeMessageBody(msgType, body)
+			if err != nil {
+				s.log.Warn("decode object", zap.Error(err))
+				continue
+			}
+			obj := msg.(*ObjectMessage)
+			if err := s.HandleObject(sessionID, SubscribeID(0), obj.Payload, obj.Timestamp); err != nil {
+				s.log.Warn("handle object", zap.Error(err))
+			}
+
+		default:
+			s.log.Debug("unhandled message type",
+				zap.String("type", msgType.String()))
+		}
+	}
 }
 
 // CreateSession 创建新会话
@@ -359,9 +577,34 @@ func (s *Server) ListSessions() []*Session {
 	return list
 }
 
-// SendMediaFrame 向指定会话发送媒体帧 (subscriber 方向)
+// SendMediaFrame 向指定会话发送媒体帧 (subscriber 方向)。
+// 通过 QUIC stream 发送 MoQ Object 消息: type + track_alias + group_id + object_id + timestamp + payload。
 func (s *Server) SendMediaFrame(sessionID string, trackID common.TrackID, frame common.MediaFrame) error {
-	// 在实际实现中, 这里通过 QUIC 流发送 MoQ Object 消息
+	v, ok := s.conns.Load(sessionID)
+	if !ok {
+		s.log.Debug("send media frame: no quic connection",
+			zap.String("session", sessionID))
+		return fmt.Errorf("no quic connection for session: %s", sessionID)
+	}
+	conn := v.(*quic.Conn)
+
+	stream, err := conn.OpenStream()
+	if err != nil {
+		return fmt.Errorf("open stream: %w", err)
+	}
+	defer stream.Close()
+
+	msg := &ObjectMessage{
+		TrackAlias: TrackAlias(0),
+		GroupID:    0,
+		ObjectID:   0,
+		Timestamp:  uint64(frame.Timestamp),
+		Payload:    frame.Payload,
+	}
+	if err := WriteObject(stream, msg); err != nil {
+		return fmt.Errorf("write object: %w", err)
+	}
+
 	s.log.Debug("send media frame",
 		zap.String("session", sessionID),
 		zap.String("track", string(trackID)),

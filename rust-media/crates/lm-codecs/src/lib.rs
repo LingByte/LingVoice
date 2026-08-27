@@ -18,13 +18,17 @@ pub struct CodecAdapter {
 }
 
 impl CodecAdapter {
-    pub fn new(codec: CodecType) -> Self {
-        let ac_codec = to_ac_codec(codec);
-        Self {
+    /// 创建编解码适配器
+    ///
+    /// 返回 `Err` 如果 codec 不被 audio-codec 支持（如视频编码或 G.729）。
+    pub fn new(codec: CodecType) -> anyhow::Result<Self> {
+        let ac_codec = to_ac_codec(codec)
+            .ok_or_else(|| anyhow::anyhow!("unsupported audio codec: {:?}", codec))?;
+        Ok(Self {
             codec,
             encoder: ac::create_encoder(ac_codec),
             decoder: ac::create_decoder(ac_codec),
-        }
+        })
     }
 }
 
@@ -53,18 +57,28 @@ impl AudioCodec for CodecAdapter {
 // ============================================================================
 
 /// 创建编解码器（同时支持编码和解码）
-pub fn create_codec(codec: CodecType) -> Box<dyn AudioCodec> {
-    Box::new(CodecAdapter::new(codec))
+///
+/// 返回 `Err` 如果 codec 不被 audio-codec 支持。
+pub fn create_codec(codec: CodecType) -> anyhow::Result<Box<dyn AudioCodec>> {
+    Ok(Box::new(CodecAdapter::new(codec)?))
 }
 
 /// 创建编码器（仅编码）
-pub fn create_encoder(codec: CodecType) -> Box<dyn ac::Encoder> {
-    ac::create_encoder(to_ac_codec(codec))
+///
+/// 返回 `Err` 如果 codec 不被 audio-codec 支持。
+pub fn create_encoder(codec: CodecType) -> anyhow::Result<Box<dyn ac::Encoder>> {
+    let ac_codec = to_ac_codec(codec)
+        .ok_or_else(|| anyhow::anyhow!("unsupported audio codec: {:?}", codec))?;
+    Ok(ac::create_encoder(ac_codec))
 }
 
 /// 创建解码器（仅解码）
-pub fn create_decoder(codec: CodecType) -> Box<dyn ac::Decoder> {
-    ac::create_decoder(to_ac_codec(codec))
+///
+/// 返回 `Err` 如果 codec 不被 audio-codec 支持。
+pub fn create_decoder(codec: CodecType) -> anyhow::Result<Box<dyn ac::Decoder>> {
+    let ac_codec = to_ac_codec(codec)
+        .ok_or_else(|| anyhow::anyhow!("unsupported audio codec: {:?}", codec))?;
+    Ok(ac::create_decoder(ac_codec))
 }
 
 /// 创建重采样器
@@ -77,25 +91,29 @@ pub fn create_resampler(input_rate: u32, output_rate: u32) -> anyhow::Result<ac:
 // 类型转换
 // ============================================================================
 
-fn to_ac_codec(codec: CodecType) -> AcCodecType {
+fn to_ac_codec(codec: CodecType) -> Option<AcCodecType> {
     match codec {
-        CodecType::Opus => AcCodecType::Opus,
-        CodecType::PcmU => AcCodecType::PCMU,
-        CodecType::PcmA => AcCodecType::PCMA,
-        CodecType::G722 => AcCodecType::G722,
-        _ => panic!("unsupported codec: {:?}", codec),
+        CodecType::Opus => Some(AcCodecType::Opus),
+        CodecType::PcmU => Some(AcCodecType::PCMU),
+        CodecType::PcmA => Some(AcCodecType::PCMA),
+        CodecType::G722 => Some(AcCodecType::G722),
+        // 视频编码（H264/H265/VP8/VP9/AV1）和原始 PCM/AAC/MP3
+        // 不被 audio-codec 支持，返回 None 而非 panic
+        _ => None,
     }
 }
 
 #[allow(dead_code)]
-fn from_ac_codec(codec: AcCodecType) -> CodecType {
+fn from_ac_codec(codec: AcCodecType) -> Option<CodecType> {
     match codec {
-        AcCodecType::Opus => CodecType::Opus,
-        AcCodecType::PCMU => CodecType::PcmU,
-        AcCodecType::PCMA => CodecType::PcmA,
-        AcCodecType::G722 => CodecType::G722,
-        AcCodecType::G729 => CodecType::G722, // G729 暂映射到 G722
-        AcCodecType::TelephoneEvent => CodecType::PcmU, // TelephoneEvent 不在我们的枚举里
+        AcCodecType::Opus => Some(CodecType::Opus),
+        AcCodecType::PCMU => Some(CodecType::PcmU),
+        AcCodecType::PCMA => Some(CodecType::PcmA),
+        AcCodecType::G722 => Some(CodecType::G722),
+        // G.729 不被 lm-core 支持，返回 None 而非静默映射到 G722
+        AcCodecType::G729 => None,
+        // TelephoneEvent 不在 CodecType 枚举里
+        AcCodecType::TelephoneEvent => None,
     }
 }
 
@@ -192,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_codec_roundtrip_pcma() {
-        let mut codec = create_codec(CodecType::PcmA);
+        let mut codec = create_codec(CodecType::PcmA).unwrap();
         let frame = AudioFrame {
             samples: vec![100i16; 160], // 20ms @ 8kHz
             sample_rate: 8000,
@@ -206,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_codec_roundtrip_opus() {
-        let mut codec = create_codec(CodecType::Opus);
+        let mut codec = create_codec(CodecType::Opus).unwrap();
         let frame = AudioFrame {
             samples: vec![0i16; 960], // 20ms @ 48kHz mono (but opus expects 2ch)
             sample_rate: 48000,
@@ -223,5 +241,40 @@ mod tests {
         assert_eq!(codec_from_name("opus"), Some(CodecType::Opus));
         assert_eq!(codec_from_name("PCMU"), Some(CodecType::PcmU));
         assert_eq!(codec_from_name("unknown"), None);
+    }
+
+    #[test]
+    fn test_create_codec_unsupported_returns_err() {
+        // 视频编码不被 audio-codec 支持，应返回 Err 而非 panic
+        let result = create_codec(CodecType::H264);
+        assert!(result.is_err());
+
+        let result = create_codec(CodecType::Vp8);
+        assert!(result.is_err());
+
+        // 原始 PCM 也不支持
+        let result = create_codec(CodecType::Pcm);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_encoder_decoder_unsupported() {
+        assert!(create_encoder(CodecType::H265).is_err());
+        assert!(create_decoder(CodecType::Av1).is_err());
+    }
+
+    #[test]
+    fn test_to_ac_codec_returns_none_for_unsupported() {
+        assert!(to_ac_codec(CodecType::H264).is_none());
+        assert!(to_ac_codec(CodecType::Pcm).is_none());
+        assert!(to_ac_codec(CodecType::Opus).is_some());
+    }
+
+    #[test]
+    fn test_from_ac_codec_g729_returns_none() {
+        // G.729 不应静默映射到 G722，应返回 None
+        assert_eq!(from_ac_codec(AcCodecType::G729), None);
+        assert_eq!(from_ac_codec(AcCodecType::TelephoneEvent), None);
+        assert_eq!(from_ac_codec(AcCodecType::Opus), Some(CodecType::Opus));
     }
 }

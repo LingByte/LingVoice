@@ -194,10 +194,12 @@ impl VideoDecoder for Dav1dDecoder {
                 )));
             }
 
-            if pic.p.bpc != 8 {
+            // 支持 8-bit 和 10-bit (bpc == 8 或 10)
+            let bit_depth = pic.p.bpc as u8;
+            if bit_depth != 8 && bit_depth != 10 {
                 dav1d_picture_unref(&mut pic);
                 return Err(VideoCodecError::DecodeFailed(format!(
-                    "unsupported bit depth: {} (only 8-bit supported)",
+                    "unsupported bit depth: {} (only 8-bit and 10-bit supported)",
                     pic.p.bpc
                 )));
             }
@@ -211,55 +213,112 @@ impl VideoDecoder for Dav1dDecoder {
             let y_size = w * h;
             let uv_size = uv_w * uv_h;
 
-            let mut y = vec![0u8; y_size];
-            let mut u = vec![0u8; uv_size];
-            let mut v = vec![0u8; uv_size];
-
-            let y_ptr = pic.data[0] as *const u8;
-            let u_ptr = pic.data[1] as *const u8;
-            let v_ptr = pic.data[2] as *const u8;
-
-            if y_stride == w {
-                let src = std::slice::from_raw_parts(y_ptr, y_size);
-                y.copy_from_slice(src);
-            } else {
-                for row in 0..h {
-                    let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride), w);
-                    y[row * w..(row + 1) * w].copy_from_slice(src);
-                }
-            }
-            if uv_stride == uv_w {
-                let src_u = std::slice::from_raw_parts(u_ptr, uv_size);
-                u.copy_from_slice(src_u);
-                let src_v = std::slice::from_raw_parts(v_ptr, uv_size);
-                v.copy_from_slice(src_v);
-            } else {
-                for row in 0..uv_h {
-                    let src_u = std::slice::from_raw_parts(u_ptr.add(row * uv_stride), uv_w);
-                    u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
-                    let src_v = std::slice::from_raw_parts(v_ptr.add(row * uv_stride), uv_w);
-                    v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
-                }
-            }
-
             let keyframe = pic.frame_hdr.is_null()
                 || (*(pic.frame_hdr as *const Dav1dFrameHeaderLite)).frame_type == 0;
 
-            dav1d_picture_unref(&mut pic);
+            if bit_depth == 10 {
+                // 10-bit: 从 u16 平面填充 y16/u16/v16
+                // dav1d 的 stride 对 10-bit 是以字节为单位的，u16 stride = stride / 2
+                let y_stride_u16 = y_stride / 2;
+                let uv_stride_u16 = uv_stride / 2;
 
-            Ok(YuvFrame {
-                y,
-                u,
-                v,
-                width,
-                height,
-                timestamp,
-                keyframe,
-                bit_depth: 8,
-                y16: Vec::new(),
-                u16: Vec::new(),
-                v16: Vec::new(),
-            })
+                let mut y16 = vec![0u16; y_size];
+                let mut u16 = vec![0u16; uv_size];
+                let mut v16 = vec![0u16; uv_size];
+
+                let y_ptr = pic.data[0] as *const u16;
+                let u_ptr = pic.data[1] as *const u16;
+                let v_ptr = pic.data[2] as *const u16;
+
+                if y_stride_u16 == w {
+                    let src = std::slice::from_raw_parts(y_ptr, y_size);
+                    y16.copy_from_slice(src);
+                } else {
+                    for row in 0..h {
+                        let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride_u16), w);
+                        y16[row * w..(row + 1) * w].copy_from_slice(src);
+                    }
+                }
+                if uv_stride_u16 == uv_w {
+                    let src_u = std::slice::from_raw_parts(u_ptr, uv_size);
+                    u16.copy_from_slice(src_u);
+                    let src_v = std::slice::from_raw_parts(v_ptr, uv_size);
+                    v16.copy_from_slice(src_v);
+                } else {
+                    for row in 0..uv_h {
+                        let src_u =
+                            std::slice::from_raw_parts(u_ptr.add(row * uv_stride_u16), uv_w);
+                        u16[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
+                        let src_v =
+                            std::slice::from_raw_parts(v_ptr.add(row * uv_stride_u16), uv_w);
+                        v16[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+                    }
+                }
+
+                dav1d_picture_unref(&mut pic);
+
+                Ok(YuvFrame {
+                    y: Vec::new(),
+                    u: Vec::new(),
+                    v: Vec::new(),
+                    width,
+                    height,
+                    timestamp,
+                    keyframe,
+                    bit_depth: 10,
+                    y16,
+                    u16,
+                    v16,
+                })
+            } else {
+                // 8-bit: 从 u8 平面填充 y/u/v
+                let mut y = vec![0u8; y_size];
+                let mut u = vec![0u8; uv_size];
+                let mut v = vec![0u8; uv_size];
+
+                let y_ptr = pic.data[0] as *const u8;
+                let u_ptr = pic.data[1] as *const u8;
+                let v_ptr = pic.data[2] as *const u8;
+
+                if y_stride == w {
+                    let src = std::slice::from_raw_parts(y_ptr, y_size);
+                    y.copy_from_slice(src);
+                } else {
+                    for row in 0..h {
+                        let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride), w);
+                        y[row * w..(row + 1) * w].copy_from_slice(src);
+                    }
+                }
+                if uv_stride == uv_w {
+                    let src_u = std::slice::from_raw_parts(u_ptr, uv_size);
+                    u.copy_from_slice(src_u);
+                    let src_v = std::slice::from_raw_parts(v_ptr, uv_size);
+                    v.copy_from_slice(src_v);
+                } else {
+                    for row in 0..uv_h {
+                        let src_u = std::slice::from_raw_parts(u_ptr.add(row * uv_stride), uv_w);
+                        u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
+                        let src_v = std::slice::from_raw_parts(v_ptr.add(row * uv_stride), uv_w);
+                        v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+                    }
+                }
+
+                dav1d_picture_unref(&mut pic);
+
+                Ok(YuvFrame {
+                    y,
+                    u,
+                    v,
+                    width,
+                    height,
+                    timestamp,
+                    keyframe,
+                    bit_depth: 8,
+                    y16: Vec::new(),
+                    u16: Vec::new(),
+                    v16: Vec::new(),
+                })
+            }
         }
     }
 
@@ -315,9 +374,10 @@ impl VideoDecoder for Dav1dDecoder {
             let width = pic.p.w as u32;
             let height = pic.p.h as u32;
 
+            // 10-bit 帧回退到 decode() (pool 当前仅支持 8-bit 帧布局)
             if pic.p.layout != DAV1D_PIXEL_LAYOUT_I420 || pic.p.bpc != 8 {
                 dav1d_picture_unref(&mut pic);
-                // Fall back to regular decode which will produce the proper error
+                // Fall back to regular decode which handles 10-bit properly
                 return self.decode(data, timestamp);
             }
 

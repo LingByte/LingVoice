@@ -316,6 +316,9 @@ func (s *Server) handleData(pkt *Packet, addr *net.UDPAddr) {
 		return
 	}
 
+	// 记录接收统计
+	session.recordStats(len(payload))
+
 	// 判断是 TS 还是 RTP：
 	// TS 包以 0x47 同步字节开头，固定 188 字节
 	// RTP 包第一个字节 version=2 (0x80)

@@ -191,7 +191,9 @@ func TestMessageTypeString(t *testing.T) {
 }
 
 func TestStartClose(t *testing.T) {
-	srv := NewServer(DefaultConfig(), &mockHandler{}, nil)
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0" // 使用随机端口避免冲突
+	srv := NewServer(cfg, &mockHandler{}, nil)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start failed: %v", err)
 	}

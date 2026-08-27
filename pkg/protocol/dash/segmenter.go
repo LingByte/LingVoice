@@ -338,9 +338,24 @@ func (s *Segmenter) handleDASH(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// Check for init segment
 		if strings.Contains(segURI, "init") {
-			// Return empty init segment (placeholder)
+			// Build fMP4 init segment (ftyp + moov)
+			var videoCodec string
+			var width, height uint32
+			if st.videoRep != nil {
+				videoCodec = "avc1"
+				width = uint32(st.videoRep.Width)
+				height = uint32(st.videoRep.Height)
+			}
+			var audioCodec string
+			var sampleRate, channels uint32
+			if st.audioRep != nil {
+				audioCodec = "mp4a"
+				sampleRate = st.audioRep.SampleRate
+				channels = uint32(st.audioRep.Channels)
+			}
+			initData := BuildInitSegment(videoCodec, width, height, audioCodec, sampleRate, channels)
 			w.Header().Set("Content-Type", "video/iso.segment")
-			_, _ = w.Write([]byte{})
+			_, _ = w.Write(initData)
 			return
 		}
 		http.Error(w, "segment not found", http.StatusNotFound)

@@ -14,13 +14,14 @@ libde265 = ["dep:libde265-sys2"]
 dav1d = []
 libaom = []
 videotoolbox = ["dep:core-foundation"]
-nvenc = []
+nvenc = ["dep:libloading"]
 
 [dependencies]
 lm-core = { path = "../lm-core" }
 openh264 = { version = "0.9", optional = true }
 libde265-sys2 = { version = "0.1", optional = true }
 core-foundation = { version = "0.10", optional = true }
+libloading = { version = "0.8", optional = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

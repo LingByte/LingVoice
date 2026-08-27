@@ -315,6 +315,9 @@ pub struct EncoderConfig {
     pub threads: u32,
     pub speed: u32,
     pub cpu_used: i32,
+    /// 色深位数 (8 或 10)。默认 8-bit。
+    /// 10-bit 仅在支持的编解码器上生效 (VP9, AV1, H.265)。
+    pub bit_depth: u8,
 }
 
 impl EncoderConfig {
@@ -328,6 +331,7 @@ impl EncoderConfig {
             threads: 2,
             speed: 6,
             cpu_used: -1,
+            bit_depth: 8,
         }
     }
 
@@ -343,6 +347,12 @@ impl EncoderConfig {
 
     pub fn with_keyframe_interval(mut self, interval: u32) -> Self {
         self.keyframe_interval = interval;
+        self
+    }
+
+    /// 设置色深 (8 或 10)。10-bit 仅在支持的编解码器上生效。
+    pub fn with_bit_depth(mut self, depth: u8) -> Self {
+        self.bit_depth = depth;
         self
     }
 }

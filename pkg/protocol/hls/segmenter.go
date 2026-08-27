@@ -86,6 +86,8 @@ type Stream struct {
 	gopBuffer  []common.MediaFrame
 	segStart   time.Time
 	lastCleanup time.Time
+	// TS muxer for classic HLS (.ts segments)
+	tsMuxer *TSMuxer
 	// LL-HLS blocking playlist reload
 	blockChan  chan struct{}
 }
@@ -124,6 +126,7 @@ func (s *Segmenter) CreateStream(streamID string, videoCodec, audioCodec common.
 		hasVideo:   videoCodec != 0,
 		hasAudio:   audioCodec != 0,
 		segStart:   time.Now(),
+		tsMuxer:    NewTSMuxer(),
 		blockChan:  make(chan struct{}, 1),
 	}
 	s.streams.Store(streamID, st)
@@ -192,9 +195,13 @@ func (st *Stream) cutSegment() {
 	// Build segment data from buffered frames
 	var data []byte
 	for _, f := range st.gopBuffer {
-		// In a real implementation, this would mux into TS or fMP4
-		// For now, concatenate payload as a placeholder
-		data = append(data, f.Payload...)
+		if st.config.Mode == ModeClassic {
+			// Classic HLS: mux into MPEG-TS
+			data = append(data, st.tsMuxer.MuxFrame(f)...)
+		} else {
+			// LL-HLS: fMP4 (placeholder: concatenate payload)
+			data = append(data, f.Payload...)
+		}
 	}
 
 	seg := &Segment{

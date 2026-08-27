@@ -538,3 +538,119 @@ fn test_create_encoder_auto_fallback() {
     let enc = create_encoder_auto(lm_core::CodecType::H264, 160, 120, true);
     assert!(enc.is_ok(), "H264 auto encoder should succeed");
 }
+
+// =========================================================================
+// 10-bit 色深支持测试
+// =========================================================================
+
+#[test]
+fn test_encoder_config_bit_depth_default() {
+    let config = EncoderConfig::new(640, 480);
+    assert_eq!(config.bit_depth, 8, "default bit_depth should be 8");
+}
+
+#[test]
+fn test_encoder_config_with_bit_depth_10() {
+    let config = EncoderConfig::new(640, 480).with_bit_depth(10);
+    assert_eq!(
+        config.bit_depth, 10,
+        "bit_depth should be 10 after with_bit_depth(10)"
+    );
+    // 确保其他字段不受影响
+    assert_eq!(config.width, 640);
+    assert_eq!(config.height, 480);
+}
+
+#[test]
+fn test_encoder_config_with_bit_depth_builder_chain() {
+    let config = EncoderConfig::new(1280, 720)
+        .with_bitrate(2_000_000)
+        .with_bit_depth(10)
+        .with_framerate(60);
+    assert_eq!(config.bit_depth, 10);
+    assert_eq!(config.bitrate, 2_000_000);
+    assert_eq!(config.framerate, 60);
+}
+
+#[test]
+fn test_yuv_frame_black_10bit() {
+    let frame = YuvFrame::black_10bit(320, 240, 0);
+    assert_eq!(frame.width, 320);
+    assert_eq!(frame.height, 240);
+    assert_eq!(frame.bit_depth, 10);
+    // 10-bit 帧的 y16/u16/v16 不应为空
+    assert!(
+        !frame.y16.is_empty(),
+        "y16 should not be empty for 10-bit frame"
+    );
+    assert!(
+        !frame.u16.is_empty(),
+        "u16 should not be empty for 10-bit frame"
+    );
+    assert!(
+        !frame.v16.is_empty(),
+        "v16 should not be empty for 10-bit frame"
+    );
+    // 10-bit 帧的 y/u/v 应为空
+    assert!(frame.y.is_empty(), "y should be empty for 10-bit frame");
+    assert!(frame.u.is_empty(), "u should be empty for 10-bit frame");
+    assert!(frame.v.is_empty(), "v should be empty for 10-bit frame");
+    // 验证尺寸
+    assert_eq!(frame.y16.len(), 320 * 240);
+    assert_eq!(frame.u16.len(), 160 * 120);
+    assert_eq!(frame.v16.len(), 160 * 120);
+}
+
+#[test]
+fn test_yuv_frame_is_high_bit_depth() {
+    // 8-bit 帧应返回 false
+    let frame_8 = YuvFrame::black(320, 240, 0);
+    assert!(
+        !frame_8.is_high_bit_depth(),
+        "8-bit frame should not be high bit depth"
+    );
+
+    // 10-bit 帧应返回 true
+    let frame_10 = YuvFrame::black_10bit(320, 240, 0);
+    assert!(
+        frame_10.is_high_bit_depth(),
+        "10-bit frame should be high bit depth"
+    );
+}
+
+#[test]
+fn test_yuv_frame_black_10bit_values() {
+    let frame = YuvFrame::black_10bit(64, 64, 1000);
+    // Y plane 应全为 0
+    assert!(
+        frame.y16.iter().all(|&v| v == 0),
+        "Y16 plane should be all zeros"
+    );
+    // U/V plane 应全为 512 (10-bit 中性色 = 1 << (10-1) = 512)
+    assert!(
+        frame.u16.iter().all(|&v| v == 512),
+        "U16 plane should be all 512"
+    );
+    assert!(
+        frame.v16.iter().all(|&v| v == 512),
+        "V16 plane should be all 512"
+    );
+}
+
+#[cfg(all(feature = "nvenc", target_os = "linux"))]
+#[test]
+fn test_nvenc_is_available_no_crash() {
+    // is_available() 在没有 NVIDIA GPU 时应返回 false，不应 panic
+    let _ = crate::nvenc_codec::NvencEncoder::is_available();
+}
+
+#[cfg(all(feature = "nvenc", target_os = "linux"))]
+#[test]
+fn test_nvenc_new_when_unavailable() {
+    // 如果 NVENC 不可用，new_h264 应返回 NotInitialized 错误
+    if !crate::nvenc_codec::NvencEncoder::is_available() {
+        let config = EncoderConfig::new(640, 480);
+        let result = crate::nvenc_codec::NvencEncoder::new_h264(config);
+        assert!(matches!(result, Err(VideoCodecError::NotInitialized)));
+    }
+}

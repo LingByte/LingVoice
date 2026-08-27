@@ -592,7 +592,7 @@ func TestResponse_WriteTo(t *testing.T) {
 	resp := newResponse("1", StatusOK)
 	resp.Headers["Public"] = "OPTIONS, DESCRIBE"
 	buf := &bytes.Buffer{}
-	if err := resp.WriteTo(buf); err != nil {
+	if err := resp.writeTo(buf); err != nil {
 		t.Fatalf("WriteTo: %v", err)
 	}
 	out := buf.String()
@@ -615,7 +615,7 @@ func TestResponse_WithBody(t *testing.T) {
 	body := []byte("v=0\r\nm=audio\r\n")
 	resp.SetBody(body, "application/sdp")
 	buf := &bytes.Buffer{}
-	if err := resp.WriteTo(buf); err != nil {
+	if err := resp.writeTo(buf); err != nil {
 		t.Fatalf("WriteTo: %v", err)
 	}
 	out := buf.String()
@@ -634,7 +634,7 @@ func TestResponse_WithSession(t *testing.T) {
 	resp := newResponse("3", StatusOK)
 	resp.Session = "session-xyz"
 	buf := &bytes.Buffer{}
-	_ = resp.WriteTo(buf)
+	_ = resp.writeTo(buf)
 	out := buf.String()
 	if !strings.Contains(out, "Session: session-xyz\r\n") {
 		t.Errorf("response should contain Session header")

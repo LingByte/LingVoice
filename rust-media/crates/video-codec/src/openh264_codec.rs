@@ -1,4 +1,12 @@
 //! H.264 解码器/编码器 — 基于 Cisco OpenH264 (openh264 crate)
+//!
+//! ## 10-bit (High 10 Profile) 支持 [experimental]
+//!
+//! OpenH264 的 High 10 profile 支持有限。当前 openh264 crate (v0.9) 的
+//! `DecodedYUV` 仅暴露 8-bit `&[u8]` 切片，不直接提供 bit depth 字段。
+//! 完整的 10-bit 解码需要通过 `raw_api()` 访问 `SBufferInfo` 中的
+//! `sSystemBuffer.iFormat` 来判断色深，并从 16-bit 平面提取数据。
+//! 此功能标注为 experimental，当前实现保持 8-bit 路径。
 
 use crate::{
     EncodedFrame, EncoderConfig as LmEncoderConfig, VideoCodecError, VideoDecoder, VideoEncoder,
@@ -71,6 +79,11 @@ impl VideoDecoder for Openh264Decoder {
         if width == 0 || height == 0 {
             return Err(VideoCodecError::DecodeFailed("zero dimensions".into()));
         }
+
+        // 10-bit (High 10 profile) 检测: openh264 crate v0.9 的 DecodedYUV 不暴露
+        // bit depth 字段 (SSysMEMBuffer.iFormat 为私有)。完整 10-bit 支持需要
+        // 通过 decoder.raw_api() 访问 SBufferInfo，此处保持 8-bit 路径。
+        // [experimental] 待 openh264 crate 暴露 bit depth 后实现 y16/u16/v16 填充。
 
         let (y_stride, u_stride, v_stride) = yuv.strides();
         let uv_w = width / 2;
@@ -211,6 +224,10 @@ pub struct Openh264Encoder {
 
 impl Openh264Encoder {
     pub fn new(config: LmEncoderConfig) -> Result<Self, VideoCodecError> {
+        // 10-bit (High 10 profile) 编码支持 [experimental]:
+        // OpenH264 编码器的 10-bit 支持有限，当前 openh264 crate v0.9 的
+        // EncoderConfig 不直接暴露 profile 设置。完整 High 10 编码需要
+        // 通过 raw API 设置 eSpsPpsIdStrategy 和 profile_idc。
         if config.width == 0 || config.height == 0 {
             return Err(VideoCodecError::InvalidInput(
                 "width and height must be non-zero".into(),

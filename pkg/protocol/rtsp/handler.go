@@ -134,7 +134,7 @@ func (resp *rtspResponse) SetBody(body []byte, contentType string) {
 	resp.Headers["Content-Length"] = strconv.Itoa(len(body))
 }
 
-func (resp *rtspResponse) WriteTo(w io.Writer) error {
+func (resp *rtspResponse) writeTo(w io.Writer) error {
 	var buf strings.Builder
 	fmt.Fprintf(&buf, "RTSP/1.0 %d %s\r\n", resp.Status, resp.Reason)
 	if resp.CSeq != "" {
@@ -213,14 +213,14 @@ func (s *Server) handleRequest(session *Session, req *rtspRequest, w io.Writer) 
 		return s.handleSetParameter(session, req, w)
 	default:
 		resp := newResponse(req.CSeq, StatusNotImplemented)
-		return resp.WriteTo(w)
+		return resp.writeTo(w)
 	}
 }
 
 func (s *Server) handleOptions(session *Session, req *rtspRequest, w io.Writer) error {
 	resp := newResponse(req.CSeq, StatusOK)
 	resp.Headers["Public"] = "OPTIONS, DESCRIBE, ANNOUNCE, SETUP, PLAY, PAUSE, TEARDOWN, GET_PARAMETER, SET_PARAMETER"
-	return resp.WriteTo(w)
+	return resp.writeTo(w)
 }
 
 // handleAnnounce 接收推流端发送的 SDP 描述（推流模式）。
@@ -228,13 +228,13 @@ func (s *Server) handleOptions(session *Session, req *rtspRequest, w io.Writer) 
 func (s *Server) handleAnnounce(session *Session, req *rtspRequest, w io.Writer) error {
 	if len(req.Body) == 0 {
 		resp := newResponse(req.CSeq, StatusBadRequest)
-		return resp.WriteTo(w)
+		return resp.writeTo(w)
 	}
 
 	sdp, err := ParseSDP(req.Body)
 	if err != nil {
 		resp := newResponse(req.CSeq, StatusBadRequest)
-		return resp.WriteTo(w)
+		return resp.writeTo(w)
 	}
 
 	sessionID := uuid.NewString()
@@ -301,7 +301,7 @@ func (s *Server) handleAnnounce(session *Session, req *rtspRequest, w io.Writer)
 
 	resp := newResponse(req.CSeq, StatusOK)
 	resp.Session = session.RTSPSessionID()
-	return resp.WriteTo(w)
+	return resp.writeTo(w)
 }
 
 // handleDescribe 返回 SDP 描述。
@@ -312,7 +312,7 @@ func (s *Server) handleDescribe(session *Session, req *rtspRequest, w io.Writer)
 	sdp := BuildSDP(session)
 	resp := newResponse(req.CSeq, StatusOK)
 	resp.SetBody([]byte(sdp), "application/sdp")
-	return resp.WriteTo(w)
+	return resp.writeTo(w)
 }
 
 // handleSetup 建立传输通道。
@@ -321,7 +321,7 @@ func (s *Server) handleSetup(session *Session, req *rtspRequest, w io.Writer) er
 	transport := req.Headers["transport"]
 	if transport == "" {
 		resp := newResponse(req.CSeq, StatusBadRequest)
-		return resp.WriteTo(w)
+		return resp.writeTo(w)
 	}
 
 	// 解析 interleaved channel
@@ -335,7 +335,7 @@ func (s *Server) handleSetup(session *Session, req *rtspRequest, w io.Writer) er
 		st = session.firstTrack()
 		if st == nil {
 			resp := newResponse(req.CSeq, StatusNotFound)
-			return resp.WriteTo(w)
+			return resp.writeTo(w)
 		}
 	}
 
@@ -351,7 +351,7 @@ func (s *Server) handleSetup(session *Session, req *rtspRequest, w io.Writer) er
 	} else {
 		resp.Headers["Transport"] = transport
 	}
-	return resp.WriteTo(w)
+	return resp.writeTo(w)
 }
 
 // handlePlay 开始传输。
@@ -369,7 +369,7 @@ func (s *Server) handlePlay(session *Session, req *rtspRequest, w io.Writer) err
 	resp := newResponse(req.CSeq, StatusOK)
 	resp.Session = session.RTSPSessionID()
 	resp.Headers["Range"] = "npt=0.000-"
-	return resp.WriteTo(w)
+	return resp.writeTo(w)
 }
 
 // handlePause 暂停传输。
@@ -377,14 +377,14 @@ func (s *Server) handlePause(session *Session, req *rtspRequest, w io.Writer) er
 	session.SetPlaying(false)
 	resp := newResponse(req.CSeq, StatusOK)
 	resp.Session = session.RTSPSessionID()
-	return resp.WriteTo(w)
+	return resp.writeTo(w)
 }
 
 // handleTeardown 关闭会话。
 func (s *Server) handleTeardown(session *Session, req *rtspRequest, w io.Writer) error {
 	resp := newResponse(req.CSeq, StatusOK)
 	resp.Session = session.RTSPSessionID()
-	_ = resp.WriteTo(w)
+	_ = resp.writeTo(w)
 	// 触发关闭
 	_ = session.Close()
 	return nil
@@ -397,14 +397,14 @@ func (s *Server) handleGetParameter(session *Session, req *rtspRequest, w io.Wri
 	if len(req.Body) > 0 {
 		resp.SetBody(req.Body, "text/parameters")
 	}
-	return resp.WriteTo(w)
+	return resp.writeTo(w)
 }
 
 // handleSetParameter keepalive / 参数设置。
 func (s *Server) handleSetParameter(session *Session, req *rtspRequest, w io.Writer) error {
 	resp := newResponse(req.CSeq, StatusOK)
 	resp.Session = session.RTSPSessionID()
-	return resp.WriteTo(w)
+	return resp.writeTo(w)
 }
 
 // --- 辅助函数 ---
@@ -512,6 +512,9 @@ func (s *Server) handleRtpData(session *Session, channel byte, data []byte) {
 	// 使用 track 的 clockRate
 	if st, ok := session.findTrack(trackID); ok && st.ClockRate > 0 {
 		frame.SampleRate = st.ClockRate
+		// 记录统计
+		st.packetsReceived++
+		st.bytesReceived += uint64(len(data))
 	}
 	_ = s.handler.OnMediaFrame(session.id, trackID, frame)
 }

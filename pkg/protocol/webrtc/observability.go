@@ -33,13 +33,23 @@ type QoSReporter struct {
 	connectedAt  time.Time
 	publisher    *publisher
 	subscriber   *subscriber
+	// trackID → SSRC 映射（用于 pion stats 精确查询）
+	ssrcMap      map[common.TrackID]uint32
 }
 
 func newQoSReporter(pub *publisher, sub *subscriber) *QoSReporter {
 	return &QoSReporter{
 		publisher:  pub,
 		subscriber: sub,
+		ssrcMap:    make(map[common.TrackID]uint32),
 	}
+}
+
+// RegisterSSRC 注册 trackID → SSRC 映射
+func (q *QoSReporter) RegisterSSRC(trackID common.TrackID, ssrc uint32) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.ssrcMap[trackID] = ssrc
 }
 
 // Collect 采集当前会话的完整 QoS 指标
@@ -54,13 +64,15 @@ func (q *QoSReporter) Collect() SessionStats {
 
 	if q.publisher != nil {
 		for id, s := range q.publisher.trackStats() {
-			result.Tracks[id] = enrichTrackStats(s, q.publisher.statsGetter, id)
+			ssrc := q.ssrcMap[id]
+			result.Tracks[id] = enrichTrackStats(s, q.publisher.statsGetter, id, ssrc)
 		}
 	}
 
 	if q.subscriber != nil {
 		for id, s := range q.subscriber.trackStats() {
-			result.Tracks[id] = enrichTrackStats(s, q.subscriber.statsGetter, id)
+			ssrc := q.ssrcMap[id]
+			result.Tracks[id] = enrichTrackStats(s, q.subscriber.statsGetter, id, ssrc)
 		}
 	}
 
@@ -82,7 +94,7 @@ func (q *QoSReporter) SetConnected() {
 }
 
 // enrichTrackStats 用 pion stats interceptor 补充 RTT、抖动等指标
-func enrichTrackStats(base common.TrackStats, getter stats.Getter, trackID common.TrackID) TrackStats {
+func enrichTrackStats(base common.TrackStats, getter stats.Getter, trackID common.TrackID, ssrc uint32) TrackStats {
 	result := TrackStats{
 		PacketsSent:     base.PacketsSent,
 		PacketsReceived: base.PacketsReceived,
@@ -91,14 +103,30 @@ func enrichTrackStats(base common.TrackStats, getter stats.Getter, trackID commo
 		BytesReceived:   base.BytesReceived,
 	}
 
-	if getter == nil {
+	if getter == nil || ssrc == 0 {
 		return result
 	}
 
-	// pion stats 按 SSRC 查询，这里遍历所有 SSRC
-	// 实际使用时需要 trackID → SSRC 的映射
-	// 简化：尝试用 base 里的 SSRC（如果有）
-	// TODO: 建立 trackID → SSRC 映射后精确查询
+	// 通过 SSRC 精确查询 pion stats
+	if s := getter.Get(ssrc); s != nil {
+		// Inbound (接收方向)
+		result.Jitter = time.Duration(s.InboundRTPStreamStats.Jitter)
+		result.FIRCount = s.InboundRTPStreamStats.FIRCount
+		result.PLICount = s.InboundRTPStreamStats.PLICount
+		result.NACKCount = s.InboundRTPStreamStats.NACKCount
+		// RemoteInbound (RTT 来自远端报告)
+		result.RTT = s.RemoteInboundRTPStreamStats.RoundTripTime
+		// Outbound (发送方向)
+		if s.OutboundRTPStreamStats.NACKCount > result.NACKCount {
+			result.NACKCount = s.OutboundRTPStreamStats.NACKCount
+		}
+		if s.OutboundRTPStreamStats.FIRCount > result.FIRCount {
+			result.FIRCount = s.OutboundRTPStreamStats.FIRCount
+		}
+		if s.OutboundRTPStreamStats.PLICount > result.PLICount {
+			result.PLICount = s.OutboundRTPStreamStats.PLICount
+		}
+	}
 
 	return result
 }
