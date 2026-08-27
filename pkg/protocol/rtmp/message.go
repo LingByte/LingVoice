@@ -373,6 +373,19 @@ func (w *amfWriter) WriteObject(props map[string]AMFValue) {
 	w.writeByte(amf0ObjectEnd)
 }
 
+// WriteEcmaArray 编码一个 AMF0 ecma array（属性 map，前面带 count）
+func (w *amfWriter) WriteEcmaArray(props map[string]AMFValue) {
+	w.writeByte(amf0EcmaArray)
+	w.writeUint32(uint32(len(props)))
+	for name, v := range props {
+		w.writeUint16(uint16(len(name)))
+		w.writeBytes([]byte(name)...)
+		w.writeValue(v)
+	}
+	w.writeUint16(0)
+	w.writeByte(amf0ObjectEnd)
+}
+
 func (w *amfWriter) writeValue(v AMFValue) {
 	switch v.Type {
 	case AMFTypeNumber:

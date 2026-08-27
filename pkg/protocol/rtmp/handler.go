@@ -71,6 +71,10 @@ type Conn struct {
 	avcConfig    *avcDecoderConfig // AVC sequence header 解析结果
 	aacConfig    *aacDecoderConfig  // AAC sequence header 解析结果
 
+	// play/egress 状态
+	playMode        bool       // true 表示当前连接处于 play（拉流）模式
+	playSess        *playSession // play 模式下的媒体发送会话
+
 	// 控制状态
 	windowAckSize   uint32
 	bytesReceived   uint32
@@ -405,7 +409,7 @@ func (c *Conn) handlePublish(values []AMFValue, streamID uint32) error {
 	return nil
 }
 
-// handlePlay 处理 play 命令（当前只实现 ingest，play 只记录并通知上层）
+// handlePlay 处理 play 命令（play/egress 模式：服务端向客户端推流）
 func (c *Conn) handlePlay(values []AMFValue, streamID uint32) error {
 	streamName := ""
 	if len(values) > 3 {
@@ -419,11 +423,30 @@ func (c *Conn) handlePlay(values []AMFValue, streamID uint32) error {
 
 	c.log.Info("rtmp play", zap.String("session", c.sessionID), zap.String("stream", c.streamKey))
 
-	// 发送 Stream Begin user control
+	// 标记为 play 模式
+	c.playMode = true
+
+	// 创建 playSession 并启动媒体发送协程
+	c.playSess = newPlaySession(c, c.log)
+	c.playSess.start()
+
+	// 1. 发送 Stream Begin user control
 	c.sendUserControl(UCStreamBegin, streamID)
-	// 回复 onStatus NetStream.Play.Start
-	info := PublishStatusInfo("NetStream.Play.Start", "Started playing stream.")
-	c.sendOnStatus(streamID, "status", info)
+
+	// 2. 回复 onStatus NetStream.Play.Reset
+	resetInfo := PublishStatusInfo("NetStream.Play.Reset", "Playing and resetting stream.")
+	c.sendOnStatus(streamID, "status", resetInfo)
+
+	// 3. 回复 onStatus NetStream.Play.Start
+	startInfo := PublishStatusInfo("NetStream.Play.Start", "Started playing stream.")
+	c.sendOnStatus(streamID, "status", startInfo)
+
+	// 4. 发送 onMetaData（如果已有轨道信息）
+	c.playSess.sendOnMetaData(streamID)
+
+	// 5. 通知上层：play 轨道就绪（send 方向），上层可通过 SendMediaFrame 推送媒体帧
+	c.reportPlayTracks()
+
 	return nil
 }
 
@@ -733,9 +756,74 @@ func (c *Conn) reportAudioTrack() {
 	})
 }
 
+// reportPlayTracks 上报 play 模式的轨道（send 方向）
+func (c *Conn) reportPlayTracks() {
+	// 视频轨道
+	ti := common.TrackInfo{
+		ID:        "video",
+		Kind:      common.TrackVideo,
+		Direction: common.TrackSend,
+		Codec:     common.CodecH264,
+		StreamID:  c.streamKey,
+	}
+	c.handler.OnEvent(common.ProtocolEvent{
+		Type:      common.EventTrackAdded,
+		Protocol:  common.ProtocolRTMP,
+		SessionID: c.sessionID,
+		Track:     &ti,
+		Timestamp: time.Now(),
+	})
+
+	// 音频轨道
+	ai := common.TrackInfo{
+		ID:        "audio",
+		Kind:      common.TrackAudio,
+		Direction: common.TrackSend,
+		Codec:     common.CodecAAC,
+		StreamID:  c.streamKey,
+	}
+	c.handler.OnEvent(common.ProtocolEvent{
+		Type:      common.EventTrackAdded,
+		Protocol:  common.ProtocolRTMP,
+		SessionID: c.sessionID,
+		Track:     &ai,
+		Timestamp: time.Now(),
+	})
+}
+
+// writeDataMessage 写一个数据消息（如 onMetaData），CSID 4
+func (c *Conn) writeDataMessage(streamID uint32, payload []byte) error {
+	c.writerMu.Lock()
+	defer c.writerMu.Unlock()
+	return c.writer.WriteMessage(&Message{
+		Type:      MsgDataAMF0,
+		CSID:      4,
+		StreamID:  streamID,
+		Timestamp: 0,
+		Payload:   payload,
+	})
+}
+
+// writeMediaMessage 写一个音频/视频消息
+func (c *Conn) writeMediaMessage(msgType uint8, streamID uint32, timestamp uint32, payload []byte) error {
+	c.writerMu.Lock()
+	defer c.writerMu.Unlock()
+	return c.writer.WriteMessage(&Message{
+		Type:      msgType,
+		CSID:      6, // 媒体消息常用 CSID 6/7（配合大 chunk size）
+		StreamID:  streamID,
+		Timestamp: timestamp,
+		Payload:   payload,
+	})
+}
+
 // ─── 生命周期 ────────────────────────────────────────────────────────────────
 
 func (c *Conn) cleanup() {
+	// 停止 play session 的媒体发送协程
+	if c.playSess != nil {
+		c.playSess.stop()
+	}
 	c.handler.OnEvent(common.ProtocolEvent{
 		Type:      common.EventHangup,
 		Protocol:  common.ProtocolRTMP,
@@ -786,5 +874,46 @@ func (c *Conn) SendCommand(cmd common.ProtocolCommand) error {
 		return c.Close()
 	default:
 		return nil
+	}
+}
+
+// ─── MediaSession 接口实现（play 模式） ──────────────────────────────────────
+
+// SendMediaFrame 实现 common.MediaSession 接口。
+// 在 play 模式下，将媒体帧转为 RTMP 消息发送给客户端。
+func (c *Conn) SendMediaFrame(trackID common.TrackID, frame common.MediaFrame) error {
+	if c.playSess == nil {
+		return fmt.Errorf("rtmp: not in play mode")
+	}
+	return c.playSess.SendMediaFrame(trackID, frame)
+}
+
+// Tracks 实现 common.MediaSession 接口
+func (c *Conn) Tracks() []common.TrackInfo {
+	if c.playSess == nil {
+		return nil
+	}
+	return c.playSess.Tracks()
+}
+
+// MediaStats 实现 common.MediaSession 接口
+func (c *Conn) MediaStats() map[common.TrackID]common.TrackStats {
+	if c.playSess == nil {
+		return nil
+	}
+	return c.playSess.MediaStats()
+}
+
+// SetVideoConfig 设置视频编码参数（SPS/PPS），用于生成 AVC sequence header
+func (c *Conn) SetVideoConfig(sps, pps []byte) {
+	if c.playSess != nil {
+		c.playSess.setVideoConfig(sps, pps)
+	}
+}
+
+// SetAudioConfig 设置音频编码参数（AudioSpecificConfig），用于生成 AAC sequence header
+func (c *Conn) SetAudioConfig(audioSpecificConfig []byte, sampleRate uint32, channels uint16) {
+	if c.playSess != nil {
+		c.playSess.setAudioConfig(audioSpecificConfig, sampleRate, channels)
 	}
 }

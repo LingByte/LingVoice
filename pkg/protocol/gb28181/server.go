@@ -60,6 +60,30 @@ type mediaSession struct {
 	createdAt time.Time
 }
 
+// ID 返回会话 ID（Call-ID）
+func (ms *mediaSession) ID() string { return ms.callID }
+
+// Protocol 返回协议类型
+func (ms *mediaSession) Protocol() common.ProtocolType { return common.ProtocolGB28181 }
+
+// SendCommand 向会话下发指令（GB28181 目前仅支持挂断）
+func (ms *mediaSession) SendCommand(cmd common.ProtocolCommand) error {
+	switch cmd.Type {
+	case common.CmdHangup:
+		return ms.Close()
+	default:
+		return fmt.Errorf("gb28181: unsupported command: %v", cmd.Type)
+	}
+}
+
+// Close 关闭媒体会话
+func (ms *mediaSession) Close() error {
+	if ms.receiver != nil {
+		return ms.receiver.Close()
+	}
+	return nil
+}
+
 // NewServer 创建 GB28181 SIP 服务
 func NewServer(config Config, handler common.EventHandler, log *zap.Logger) *Server {
 	if log == nil {
@@ -127,6 +151,15 @@ func (s *Server) Devices() []*Device {
 		out = append(out, d)
 	}
 	return out
+}
+
+// GetSession 获取媒体会话（实现 common.ProtocolSession）
+func (s *Server) GetSession(id string) (common.ProtocolSession, bool) {
+	v, ok := s.sessions.Load(id)
+	if !ok {
+		return nil, false
+	}
+	return v.(*mediaSession), true
 }
 
 // readLoop 读取 UDP SIP 消息

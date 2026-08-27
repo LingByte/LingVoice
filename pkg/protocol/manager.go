@@ -6,8 +6,10 @@ import (
 
 	"github.com/LingByte/LingVoice/pkg/protocol/api"
 	"github.com/LingByte/LingVoice/pkg/protocol/common"
+	"github.com/LingByte/LingVoice/pkg/protocol/gb28181"
 	"github.com/LingByte/LingVoice/pkg/protocol/mqtt"
 	"github.com/LingByte/LingVoice/pkg/protocol/rtmp"
+	"github.com/LingByte/LingVoice/pkg/protocol/rtsp"
 	"github.com/LingByte/LingVoice/pkg/protocol/sip"
 	"github.com/LingByte/LingVoice/pkg/protocol/webrtc"
 	"github.com/LingByte/LingVoice/pkg/protocol/whep"
@@ -27,6 +29,8 @@ type Manager struct {
 	sipServer     *sip.Server
 	webrtcServer  *webrtc.Server
 	rtmpServer    *rtmp.Server
+	rtspServer    *rtsp.Server
+	gb28181Server *gb28181.Server
 	whipServer    *whip.Server
 	whepServer    *whep.Server
 	mqttServer    *mqtt.Server
@@ -76,6 +80,20 @@ func (m *Manager) WithWebRTC(config webrtc.Config) *Manager {
 func (m *Manager) WithRTMP(config rtmp.Config) *Manager {
 	m.rtmpServer = rtmp.NewServer(config, m, m.log)
 	m.enabledProtos = append(m.enabledProtos, common.ProtocolRTMP)
+	return m
+}
+
+// WithRTSP 启用 RTSP 协议
+func (m *Manager) WithRTSP(config rtsp.Config) *Manager {
+	m.rtspServer = rtsp.NewServer(config, m, m.log)
+	m.enabledProtos = append(m.enabledProtos, common.ProtocolRTSP)
+	return m
+}
+
+// WithGB28181 启用 GB28181 协议
+func (m *Manager) WithGB28181(config gb28181.Config) *Manager {
+	m.gb28181Server = gb28181.NewServer(config, m, m.log)
+	m.enabledProtos = append(m.enabledProtos, common.ProtocolGB28181)
 	return m
 }
 
@@ -166,6 +184,26 @@ func (m *Manager) Start() error {
 		m.log.Info("rtmp server started")
 	}
 
+	// RTSP
+	if m.rtspServer != nil {
+		go func() {
+			if err := m.rtspServer.Start(); err != nil {
+				m.log.Error("rtsp server stopped", zap.Error(err))
+			}
+		}()
+		m.log.Info("rtsp server started")
+	}
+
+	// GB28181
+	if m.gb28181Server != nil {
+		go func() {
+			if err := m.gb28181Server.Start(); err != nil {
+				m.log.Error("gb28181 server stopped", zap.Error(err))
+			}
+		}()
+		m.log.Info("gb28181 server started")
+	}
+
 	// WHIP
 	if m.whipServer != nil {
 		go func() {
@@ -214,6 +252,12 @@ func (m *Manager) Close() {
 	}
 	if m.rtmpServer != nil {
 		_ = m.rtmpServer.Close()
+	}
+	if m.rtspServer != nil {
+		_ = m.rtspServer.Close()
+	}
+	if m.gb28181Server != nil {
+		_ = m.gb28181Server.Close()
 	}
 	if m.mqttServer != nil {
 		_ = m.mqttServer.Close()
@@ -313,6 +357,18 @@ func (m *Manager) lookupSession(protocol common.ProtocolType, id string) common.
 	case common.ProtocolRTMP:
 		if m.rtmpServer != nil {
 			if s, ok := m.rtmpServer.GetSession(id); ok {
+				return s
+			}
+		}
+	case common.ProtocolRTSP:
+		if m.rtspServer != nil {
+			if s, ok := m.rtspServer.GetSession(id); ok {
+				return s
+			}
+		}
+	case common.ProtocolGB28181:
+		if m.gb28181Server != nil {
+			if s, ok := m.gb28181Server.GetSession(id); ok {
 				return s
 			}
 		}

@@ -13,6 +13,7 @@ require (
 	github.com/pion/rtcp v1.2.17
 	github.com/pion/rtp v1.10.5
 	github.com/pion/webrtc/v4 v4.2.18
+	github.com/prometheus/client_golang v1.20.5
 	go.uber.org/zap v1.28.0
 	google.golang.org/grpc v1.83.1
 	google.golang.org/protobuf v1.36.12
@@ -21,10 +22,14 @@ require (
 
 require (
 	github.com/LingByte/ling-base/common/constants v0.1.0 // indirect
+	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.3.2 // indirect
 	github.com/icholy/digest v1.1.0 // indirect
+	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/natefinch/lumberjack v2.0.0+incompatible // indirect
 	github.com/pion/datachannel v1.6.2 // indirect
 	github.com/pion/dtls/v3 v3.1.5 // indirect
@@ -38,6 +43,9 @@ require (
 	github.com/pion/stun/v3 v3.1.6 // indirect
 	github.com/pion/transport/v4 v4.0.2 // indirect
 	github.com/pion/turn/v5 v5.0.12 // indirect
+	github.com/prometheus/client_model v0.6.1 // indirect
+	github.com/prometheus/common v0.55.0 // indirect
+	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/stretchr/testify v1.12.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
