@@ -43,6 +43,8 @@ pub struct MixState {
 /// 单个参与者在混音中的状态
 pub struct ParticipantMixState {
     pub session_id: SessionId,
+    /// 源音频 track ID（push_rtp 热路径查找用）
+    pub source_track_id: TrackId,
     /// 向混音器发送该参与者的 PCM 帧
     pub mixer_input_tx: mpsc::Sender<lm_core::AudioFrame>,
     /// 混音输出 track ID（pull_rtp 订阅此 track 获取混音）
@@ -202,6 +204,7 @@ impl MixManager {
             session_id.clone(),
             ParticipantMixState {
                 session_id: session_id.clone(),
+                source_track_id: source_track_id.clone(),
                 mixer_input_tx: mixer_input_tx.clone(),
                 mix_track_id: mix_track_id.clone(),
                 stopped,
@@ -316,6 +319,30 @@ impl MixManager {
     /// 获取 mix 的输出编码
     pub fn mix_output_codec(&self, mix_id: &str) -> Option<String> {
         self.mixes.get(mix_id).map(|m| m.output_codec.clone())
+    }
+
+    /// 获取参与者的源 track ID
+    pub fn participant_source_track_id(
+        &self,
+        mix_id: &str,
+        session_id: &SessionId,
+    ) -> Option<TrackId> {
+        self.mixes
+            .get(mix_id)
+            .and_then(|m| m.participants.get(session_id).map(|p| p.source_track_id.clone()))
+    }
+
+    /// 获取 mix 中所有参与者的 session_id
+    pub fn mix_participant_sessions(&self, mix_id: &str) -> Vec<SessionId> {
+        self.mixes
+            .get(mix_id)
+            .map(|m| {
+                m.participants
+                    .iter()
+                    .map(|p| p.session_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 

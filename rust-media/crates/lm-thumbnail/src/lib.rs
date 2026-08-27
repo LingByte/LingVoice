@@ -165,15 +165,72 @@ impl Thumbnail {
         encode_png(&rgb, width, height)
     }
 
-    /// YUV420p → JPEG（简化版）
+    /// YUV420p → JPEG（Baseline JPEG 编码）
+    ///
+    /// 实现完整的 Baseline JPEG 编码：
+    /// - RGB → YCbCr 色彩空间转换
+    /// - 8x8 DCT 变换
+    /// - 量化（使用标准量化表，按 quality 缩放）
+    /// - Zigzag 扫描
+    /// - Huffman 编码
     fn yuv_to_jpeg(yuv: &video_codec::YuvFrame, quality: u8) -> Result<Vec<u8>> {
         let width = yuv.width as usize;
         let height = yuv.height as usize;
-        let rgb = yuv_to_rgb(yuv, width, height);
 
-        // 简化：返回 BMP 格式作为 fallback（实际应编码 JPEG）
-        // 生产环境应使用 jpeg-encoder crate
-        encode_bmp(&rgb, width, height)
+        // 确保宽高是 8 的倍数（pad if needed）
+        let padded_w = (width + 7) & !7;
+        let padded_h = (height + 7) & !7;
+
+        // 从 YUV 直接获取 YCbCr 分量（YUV420p ≈ YCbCr 4:2:0）
+        // 补齐到 8 的倍数
+        let mut y_plane = vec![0u8; padded_w * padded_h];
+        let mut cb_plane = vec![128u8; (padded_w / 2) * (padded_h / 2)];
+        let mut cr_plane = vec![128u8; (padded_w / 2) * (padded_h / 2)];
+
+        for row in 0..height {
+            for col in 0..width {
+                y_plane[row * padded_w + col] = yuv.y[row * width + col];
+            }
+            // pad 最后一列
+            if padded_w > width {
+                let last = y_plane[row * padded_w + width - 1];
+                for col in width..padded_w {
+                    y_plane[row * padded_w + col] = last;
+                }
+            }
+        }
+        // pad 最后一行
+        if padded_h > height {
+            for col in 0..padded_w {
+                y_plane[height * padded_w + col] = y_plane[(height - 1) * padded_w + col];
+            }
+            for row in (height + 1)..padded_h {
+                for col in 0..padded_w {
+                    y_plane[row * padded_w + col] = y_plane[(height - 1) * padded_w + col];
+                }
+            }
+        }
+
+        // Cb/Cr planes (4:2:0 subsampled)
+        let chroma_w = width / 2;
+        let chroma_h = height / 2;
+        for row in 0..chroma_h {
+            for col in 0..chroma_w {
+                cb_plane[row * (padded_w / 2) + col] = yuv.u[row * chroma_w + col];
+                cr_plane[row * (padded_w / 2) + col] = yuv.v[row * chroma_w + col];
+            }
+        }
+
+        encode_jpeg(
+            &y_plane,
+            &cb_plane,
+            &cr_plane,
+            padded_w,
+            padded_h,
+            width,
+            height,
+            quality,
+        )
     }
 }
 
@@ -305,6 +362,431 @@ fn adler32(data: &[u8]) -> u32 {
     (b << 16) | a
 }
 
+// ============================================================================
+// Baseline JPEG 编码
+// ============================================================================
+
+/// 标准亮度量化表
+const STD_LUMA_QT: [u8; 64] = [
+    16, 11, 10, 16, 24, 40, 51, 61,
+    12, 12, 14, 19, 26, 58, 60, 55,
+    14, 13, 16, 24, 40, 57, 69, 56,
+    14, 17, 22, 29, 51, 87, 80, 62,
+    18, 22, 37, 56, 68,109,103, 77,
+    24, 35, 55, 64, 81,104,113, 92,
+    49, 64, 78, 87,103,121,120,101,
+    72, 92, 95, 98,112,100,103, 99,
+];
+
+/// 标准色度量化表
+const STD_CHROMA_QT: [u8; 64] = [
+    17, 18, 24, 47, 99, 99, 99, 99,
+    18, 21, 26, 66, 99, 99, 99, 99,
+    24, 26, 56, 99, 99, 99, 99, 99,
+    47, 66, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+];
+
+/// Zigzag 扫描顺序
+const ZIGZAG: [u8; 64] = [
+     0,  1,  8, 16,  9,  2,  3, 10,
+    17, 24, 32, 25, 18, 11,  4,  5,
+    12, 19, 26, 33, 40, 48, 41, 34,
+    27, 20, 13,  6,  7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36,
+    29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46,
+    53, 60, 61, 54, 47, 55, 62, 63,
+];
+
+/// 标准 Huffman 表 — 亮度 DC
+const LUMA_DC_BITS: [u8; 16] = [0,1,5,1,1,1,1,1,1,0,0,0,0,0,0,0];
+const LUMA_DC_VALS: [u8; 12] = [0,1,2,3,4,5,6,7,8,9,10,11];
+
+/// 标准 Huffman 表 — 亮度 AC
+const LUMA_AC_BITS: [u8; 16] = [0,2,1,3,3,2,4,3,5,5,4,4,0,0,1,0x7d];
+const LUMA_AC_VALS: [u8; 162] = [
+    0x01,0x02,0x03,0x00,0x04,0x11,0x05,0x12,0x21,0x31,0x41,0x06,0x13,0x51,0x61,0x07,
+    0x22,0x71,0x14,0x32,0x81,0x91,0xa1,0x08,0x23,0x42,0xb1,0xc1,0x15,0x52,0xd1,0xf0,
+    0x24,0x33,0x62,0x72,0x82,0x09,0x0a,0x16,0x17,0x18,0x19,0x1a,0x25,0x26,0x27,0x28,
+    0x29,0x2a,0x34,0x35,0x36,0x37,0x38,0x39,0x3a,0x43,0x44,0x45,0x46,0x47,0x48,0x49,
+    0x4a,0x53,0x54,0x55,0x56,0x57,0x58,0x59,0x5a,0x63,0x64,0x65,0x66,0x67,0x68,0x69,
+    0x6a,0x73,0x74,0x75,0x76,0x77,0x78,0x79,0x7a,0x83,0x84,0x85,0x86,0x87,0x88,0x89,
+    0x8a,0x92,0x93,0x94,0x95,0x96,0x97,0x98,0x99,0x9a,0xa2,0xa3,0xa4,0xa5,0xa6,0xa7,
+    0xa8,0xa9,0xaa,0xb2,0xb3,0xb4,0xb5,0xb6,0xb7,0xb8,0xb9,0xba,0xc2,0xc3,0xc4,0xc5,
+    0xc6,0xc7,0xc8,0xc9,0xca,0xd2,0xd3,0xd4,0xd5,0xd6,0xd7,0xd8,0xd9,0xda,0xe1,0xe2,
+    0xe3,0xe4,0xe5,0xe6,0xe7,0xe8,0xe9,0xea,0xf1,0xf2,0xf3,0xf4,0xf5,0xf6,0xf7,0xf8,
+    0xf9,0xfa,
+];
+
+/// 标准 Huffman 表 — 色度 DC
+const CHROMA_DC_BITS: [u8; 16] = [0,3,1,1,1,1,1,1,1,1,1,0,0,0,0,0];
+const CHROMA_DC_VALS: [u8; 12] = [0,1,2,3,4,5,6,7,8,9,10,11];
+
+/// 标准 Huffman 表 — 色度 AC
+const CHROMA_AC_BITS: [u8; 16] = [0,2,1,2,4,4,3,4,7,5,4,4,0,1,2,0x77];
+const CHROMA_AC_VALS: [u8; 140] = [
+    0x00,0x01,0x02,0x03,0x11,0x04,0x05,0x21,0x31,0x06,0x12,0x41,0x51,0x07,0x61,0x71,
+    0x13,0x22,0x32,0x81,0x08,0x14,0x42,0x91,0xa1,0xb1,0xc1,0x09,0x23,0x33,0x52,0xd0,
+    0x15,0x62,0x72,0xe1,0xf0,0x16,0x24,0x34,0x25,0xe2,0x35,0x43,0x46,0x53,0x55,0x56,
+    0x57,0x58,0x59,0x5a,0x63,0x64,0x65,0x66,0x67,0x68,0x69,0x6a,0x73,0x74,0x75,0x76,
+    0x77,0x78,0x79,0x7a,0x82,0x83,0x84,0x85,0x86,0x87,0x88,0x89,0x8a,0x92,0x93,0x94,
+    0x95,0x96,0x97,0x98,0x99,0x9a,0xa2,0xa3,0xa4,0xa5,0xa6,0xa7,0xa8,0xa9,0xaa,0xb2,
+    0xb3,0xb4,0xb5,0xb6,0xb7,0xb8,0xb9,0xba,0xc2,0xc3,0xc4,0xc5,0xc6,0xc7,0xc8,0xc9,
+    0xca,0xd2,0xd3,0xd4,0xd5,0xd6,0xd7,0xd8,0xd9,0xda,0xe2,0xe3,0xe4,0xe5,0xe6,0xe7,
+    0xe8,0xe9,0xea,0xf2,0xf3,0xf4,0xf5,0xf6,0xf7,0xf8,0xf9,0xfa,
+];
+
+/// Huffman 编码表
+struct HuffTable {
+    /// symbol → (code, length)
+    codes: Vec<(u16, u8)>,
+}
+
+impl HuffTable {
+    fn build(bits: &[u8; 16], vals: &[u8]) -> Self {
+        let mut codes = vec![(0u16, 0u8); 256];
+        let mut code: u32 = 0;
+        let mut idx = 0;
+        for len in 0..16 {
+            for _ in 0..bits[len] {
+                if idx < vals.len() {
+                    let sym = vals[idx] as usize;
+                    codes[sym] = (code as u16, (len + 1) as u8);
+                    code += 1;
+                }
+                idx += 1;
+            }
+            code <<= 1;
+        }
+        HuffTable { codes }
+    }
+
+    #[inline]
+    fn encode(&self, sym: u8) -> (u16, u8) {
+        self.codes[sym as usize]
+    }
+}
+
+/// 比特写入器
+struct BitWriter {
+    data: Vec<u8>,
+    current_byte: u8,
+    bit_pos: u8, // 0..8, number of bits written in current byte
+}
+
+impl BitWriter {
+    fn new() -> Self {
+        Self {
+            data: Vec::new(),
+            current_byte: 0,
+            bit_pos: 0,
+        }
+    }
+
+    fn write_bits(&mut self, value: u32, n_bits: u8) {
+        for i in (0..n_bits).rev() {
+            let bit = ((value >> i) & 1) as u8;
+            self.current_byte = (self.current_byte << 1) | bit;
+            self.bit_pos += 1;
+            if self.bit_pos == 8 {
+                self.data.push(self.current_byte);
+                self.current_byte = 0;
+                self.bit_pos = 0;
+            }
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.bit_pos > 0 {
+            self.current_byte <<= 8 - self.bit_pos;
+            // pad with 1s
+            self.current_byte |= (1 << (8 - self.bit_pos)) - 1;
+            self.data.push(self.current_byte);
+            self.current_byte = 0;
+            self.bit_pos = 0;
+        }
+    }
+}
+
+/// 8x8 DCT (Type-II)
+fn dct_8x8(block: &mut [i32; 64]) {
+    let mut tmp = [0i64; 64];
+
+    // 行变换
+    for row in 0..8 {
+        let offset = row * 8;
+        for k in 0..8 {
+            let mut sum: i64 = 0;
+            for n in 0..8 {
+                let cos = ((n as f64 + 0.5) * k as f64 * std::f64::consts::PI / 8.0).cos();
+                sum += block[offset + n] as i64 * (cos * 8192.0) as i64;
+            }
+            tmp[offset + k] = sum;
+        }
+    }
+
+    // 列变换
+    for col in 0..8 {
+        for k in 0..8 {
+            let mut sum: i64 = 0;
+            for n in 0..8 {
+                let cos = ((n as f64 + 0.5) * k as f64 * std::f64::consts::PI / 8.0).cos();
+                sum += tmp[n * 8 + col] * (cos * 8192.0) as i64;
+            }
+            block[k * 8 + col] = (sum >> 26) as i32; // scale down
+        }
+    }
+}
+
+/// 生成量化表（按 quality 缩放）
+fn make_qt(std_qt: &[u8; 64], quality: u8) -> [u16; 64] {
+    let q = quality.clamp(1, 100) as i32;
+    let scale = if q < 50 {
+        5000 / q
+    } else {
+        200 - 2 * q
+    };
+
+    let mut qt = [0u16; 64];
+    for i in 0..64 {
+        let val = (std_qt[i] as i32 * scale + 50) / 100;
+        qt[i] = val.clamp(1, 255) as u16;
+    }
+    qt
+}
+
+/// 编码一个 8x8 块
+fn encode_block(
+    writer: &mut BitWriter,
+    block: &[u8; 64],
+    qt: &[u16; 64],
+    dc_table: &HuffTable,
+    ac_table: &HuffTable,
+    prev_dc: &mut i32,
+) {
+    // 1. level shift → DCT → 量化
+    let mut dct_block = [0i32; 64];
+    for i in 0..64 {
+        dct_block[i] = block[i] as i32 - 128;
+    }
+    dct_8x8(&mut dct_block);
+
+    // 量化
+    let mut quantized = [0i32; 64];
+    for i in 0..64 {
+        quantized[i] = dct_block[i] / (qt[i] as i32);
+    }
+
+    // 2. Zigzag 扫描
+    let mut zz = [0i32; 64];
+    for i in 0..64 {
+        zz[i] = quantized[ZIGZAG[i] as usize];
+    }
+
+    // 3. DC 编码（差分）
+    let dc_val = zz[0];
+    let dc_diff = dc_val - *prev_dc;
+    *prev_dc = dc_val;
+
+    let (dc_mag, dc_bits) = encode_vlc(dc_diff);
+    let (code, len) = dc_table.encode(dc_mag as u8);
+    writer.write_bits(code as u32, len);
+    if dc_bits > 0 {
+        writer.write_bits(dc_bits as u32, dc_bits);
+    }
+
+    // 4. AC 编码（游程编码）
+    let mut run = 0;
+    for i in 1..64 {
+        if zz[i] == 0 {
+            run += 1;
+        } else {
+            while run > 15 {
+                // ZRL (16 zeros)
+                let (code, len) = ac_table.encode(0xF0);
+                writer.write_bits(code as u32, len);
+                run -= 16;
+            }
+            let (ac_mag, ac_bits) = encode_vlc(zz[i]);
+            let sym = ((run << 4) | ac_mag as usize) as u8;
+            let (code, len) = ac_table.encode(sym);
+            writer.write_bits(code as u32, len);
+            if ac_bits > 0 {
+                writer.write_bits(ac_bits as u32, ac_bits);
+            }
+            run = 0;
+        }
+    }
+    // EOB if remaining are zeros
+    if run > 0 {
+        let (code, len) = ac_table.encode(0x00);
+        writer.write_bits(code as u32, len);
+    }
+}
+
+/// VLC 编码：返回 (magnitude_category, additional_bits)
+fn encode_vlc(value: i32) -> (u8, u8) {
+    if value == 0 {
+        return (0, 0);
+    }
+    let abs_val = value.unsigned_abs();
+    let mag = 32 - abs_val.leading_zeros() as u8;
+    (mag, mag)
+}
+
+/// Baseline JPEG 编码
+fn encode_jpeg(
+    y_plane: &[u8],
+    cb_plane: &[u8],
+    cr_plane: &[u8],
+    padded_w: usize,
+    padded_h: usize,
+    orig_w: usize,
+    orig_h: usize,
+    quality: u8,
+) -> Result<Vec<u8>> {
+    let mut jpeg = Vec::new();
+
+    // SOI
+    jpeg.extend_from_slice(&[0xFF, 0xD8]);
+
+    // DQT 标记 — 亮度
+    write_dqt(&mut jpeg, 0, &make_qt(&STD_LUMA_QT, quality));
+    // DQT 标记 — 色度
+    write_dqt(&mut jpeg, 1, &make_qt(&STD_CHROMA_QT, quality));
+
+    // SOF0 标记 (Baseline)
+    write_sof0(&mut jpeg, orig_w as u16, orig_h as u16);
+
+    // DHT 标记
+    write_dht(&mut jpeg, 0, 0, &LUMA_DC_BITS, &LUMA_DC_VALS);
+    write_dht(&mut jpeg, 0, 1, &LUMA_AC_BITS, &LUMA_AC_VALS);
+    write_dht(&mut jpeg, 1, 0, &CHROMA_DC_BITS, &CHROMA_DC_VALS);
+    write_dht(&mut jpeg, 1, 1, &CHROMA_AC_BITS, &CHROMA_AC_VALS);
+
+    // SOS 标记
+    write_sos(&mut jpeg);
+
+    // 编码图像数据
+    let luma_dc = HuffTable::build(&LUMA_DC_BITS, &LUMA_AC_VALS[..12]);
+    let luma_ac = HuffTable::build(&LUMA_AC_BITS, &LUMA_AC_VALS);
+    let chroma_dc = HuffTable::build(&CHROMA_DC_BITS, &CHROMA_DC_VALS);
+    let chroma_ac = HuffTable::build(&CHROMA_AC_BITS, &CHROMA_AC_VALS);
+
+    let mut writer = BitWriter::new();
+    let mut prev_dc_y = 0i32;
+    let mut prev_dc_cb = 0i32;
+    let mut prev_dc_cr = 0i32;
+
+    let luma_qt = make_qt(&STD_LUMA_QT, quality);
+    let chroma_qt = make_qt(&STD_CHROMA_QT, quality);
+
+    // 按 MCU 编码（每个 MCU = 4 Y blocks + 1 Cb + 1 Cr for 4:2:0）
+    for mcu_y in (0..padded_h).step_by(16) {
+        for mcu_x in (0..padded_w).step_by(16) {
+            // 4 Y blocks
+            for by in 0..2 {
+                for bx in 0..2 {
+                    let mut block = [0u8; 64];
+                    let base_x = mcu_x + bx * 8;
+                    let base_y = mcu_y + by * 8;
+                    for row in 0..8 {
+                        for col in 0..8 {
+                            let px = (base_x + col).min(padded_w - 1);
+                            let py = (base_y + row).min(padded_h - 1);
+                            block[row * 8 + col] = y_plane[py * padded_w + px];
+                        }
+                    }
+                    encode_block(&mut writer, &block, &luma_qt, &luma_dc, &luma_ac, &mut prev_dc_y);
+                }
+            }
+            // 1 Cb block
+            let mut block = [0u8; 64];
+            let cb_base_x = mcu_x / 2;
+            let cb_base_y = mcu_y / 2;
+            let cb_w = padded_w / 2;
+            for row in 0..8 {
+                for col in 0..8 {
+                    let px = (cb_base_x + col).min(cb_w - 1);
+                    let py = (cb_base_y + row).min(padded_h / 2 - 1);
+                    block[row * 8 + col] = cb_plane[py * cb_w + px];
+                }
+            }
+            encode_block(&mut writer, &block, &chroma_qt, &chroma_dc, &chroma_ac, &mut prev_dc_cb);
+
+            // 1 Cr block
+            let mut block = [0u8; 64];
+            for row in 0..8 {
+                for col in 0..8 {
+                    let px = (cb_base_x + col).min(cb_w - 1);
+                    let py = (cb_base_y + row).min(padded_h / 2 - 1);
+                    block[row * 8 + col] = cr_plane[py * cb_w + px];
+                }
+            }
+            encode_block(&mut writer, &block, &chroma_qt, &chroma_dc, &chroma_ac, &mut prev_dc_cr);
+        }
+    }
+
+    writer.flush();
+    jpeg.extend_from_slice(&writer.data);
+
+    // EOI
+    jpeg.extend_from_slice(&[0xFF, 0xD9]);
+
+    Ok(jpeg)
+}
+
+/// 写 DQT 标记
+fn write_dqt(jpeg: &mut Vec<u8>, table_id: u8, qt: &[u16; 64]) {
+    jpeg.extend_from_slice(&[0xFF, 0xDB]);
+    jpeg.extend_from_slice(&65u16.to_be_bytes()); // length = 2 + 1 + 64
+    jpeg.push(table_id);
+    for &val in qt {
+        jpeg.push(val as u8);
+    }
+}
+
+/// 写 SOF0 标记
+fn write_sof0(jpeg: &mut Vec<u8>, width: u16, height: u16) {
+    jpeg.extend_from_slice(&[0xFF, 0xC0]);
+    jpeg.extend_from_slice(&17u16.to_be_bytes()); // length
+    jpeg.push(8); // precision
+    jpeg.extend_from_slice(&height.to_be_bytes());
+    jpeg.extend_from_slice(&width.to_be_bytes());
+    jpeg.push(3); // 3 components (Y, Cb, Cr)
+    // Y: id=1, sampling=2x2 (0x22), qt=0
+    jpeg.extend_from_slice(&[1, 0x22, 0]);
+    // Cb: id=2, sampling=1x1 (0x11), qt=1
+    jpeg.extend_from_slice(&[2, 0x11, 1]);
+    // Cr: id=3, sampling=1x1 (0x11), qt=1
+    jpeg.extend_from_slice(&[3, 0x11, 1]);
+}
+
+/// 写 DHT 标记
+fn write_dht(jpeg: &mut Vec<u8>, table_id: u8, class: u8, bits: &[u8; 16], vals: &[u8]) {
+    let length = 2 + 1 + 16 + vals.len() as u16;
+    jpeg.extend_from_slice(&[0xFF, 0xC4]);
+    jpeg.extend_from_slice(&length.to_be_bytes());
+    jpeg.push((class << 4) | table_id);
+    jpeg.extend_from_slice(bits);
+    jpeg.extend_from_slice(vals);
+}
+
+/// 写 SOS 标记
+fn write_sos(jpeg: &mut Vec<u8>) {
+    jpeg.extend_from_slice(&[0xFF, 0xDA]);
+    jpeg.extend_from_slice(&12u16.to_be_bytes()); // length
+    jpeg.push(3); // 3 components
+    jpeg.extend_from_slice(&[1, 0x00]); // Y: dc=0, ac=0
+    jpeg.extend_from_slice(&[2, 0x11]); // Cb: dc=1, ac=1
+    jpeg.extend_from_slice(&[3, 0x11]); // Cr: dc=1, ac=1
+    jpeg.extend_from_slice(&[0, 63, 0]); // Ss=0, Se=63, AhAl=0
+}
+
 /// 简化 BMP 编码（fallback for JPEG）
 fn encode_bmp(rgb: &[u8], width: usize, height: usize) -> Result<Vec<u8>> {
     let row_size = (width * 3 + 3) & !3; // 4-byte aligned
@@ -391,10 +873,13 @@ mod tests {
 
     #[test]
     fn test_thumbnail_from_yuv_jpeg() {
-        let yuv = video_codec::YuvFrame::black(8, 8, 0);
-        let bmp = Thumbnail::from_yuv(&yuv, ThumbnailFormat::Jpeg, 80).unwrap();
-        assert!(!bmp.is_empty());
-        assert_eq!(&bmp[0..2], b"BM");
+        let yuv = video_codec::YuvFrame::black(16, 16, 0);
+        let jpeg = Thumbnail::from_yuv(&yuv, ThumbnailFormat::Jpeg, 80).unwrap();
+        assert!(!jpeg.is_empty());
+        // JPEG SOI marker
+        assert_eq!(&jpeg[0..2], &[0xFF, 0xD8]);
+        // JPEG EOI marker
+        assert_eq!(&jpeg[jpeg.len()-2..], &[0xFF, 0xD9]);
     }
 
     #[test]

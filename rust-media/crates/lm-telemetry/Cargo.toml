@@ -8,3 +8,5 @@ authors.workspace = true
 [dependencies]
 lm-core = { path = "../lm-core" }
 serde.workspace = true
+dashmap.workspace = true
+tracing.workspace = true

@@ -803,6 +803,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "audio-codec",
+ "bytemuck",
  "bytes",
  "dashmap",
  "lm-codecs",
@@ -961,8 +962,10 @@ dependencies = [
 name = "lm-telemetry"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "lm-core",
  "serde",
+ "tracing",
 ]
 
 [[package]]

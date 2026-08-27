@@ -6,9 +6,12 @@ use std::sync::Arc;
 
 use lm_core::{EndpointId, SessionId, TrackId};
 use lm_stream::{MediaStream, StreamId, StreamRegistry};
+use crate::bridge::BridgeManager;
+use crate::events::{EventBus, MediaNodeEvent};
 use crate::mixer::MixManager;
 use crate::recorder::RecordingManager;
 use crate::session::SessionManager;
+use lm_telemetry::StatsCollector;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
@@ -26,6 +29,12 @@ pub struct MediaNodeServer {
     recordings: Arc<RecordingManager>,
     /// 媒体流注册表（新的流抽象，用于帧级处理：录制、转封装）
     streams: Arc<StreamRegistry>,
+    /// 事件总线
+    events: Arc<EventBus>,
+    /// 桥接管理器
+    bridges: Arc<BridgeManager>,
+    /// 统计收集器
+    stats: Arc<StatsCollector>,
 }
 
 impl MediaNodeServer {
@@ -36,6 +45,9 @@ impl MediaNodeServer {
             mixes: Arc::new(MixManager::new()),
             recordings: Arc::new(RecordingManager::new()),
             streams: Arc::new(StreamRegistry::new()),
+            events: Arc::new(EventBus::new(1024)),
+            bridges: Arc::new(BridgeManager::new()),
+            stats: Arc::new(StatsCollector::new()),
         }
     }
 
@@ -59,6 +71,30 @@ impl MediaNodeServer {
     pub fn streams(&self) -> &Arc<StreamRegistry> {
         &self.streams
     }
+
+    /// 获取事件总线引用
+    pub fn events(&self) -> &Arc<EventBus> {
+        &self.events
+    }
+
+    /// 获取统计收集器引用
+    pub fn stats(&self) -> &Arc<StatsCollector> {
+        &self.stats
+    }
+
+    /// 获取端点总数（聚合所有 session 的端点）
+    fn total_endpoints(&self) -> u32 {
+        self.sessions
+            .session_ids()
+            .iter()
+            .map(|sid| {
+                self.sessions
+                    .get_session(sid)
+                    .map(|s| s.endpoints.len() as u32)
+                    .unwrap_or(0)
+            })
+            .sum()
+    }
 }
 
 // ============================================================================
@@ -73,14 +109,19 @@ impl media_node_server::MediaNode for MediaNodeServer {
         &self,
         _request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
+        let health = self.stats.health_snapshot(
+            &self.node_id,
+            self.sessions.session_count() as u32,
+            self.total_endpoints(),
+        );
         Ok(Response::new(HealthCheckResponse {
-            node_id: self.node_id.clone(),
-            active_sessions: self.sessions.session_count() as u32,
-            active_endpoints: 0, // TODO: aggregate
-            total_packets_received: 0,
-            total_packets_sent: 0,
-            cpu_usage: 0.0,
-            memory_usage_mb: 0,
+            node_id: health.node_id,
+            active_sessions: health.active_sessions,
+            active_endpoints: health.active_endpoints,
+            total_packets_received: health.total_packets_received,
+            total_packets_sent: health.total_packets_sent,
+            cpu_usage: health.cpu_usage,
+            memory_usage_mb: health.memory_usage_mb as u64,
         }))
     }
 
@@ -94,8 +135,13 @@ impl media_node_server::MediaNode for MediaNodeServer {
         let session_id = SessionId(req.session_id.clone());
 
         self.sessions
-            .create_session(session_id.clone(), Some(req.room_id), Some(req.tenant_id))
+            .create_session(session_id.clone(), Some(req.room_id.clone()), Some(req.tenant_id))
             .map_err(|e| Status::already_exists(e.to_string()))?;
+
+        self.events.publish(MediaNodeEvent::SessionCreated {
+            session_id: req.session_id.clone(),
+            room_id: if req.room_id.is_empty() { None } else { Some(req.room_id.clone()) },
+        });
 
         info!(session = %req.session_id, "gRPC create_session");
         Ok(Response::new(CreateSessionResponse {
@@ -125,9 +171,15 @@ impl media_node_server::MediaNode for MediaNodeServer {
             .destroy_session(&session_id)
             .map_err(|e| Status::not_found(e.to_string()))?;
 
-        // 清理该 session 的所有 MediaStream
-        // TODO: StreamRegistry 应该支持按 session 批量注销
-        // 目前依赖 remove_track 逐个注销，session destroy 时 tracks 已被清理
+        // 按 session 批量注销所有 MediaStream
+        self.streams.unregister_session(&req.session_id);
+
+        // 清理统计
+        self.stats.unregister_session(&req.session_id);
+
+        self.events.publish(MediaNodeEvent::SessionDestroyed {
+            session_id: req.session_id.clone(),
+        });
 
         info!(session = %req.session_id, "gRPC destroy_session");
         Ok(Response::new(DestroySessionResponse {}))
@@ -261,6 +313,16 @@ impl media_node_server::MediaNode for MediaNodeServer {
         ));
         self.streams.register(media_stream);
 
+        // 注册统计计数器
+        self.stats.register_track(&req.session_id, &track.track_id);
+
+        self.events.publish(MediaNodeEvent::TrackAdded {
+            session_id: req.session_id.clone(),
+            track_id: track.track_id.clone(),
+            kind: if kind == lm_core::TrackKind::Video { "video" } else { "audio" }.to_string(),
+            codec: track.codec.clone(),
+        });
+
         info!(
             session = %req.session_id,
             track = %track.track_id,
@@ -288,6 +350,14 @@ impl media_node_server::MediaNode for MediaNodeServer {
 
         // 同时注销 MediaStream
         self.streams.unregister(&StreamId::new(req.session_id.clone(), req.track_id.clone()));
+
+        // 注销统计
+        self.stats.unregister_track(&req.session_id, &req.track_id);
+
+        self.events.publish(MediaNodeEvent::TrackRemoved {
+            session_id: req.session_id.clone(),
+            track_id: req.track_id.clone(),
+        });
 
         info!(
             session = %req.session_id,
@@ -321,9 +391,16 @@ impl media_node_server::MediaNode for MediaNodeServer {
             let req = req?;
             if let Some(packet) = req.packet {
                 packets_received += 1;
+                let pkt_bytes = packet.payload.len() as u64;
 
                 let session_id = SessionId(req.session_id.clone());
                 let track_id = TrackId(req.track_id.clone());
+
+                // 记录统计
+                self.stats.add_packets_received(1);
+                if let Some(counter) = self.stats.get_track_counter(&req.session_id, &req.track_id) {
+                    counter.record_received(pkt_bytes);
+                }
 
                 // 首包时检查混音模式（避免每包都查）
                 if !mix_checked {
@@ -563,13 +640,93 @@ impl media_node_server::MediaNode for MediaNodeServer {
         mut request: Request<Streaming<InjectAudioRequest>>,
     ) -> Result<Response<InjectAudioResponse>, Status> {
         let mut frames_injected: u64 = 0;
+
+        // 持久编码器（避免每帧重建，保留帧间预测状态）
+        let mut opus_encoder: Option<Box<dyn audio_codec::Encoder>> = None;
+        let mut rtp_seq: u32 = 0;
+        let mut rtp_ts: u32 = 0;
+        let inject_ssrc: u32 = 0x494E4A00; // "INJ\0"
+
         while let Some(req) = request.get_mut().next().await {
             let req = req?;
-            if req.frame.is_some() {
-                frames_injected += 1;
+            if let Some(frame) = req.frame {
+                let session_id = SessionId(req.session_id.clone());
+                let track_id = TrackId(req.track_id.clone());
+
+                // 查找 session 和 track
+                let session = match self.sessions.get_session(&session_id) {
+                    Some(s) => s,
+                    None => {
+                        warn!(session = %req.session_id, "inject_audio: session not found");
+                        continue;
+                    }
+                };
+
+                let track_state = match session.tracks.get(&track_id) {
+                    Some(t) => t.clone(),
+                    None => {
+                        warn!(track = %req.track_id, "inject_audio: track not found");
+                        continue;
+                    }
+                };
+
+                // 懒初始化编码器
+                if opus_encoder.is_none() {
+                    let sample_rate = if frame.sample_rate > 0 { frame.sample_rate } else { 48000 };
+                    let channels = if frame.channels > 0 { frame.channels } else { 1 };
+                    opus_encoder = Some(audio_codec::create_opus_encoder(
+                        sample_rate,
+                        channels as u16,
+                        audio_codec::opus::OpusApplication::Voip,
+                    ));
+                    info!(
+                        session = %req.session_id,
+                        track = %req.track_id,
+                        sample_rate,
+                        channels,
+                        "inject_audio: encoder initialized"
+                    );
+                }
+
+                // 编码 PCM → Opus
+                let samples = bytemuck::cast_slice::<u8, i16>(&frame.samples).to_vec();
+                let encoded = if let Some(ref mut enc) = opus_encoder {
+                    enc.encode(&samples)
+                } else {
+                    Vec::new()
+                };
+
+                if !encoded.is_empty() {
+                    let clock_rate = if frame.sample_rate > 0 { frame.sample_rate } else { 48000 };
+                    let pkt = crate::session::RtpPacketOut {
+                        ssrc: inject_ssrc,
+                        payload_type: 111, // Opus
+                        sequence_number: rtp_seq,
+                        timestamp: rtp_ts,
+                        marker: rtp_seq == 0,
+                        payload: bytes::Bytes::from(encoded),
+                        rid: String::new(),
+                        clock_rate,
+                    };
+
+                    let _ = track_state.rtp_broadcast.send(pkt);
+
+                    let frame_samples = samples.len() as u32;
+                    rtp_seq = rtp_seq.wrapping_add(1);
+                    rtp_ts = rtp_ts.wrapping_add(frame_samples);
+
+                    frames_injected += 1;
+
+                    // 记录统计
+                    self.stats.add_packets_sent(1);
+                    if let Some(counter) = self.stats.get_track_counter(&req.session_id, &req.track_id) {
+                        counter.record_sent(frame.samples.len() as u64);
+                    }
+                }
             }
         }
-        // TODO: 接收 PCM 帧，编码后注入 egress
+
+        info!(frames_injected, "gRPC inject_audio completed");
         Ok(Response::new(InjectAudioResponse { frames_injected }))
     }
 
@@ -719,6 +876,11 @@ impl media_node_server::MediaNode for MediaNodeServer {
             );
         }
 
+        self.events.publish(MediaNodeEvent::MixParticipantJoined {
+            mix_id: req.mix_id.clone(),
+            session_id: req.session_id.clone(),
+        });
+
         info!(
             mix_id = %req.mix_id,
             session = %req.session_id,
@@ -742,19 +904,26 @@ impl media_node_server::MediaNode for MediaNodeServer {
             .get_session(&session_id)
             .ok_or_else(|| Status::not_found(format!("session {} not found", req.session_id)))?;
 
-        // 查找该 session 的音频 source track（需要从 mix state 获取）
-        // 简化：用 session_id 推导 track_id
-        // TODO: 从 mix state 获取 source_track_id
-        let source_track_id = TrackId(format!("audio-{}", req.session_id));
+        // 从 mix state 获取该参与者注册时的 source_track_id
+        let source_track_id = self
+            .mixes
+            .participant_source_track_id(&req.mix_id, &session_id)
+            .unwrap_or_else(|| TrackId(format!("audio-{}", req.session_id)));
 
         self.mixes
             .remove_participant(&req.mix_id, &session, &source_track_id)
             .await
             .map_err(|e| Status::internal(e))?;
 
+        self.events.publish(MediaNodeEvent::MixParticipantLeft {
+            mix_id: req.mix_id.clone(),
+            session_id: req.session_id.clone(),
+        });
+
         info!(
             mix_id = %req.mix_id,
             session = %req.session_id,
+            source_track = %source_track_id.0,
             "gRPC remove_mix_participant"
         );
         Ok(Response::new(RemoveMixParticipantResponse {}))
@@ -791,16 +960,53 @@ impl media_node_server::MediaNode for MediaNodeServer {
         request: Request<BridgeSessionsRequest>,
     ) -> Result<Response<BridgeSessionsResponse>, Status> {
         let req = request.into_inner();
+        let session_a_id = SessionId(req.session_a_id.clone());
+        let session_b_id = SessionId(req.session_b_id.clone());
+
+        let session_a = self
+            .sessions
+            .get_session(&session_a_id)
+            .ok_or_else(|| Status::not_found(format!("session {} not found", req.session_a_id)))?;
+        let session_b = self
+            .sessions
+            .get_session(&session_b_id)
+            .ok_or_else(|| Status::not_found(format!("session {} not found", req.session_b_id)))?;
+
+        // 获取两 session 的主音频 codec
+        let codec_a = session_a
+            .tracks
+            .iter()
+            .find(|t| t.kind == lm_core::TrackKind::Audio)
+            .map(|t| lm_codecs::codec_name(t.codec).to_string())
+            .unwrap_or_else(|| "pcmu".to_string());
+        let codec_b = session_b
+            .tracks
+            .iter()
+            .find(|t| t.kind == lm_core::TrackKind::Audio)
+            .map(|t| lm_codecs::codec_name(t.codec).to_string())
+            .unwrap_or_else(|| "pcmu".to_string());
+
+        let relay_mode = if req.force_transcode {
+            false
+        } else {
+            self.bridges
+                .bridge_sessions(&session_a, &session_b)
+                .map_err(|e| Status::already_exists(e))?
+        };
+
         info!(
             session_a = %req.session_a_id,
             session_b = %req.session_b_id,
+            relay_mode,
+            codec_a = %codec_a,
+            codec_b = %codec_b,
             "gRPC bridge_sessions"
         );
-        // TODO: 实际桥接
+
         Ok(Response::new(BridgeSessionsResponse {
-            relay_mode: true,
-            codec_a: "pcmu".to_string(),
-            codec_b: "pcmu".to_string(),
+            relay_mode,
+            codec_a,
+            codec_b,
         }))
     }
 
@@ -809,6 +1015,10 @@ impl media_node_server::MediaNode for MediaNodeServer {
         request: Request<UnbridgeSessionsRequest>,
     ) -> Result<Response<UnbridgeSessionsResponse>, Status> {
         let req = request.into_inner();
+        self.bridges
+            .unbridge_sessions(&req.session_a_id, &req.session_b_id)
+            .map_err(|e| Status::not_found(e))?;
+
         info!(
             session_a = %req.session_a_id,
             session_b = %req.session_b_id,
@@ -841,12 +1051,46 @@ impl media_node_server::MediaNode for MediaNodeServer {
         request: Request<EventsRequest>,
     ) -> Result<Response<Self::EventsStream>, Status> {
         let req = request.into_inner();
-        let (_tx, rx) = mpsc::channel(100);
+        let session_filter = if req.session_id.is_empty() {
+            None
+        } else {
+            Some(req.session_id.clone())
+        };
 
-        info!(session = %req.session_id, "gRPC events stream opened");
+        let mut event_rx = self.events.subscribe();
+        let (tx, rx) = mpsc::channel(256);
 
-        // TODO: 订阅会话事件
-        // 目前返回空流
+        info!(session = ?session_filter, "gRPC events stream opened");
+
+        tokio::spawn(async move {
+            loop {
+                match event_rx.recv().await {
+                    Ok(event) => {
+                        // 按 session 过滤
+                        let matches = match &session_filter {
+                            None => true,
+                            Some(sid) => crate::events::event_matches_session(&event, Some(sid)),
+                        };
+                        if !matches {
+                            continue;
+                        }
+
+                        // 转换为 gRPC MediaEvent
+                        let grpc_event = convert_event(&event);
+                        if tx.send(Ok(grpc_event)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(lagged = n, "events stream lagged");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        info!("events stream source closed");
+                        break;
+                    }
+                }
+            }
+        });
 
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -867,11 +1111,155 @@ impl media_node_server::MediaNode for MediaNodeServer {
 
         let duration_ms = session.created_at.elapsed().as_millis() as u64;
 
+        // 更新码率计算
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.stats.update_all_bitrates(now_ms);
+
+        // 获取真实统计
+        let track_stats: Vec<TrackStats> = self
+            .stats
+            .session_stats(&req.session_id)
+            .into_iter()
+            .map(|ts| TrackStats {
+                track_id: ts.track_id,
+                packets_received: ts.packets_received,
+                packets_sent: ts.packets_sent,
+                packets_lost: ts.packets_lost,
+                bytes_received: ts.bytes_received,
+                bytes_sent: ts.bytes_sent,
+                jitter_ms: ts.jitter_ms,
+                rtt_ms: ts.rtt_ms,
+                loss_pct: ts.loss_pct,
+                bitrate_kbps: ts.bitrate_kbps,
+            })
+            .collect();
+
         Ok(Response::new(GetStatsResponse {
             session_id: req.session_id,
             duration_ms,
-            tracks: vec![],
+            tracks: track_stats,
         }))
+    }
+}
+
+// ============================================================================
+// 事件转换
+// ============================================================================
+
+/// 将内部 MediaNodeEvent 转换为 gRPC MediaEvent
+fn convert_event(event: &MediaNodeEvent) -> MediaEvent {
+    let session_id = event.session_id().unwrap_or("").to_string();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| prost_types::Timestamp {
+            seconds: d.as_secs() as i64,
+            nanos: d.subsec_nanos() as i32,
+        });
+
+    let oneof = match event {
+        MediaNodeEvent::TrackAdded {
+            track_id,
+            kind,
+            codec,
+            ..
+        } => Some(media_event::Event::TrackAdded(TrackAdded {
+            track: Some(TrackInfo {
+                track_id: track_id.clone(),
+                kind: kind.clone(),
+                direction: "send".to_string(),
+                codec: codec.clone(),
+                ssrc: 0,
+                ..Default::default()
+            }),
+        })),
+        MediaNodeEvent::TrackRemoved { track_id, .. } => {
+            Some(media_event::Event::TrackRemoved(TrackRemoved {
+                track_id: track_id.clone(),
+            }))
+        }
+        MediaNodeEvent::Vad {
+            track_id,
+            speech_started,
+            energy,
+            ..
+        } => Some(media_event::Event::Vad(VadEvent {
+            track_id: track_id.clone(),
+            speech_started: *speech_started,
+            energy: *energy,
+        })),
+        MediaNodeEvent::Dtmf {
+            track_id,
+            digit,
+            duration_ms,
+            ..
+        } => Some(media_event::Event::Dtmf(DtmfEvent {
+            track_id: track_id.clone(),
+            digit: digit.clone(),
+            duration_ms: *duration_ms,
+        })),
+        MediaNodeEvent::RecordingCompleted {
+            recording_id,
+            file_path,
+            duration_ms,
+            file_size,
+            ..
+        } => Some(media_event::Event::RecordingCompleted(RecordingCompleted {
+            recording_id: recording_id.clone(),
+            file_path: file_path.clone(),
+            duration_ms: *duration_ms,
+            file_size: *file_size,
+        })),
+        MediaNodeEvent::RtpTimeout {
+            track_id,
+            duration_ms,
+            ..
+        } => Some(media_event::Event::RtpTimeout(RtpTimeout {
+            track_id: track_id.clone(),
+            duration_ms: *duration_ms,
+        })),
+        MediaNodeEvent::Error {
+            code,
+            message,
+            track_id,
+            ..
+        } => Some(media_event::Event::Error(ErrorEvent {
+            code: code.clone(),
+            message: message.clone(),
+            track_id: track_id.clone(),
+        })),
+        MediaNodeEvent::MixParticipantJoined { mix_id, .. } => {
+            Some(media_event::Event::MixParticipantJoined(MixParticipantJoined {
+                mix_id: mix_id.clone(),
+                session_id: session_id.clone(),
+            }))
+        }
+        MediaNodeEvent::MixParticipantLeft { mix_id, .. } => {
+            Some(media_event::Event::MixParticipantLeft(MixParticipantLeft {
+                mix_id: mix_id.clone(),
+                session_id: session_id.clone(),
+            }))
+        }
+        MediaNodeEvent::DominantSpeakerChanged { mix_id, .. } => {
+            Some(media_event::Event::DominantSpeakerChanged(DominantSpeakerChanged {
+                mix_id: mix_id.clone(),
+                session_id: session_id.clone(),
+            }))
+        }
+        MediaNodeEvent::SessionCreated { .. } | MediaNodeEvent::SessionDestroyed { .. } => {
+            // gRPC proto 没有定义 SessionCreated/SessionDestroyed 事件
+            // 使用 ErrorEvent 作为载体（简化）
+            None
+        }
+    };
+
+    MediaEvent {
+        session_id: session_id.clone(),
+        timestamp,
+        event: oneof,
     }
 }
 

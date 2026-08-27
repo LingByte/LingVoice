@@ -15,7 +15,29 @@ use lm_core::{CodecType, MediaFrame, StreamSink, TrackKind};
 use lm_depacketizer::create_depacketizer;
 use lm_transport::RtpPacket;
 use parking_lot::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, info};
+
+// ============================================================================
+// KeyframeRequester — RTCP PLI 关键帧请求回调
+// ============================================================================
+
+/// 关键帧请求回调 trait
+///
+/// 当 Rust 媒体层需要请求关键帧时（层切换、新订阅者、解码错误），
+/// 通过此 trait 通知 Go 控制层发送 RTCP PLI。
+///
+/// 参考 xiu whip.rs 的 PLI 发送模式 + forge-media RtcpFeedbackHandler。
+pub trait KeyframeRequester: Send + Sync {
+    /// 请求指定 SSRC 的关键帧
+    fn request_keyframe(&self, ssrc: u32);
+}
+
+/// 空实现（不请求关键帧）
+pub struct NoopKeyframeRequester;
+impl KeyframeRequester for NoopKeyframeRequester {
+    fn request_keyframe(&self, _ssrc: u32) {}
+}
 
 // ============================================================================
 // StreamId — 流标识
@@ -361,6 +383,22 @@ impl StreamRegistry {
         }
     }
 
+    /// 按 session 批量注销
+    ///
+    /// 销毁 session 时调用，清理该 session 的所有流。
+    pub fn unregister_session(&self, session_id: &str) {
+        let to_remove: Vec<StreamId> = self
+            .streams
+            .iter()
+            .filter(|r| r.key().session_id == session_id)
+            .map(|r| r.key().clone())
+            .collect();
+
+        for id in to_remove {
+            self.unregister(&id);
+        }
+    }
+
     /// 获取流
     pub fn get(&self, id: &StreamId) -> Option<Arc<MediaStream>> {
         self.streams.get(id).map(|r| r.clone())
@@ -472,11 +510,28 @@ pub struct LayerMeta {
     pub rid: String,
     /// 估计码率（bps），由 publisher 在 signaling 中声明或由 SFU 测量
     pub bitrate: u32,
+    /// 目标码率（kbps），用于自适应层选择
+    pub target_bitrate_kbps: u64,
     /// 分辨率
     pub width: u16,
     pub height: u16,
     /// 帧率
     pub fps: u8,
+}
+
+impl Default for LayerMeta {
+    fn default() -> Self {
+        Self {
+            layer: SimulcastLayer::Mid,
+            ssrc: 0,
+            rid: String::new(),
+            bitrate: 0,
+            target_bitrate_kbps: 0,
+            width: 0,
+            height: 0,
+            fps: 0,
+        }
+    }
 }
 
 /// 订阅者层选择策略
@@ -515,12 +570,22 @@ pub struct SimulcastStream {
     /// 各层元数据
     layer_metas: RwLock<std::collections::HashMap<SimulcastLayer, LayerMeta>>,
 
-    /// 订阅者 → 选层策略
-    subscribers: RwLock<Vec<(Arc<dyn StreamSink>, LayerSelectionPolicy)>>,
+    /// 订阅者 → 选层策略 + 估计带宽
+    subscribers: RwLock<Vec<SubscriberEntry>>,
 
     /// 当前各层是否启用（Dynacast）
-    /// 如果没有任何订阅者需要某层，可以请求 publisher 停止发送该层
     layer_enabled: RwLock<std::collections::HashMap<SimulcastLayer, bool>>,
+
+    /// 关键帧请求器（RTCP PLI）
+    keyframe_requester: RwLock<Option<Arc<dyn KeyframeRequester>>>,
+}
+
+/// 订阅者条目（sink + 策略 + 估计带宽 kbps）
+struct SubscriberEntry {
+    sink: Arc<dyn StreamSink>,
+    policy: LayerSelectionPolicy,
+    /// 订阅者估计可用带宽（kbps），0 = 未知
+    estimated_bandwidth_kbps: std::sync::atomic::AtomicU64,
 }
 
 impl SimulcastStream {
@@ -544,6 +609,37 @@ impl SimulcastStream {
             layer_metas: RwLock::new(std::collections::HashMap::new()),
             subscribers: RwLock::new(Vec::new()),
             layer_enabled: RwLock::new(layer_enabled),
+            keyframe_requester: RwLock::new(None),
+        }
+    }
+
+    /// 设置关键帧请求器（由 lm-control 在 add_track 时注入）
+    pub fn set_keyframe_requester(&self, requester: Arc<dyn KeyframeRequester>) {
+        *self.keyframe_requester.write() = Some(requester);
+    }
+
+    /// 内部：请求关键帧
+    fn send_pli(&self, layer: SimulcastLayer) {
+        let ssrc = self
+            .layer_metas
+            .read()
+            .get(&layer)
+            .map(|m| m.ssrc)
+            .unwrap_or(0);
+        if let Some(req) = self.keyframe_requester.read().as_ref() {
+            req.request_keyframe(ssrc);
+            info!(
+                stream = ?self.id,
+                layer = layer.to_rid(),
+                ssrc,
+                "PLI sent via keyframe requester"
+            );
+        } else {
+            debug!(
+                stream = ?self.id,
+                layer = layer.to_rid(),
+                "keyframe requested but no requester set"
+            );
         }
     }
 
@@ -639,7 +735,7 @@ impl SimulcastStream {
     ///
     /// 订阅者会根据 LayerSelectionPolicy 被路由到对应层
     pub fn add_subscriber(&self, sink: Arc<dyn StreamSink>, policy: LayerSelectionPolicy) {
-        let layer = self.select_layer_for_policy(&policy);
+        let layer = self.select_layer_for_policy(&policy, 0);
 
         // 订阅到对应层的 MediaStream
         let layers = self.layers.read();
@@ -648,7 +744,11 @@ impl SimulcastStream {
         }
 
         let mut subs = self.subscribers.write();
-        subs.push((sink, policy));
+        subs.push(SubscriberEntry {
+            sink,
+            policy,
+            estimated_bandwidth_kbps: AtomicU64::new(0),
+        });
 
         info!(
             stream = ?self.id,
@@ -657,25 +757,65 @@ impl SimulcastStream {
             "simulcast subscriber added"
         );
 
-        // 更新 Dynacast
+        // 新订阅者加入时请求关键帧
         drop(subs);
+        self.send_pli(layer);
         self.update_dynacast();
     }
 
     /// 移除订阅者
     pub fn remove_subscriber(&self, sink: &Arc<dyn StreamSink>) {
         let mut subs = self.subscribers.write();
-        subs.retain(|(s, _)| !Arc::ptr_eq(s, sink));
+        subs.retain(|e| !Arc::ptr_eq(&e.sink, sink));
         drop(subs);
         self.update_dynacast();
     }
 
-    /// 根据策略选择层
-    fn select_layer_for_policy(&self, policy: &LayerSelectionPolicy) -> SimulcastLayer {
+    /// 更新订阅者的估计带宽（由 RTCP RR 或 TWCC 驱动）
+    ///
+    /// 当带宽估计变化时，自适应策略可能触发层切换。
+    pub fn update_subscriber_bandwidth(&self, sink: &Arc<dyn StreamSink>, bandwidth_kbps: u64) {
+        let subs = self.subscribers.read();
+        for entry in subs.iter() {
+            if Arc::ptr_eq(&entry.sink, sink) {
+                entry
+                    .estimated_bandwidth_kbps
+                    .store(bandwidth_kbps, Ordering::Relaxed);
+
+                // 如果是自适应策略，检查是否需要切换层
+                if entry.policy == LayerSelectionPolicy::Adaptive {
+                    let new_layer = self.select_layer_for_policy(&entry.policy, bandwidth_kbps);
+                    let current_layer =
+                        self.select_layer_for_policy(&entry.policy, 0); // 简化
+                    if new_layer != current_layer {
+                        info!(
+                            stream = ?self.id,
+                            from = current_layer.to_rid(),
+                            to = new_layer.to_rid(),
+                            bandwidth_kbps,
+                            "adaptive layer switch triggered"
+                        );
+                        // 切换层时请求关键帧
+                        self.send_pli(new_layer);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    /// 根据策略和带宽选择层
+    ///
+    /// 参考 atm0s-media-server select_layer 算法：
+    /// 基于目标码率选择满足条件的最高质量层。
+    fn select_layer_for_policy(
+        &self,
+        policy: &LayerSelectionPolicy,
+        bandwidth_kbps: u64,
+    ) -> SimulcastLayer {
         match policy {
             LayerSelectionPolicy::Fixed(layer) => *layer,
             LayerSelectionPolicy::Highest => {
-                // 选可用的最高层
                 let layers = self.layers.read();
                 if layers.contains_key(&SimulcastLayer::High) {
                     SimulcastLayer::High
@@ -687,10 +827,35 @@ impl SimulcastStream {
             }
             LayerSelectionPolicy::Lowest => SimulcastLayer::Low,
             LayerSelectionPolicy::Adaptive => {
-                // 简化：默认选 mid 层
-                // TODO: 根据订阅者带宽、RTT、丢包率自适应
+                let metas = self.layer_metas.read();
                 let layers = self.layers.read();
-                if layers.contains_key(&SimulcastLayer::Mid) {
+
+                // 各层的目标码率（如果元数据中有）
+                let low_bitrate = metas
+                    .get(&SimulcastLayer::Low)
+                    .map(|m| m.target_bitrate_kbps)
+                    .unwrap_or(150);
+                let mid_bitrate = metas
+                    .get(&SimulcastLayer::Mid)
+                    .map(|m| m.target_bitrate_kbps)
+                    .unwrap_or(500);
+                let high_bitrate = metas
+                    .get(&SimulcastLayer::High)
+                    .map(|m| m.target_bitrate_kbps)
+                    .unwrap_or(1500);
+
+                if bandwidth_kbps == 0 {
+                    // 无带宽估计时，默认选 mid
+                    if layers.contains_key(&SimulcastLayer::Mid) {
+                        SimulcastLayer::Mid
+                    } else {
+                        SimulcastLayer::Low
+                    }
+                } else if bandwidth_kbps >= high_bitrate && layers.contains_key(&SimulcastLayer::High)
+                {
+                    SimulcastLayer::High
+                } else if bandwidth_kbps >= mid_bitrate && layers.contains_key(&SimulcastLayer::Mid)
+                {
                     SimulcastLayer::Mid
                 } else {
                     SimulcastLayer::Low
@@ -700,15 +865,13 @@ impl SimulcastStream {
     }
 
     /// Dynacast：根据订阅者需求启用/禁用 publisher 层
-    ///
-    /// 如果没有任何订阅者需要某层，标记为禁用。
-    /// 实际禁用通过 RTCP PLI 或 signaling 通知 publisher 停止发送。
     fn update_dynacast(&self) {
         let subs = self.subscribers.read();
         let mut needed_layers = std::collections::HashSet::new();
 
-        for (_, policy) in subs.iter() {
-            let layer = self.select_layer_for_policy(policy);
+        for entry in subs.iter() {
+            let bw = entry.estimated_bandwidth_kbps.load(Ordering::Relaxed);
+            let layer = self.select_layer_for_policy(&entry.policy, bw);
             needed_layers.insert(layer);
         }
 
@@ -736,7 +899,7 @@ impl SimulcastStream {
 
     /// 切换订阅者的层
     ///
-    /// 切换时需要请求关键帧（通过 RTCP PLI）
+    /// 切换时请求关键帧（通过 RTCP PLI），确保新层可正确解码。
     pub fn switch_layer(
         &self,
         sink: &Arc<dyn StreamSink>,
@@ -744,11 +907,10 @@ impl SimulcastStream {
     ) -> bool {
         let mut subs = self.subscribers.write();
 
-        // 找到订阅者并更新策略
         let mut found = false;
-        for (s, policy) in subs.iter_mut() {
-            if Arc::ptr_eq(s, sink) {
-                *policy = LayerSelectionPolicy::Fixed(new_layer);
+        for entry in subs.iter_mut() {
+            if Arc::ptr_eq(&entry.sink, sink) {
+                entry.policy = LayerSelectionPolicy::Fixed(new_layer);
                 found = true;
                 break;
             }
@@ -760,8 +922,8 @@ impl SimulcastStream {
                 new_layer = new_layer.to_rid(),
                 "simulcast subscriber switched layer"
             );
-            // TODO: 请求关键帧（RTCP PLI）
-            // 切换层时需要关键帧才能正确解码
+            // 切换层时请求关键帧
+            self.send_pli(new_layer);
         }
 
         drop(subs);
@@ -773,16 +935,15 @@ impl SimulcastStream {
 
     /// 请求关键帧
     ///
-    /// 通过 RTCP PLI 请求 publisher 发送关键帧
-    /// 用于层切换、新订阅者加入等场景
+    /// 通过 RTCP PLI 请求 publisher 发送关键帧。
+    /// 用于层切换、新订阅者加入等场景。
     pub fn request_keyframe(&self, layer: SimulcastLayer) {
         info!(
             stream = ?self.id,
             layer = layer.to_rid(),
             "requesting keyframe (PLI)"
         );
-        // TODO: 发送 RTCP PLI 包到 publisher
-        // 当前由 Go/Pion 层处理 RTCP，需要通过 gRPC 通知 Go 层发送 PLI
+        self.send_pli(layer);
     }
 
     /// 获取层元数据
@@ -1058,6 +1219,7 @@ mod tests {
                 ssrc: 111,
                 rid: "low".into(),
                 bitrate: 150_000,
+                target_bitrate_kbps: 150,
                 width: 320,
                 height: 180,
                 fps: 15,
@@ -1071,6 +1233,7 @@ mod tests {
                 ssrc: 333,
                 rid: "high".into(),
                 bitrate: 1_500_000,
+                target_bitrate_kbps: 1500,
                 width: 1280,
                 height: 720,
                 fps: 30,
@@ -1115,6 +1278,7 @@ mod tests {
                 ssrc: 111,
                 rid: "low".into(),
                 bitrate: 150_000,
+                target_bitrate_kbps: 150,
                 width: 320,
                 height: 180,
                 fps: 15,
@@ -1128,6 +1292,7 @@ mod tests {
                 ssrc: 333,
                 rid: "high".into(),
                 bitrate: 1_500_000,
+                target_bitrate_kbps: 1500,
                 width: 1280,
                 height: 720,
                 fps: 30,
@@ -1164,6 +1329,7 @@ mod tests {
                 ssrc: 111,
                 rid: "low".into(),
                 bitrate: 150_000,
+                target_bitrate_kbps: 150,
                 width: 320,
                 height: 180,
                 fps: 15,
@@ -1177,6 +1343,7 @@ mod tests {
                 ssrc: 333,
                 rid: "high".into(),
                 bitrate: 1_500_000,
+                target_bitrate_kbps: 1500,
                 width: 1280,
                 height: 720,
                 fps: 30,

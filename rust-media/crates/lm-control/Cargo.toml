@@ -31,6 +31,7 @@ bytes.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+bytemuck = "1"
 
 [build-dependencies]
 tonic-build = "0.12"
