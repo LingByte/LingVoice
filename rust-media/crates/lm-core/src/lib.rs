@@ -78,8 +78,13 @@ impl CodecType {
     pub fn is_audio(self) -> bool {
         matches!(
             self,
-            CodecType::Opus | CodecType::PcmU | CodecType::PcmA | CodecType::G722 | CodecType::Pcm
-                | CodecType::Aac | CodecType::Mp3
+            CodecType::Opus
+                | CodecType::PcmU
+                | CodecType::PcmA
+                | CodecType::G722
+                | CodecType::Pcm
+                | CodecType::Aac
+                | CodecType::Mp3
         )
     }
     /// 判断是否为视频编解码
@@ -99,8 +104,12 @@ pub enum TrackKind {
 }
 
 impl TrackKind {
-    pub fn is_audio(self) -> bool { matches!(self, TrackKind::Audio) }
-    pub fn is_video(self) -> bool { matches!(self, TrackKind::Video) }
+    pub fn is_audio(self) -> bool {
+        matches!(self, TrackKind::Audio)
+    }
+    pub fn is_video(self) -> bool {
+        matches!(self, TrackKind::Video)
+    }
 }
 
 // ============================================================================
@@ -343,7 +352,11 @@ pub trait Packetizer: Send + Sync {
     /// 将帧打包为 RTP payload 列表
     ///
     /// 返回 (payload, marker) 列表，调用方负责添加 RTP header
-    fn packetize(&mut self, frame: &MediaFrame, max_payload_size: usize) -> Vec<(bytes::Bytes, bool)>;
+    fn packetize(
+        &mut self,
+        frame: &MediaFrame,
+        max_payload_size: usize,
+    ) -> Vec<(bytes::Bytes, bool)>;
 
     /// 编解码类型
     fn codec_type(&self) -> CodecType;
@@ -417,7 +430,12 @@ mod tests {
 
     #[test]
     fn test_codec_audio_not_video() {
-        for codec in [CodecType::Opus, CodecType::PcmU, CodecType::Aac, CodecType::Mp3] {
+        for codec in [
+            CodecType::Opus,
+            CodecType::PcmU,
+            CodecType::Aac,
+            CodecType::Mp3,
+        ] {
             assert!(codec.is_audio());
             assert!(!codec.is_video());
         }
@@ -502,7 +520,12 @@ mod tests {
 
     #[test]
     fn test_direction_variants() {
-        let dirs = [Direction::SendRecv, Direction::SendOnly, Direction::RecvOnly, Direction::Inactive];
+        let dirs = [
+            Direction::SendRecv,
+            Direction::SendOnly,
+            Direction::RecvOnly,
+            Direction::Inactive,
+        ];
         assert_eq!(dirs.len(), 4);
         assert_eq!(Direction::SendRecv, Direction::SendRecv);
         assert_ne!(Direction::SendOnly, Direction::RecvOnly);
@@ -522,12 +545,18 @@ mod tests {
     #[test]
     fn test_depacketize_result() {
         assert_eq!(DepacketizeResult::NeedMore, DepacketizeResult::NeedMore);
-        assert_eq!(DepacketizeResult::FrameComplete, DepacketizeResult::FrameComplete);
+        assert_eq!(
+            DepacketizeResult::FrameComplete,
+            DepacketizeResult::FrameComplete
+        );
         assert_eq!(
             DepacketizeResult::Error("test".into()),
             DepacketizeResult::Error("test".into())
         );
-        assert_ne!(DepacketizeResult::NeedMore, DepacketizeResult::FrameComplete);
+        assert_ne!(
+            DepacketizeResult::NeedMore,
+            DepacketizeResult::FrameComplete
+        );
     }
 
     // ─── PacketizeParams 测试 ─────────────────────────────────────────────

@@ -24,7 +24,10 @@ pub struct FlvHeader {
 
 impl FlvHeader {
     pub fn new(has_audio: bool, has_video: bool) -> Self {
-        Self { has_audio, has_video }
+        Self {
+            has_audio,
+            has_video,
+        }
     }
 
     /// 生成 FLV header bytes
@@ -252,7 +255,7 @@ impl FlvRemuxer {
 
         // Tag header (11 bytes)
         tag.push(tag_type as u8); // type
-        // data size (3 bytes, big endian)
+                                  // data size (3 bytes, big endian)
         tag.push((data_size >> 16) as u8);
         tag.push((data_size >> 8) as u8);
         tag.push(data_size as u8);
@@ -261,7 +264,7 @@ impl FlvRemuxer {
         tag.push((timestamp >> 8) as u8);
         tag.push(timestamp as u8);
         tag.push((timestamp >> 24) as u8); // extended
-        // stream id (3 bytes, always 0)
+                                           // stream id (3 bytes, always 0)
         tag.push(0);
         tag.push(0);
         tag.push(0);
@@ -298,7 +301,7 @@ impl FlvRemuxer {
         if frame.codec == CodecType::H264 {
             data.push(0x01); // AVCPacketType = 1 (NALU)
             data.extend_from_slice(&[0, 0, 0]); // CompositionTime = 0
-            // 转 Annex-B → AVCC（4字节长度前缀）
+                                                // 转 Annex-B → AVCC（4字节长度前缀）
             data.extend(Self::annex_b_to_avcc(&frame.data));
         } else {
             data.extend_from_slice(&frame.data);
@@ -356,7 +359,8 @@ impl Remuxer for FlvRemuxer {
                 if !self.avc_header_written {
                     // 写 AVCDecoderConfigurationRecord 作为 video tag
                     let config = Self::build_avc_decoder_config(&sps, &pps);
-                    let first_byte = ((FlvFrameType::KeyFrame as u8) << 4) | (FlvVideoCodecId::Avc as u8);
+                    let first_byte =
+                        ((FlvFrameType::KeyFrame as u8) << 4) | (FlvVideoCodecId::Avc as u8);
                     let mut seq_data = vec![first_byte];
                     seq_data.push(0x00); // AVCPacketType = 0 (sequence header)
                     seq_data.extend_from_slice(&[0, 0, 0]); // CompositionTime = 0
@@ -500,7 +504,11 @@ mod tests {
 
         for (j, &(pos, sc_len)) in nalus.iter().enumerate() {
             let nal_type = h264_data[pos + sc_len] & 0x1F;
-            let end = if j + 1 < nalus.len() { nalus[j + 1].0 } else { h264_data.len() };
+            let end = if j + 1 < nalus.len() {
+                nalus[j + 1].0
+            } else {
+                h264_data.len()
+            };
             let nal_data = &h264_data[pos..end];
 
             match nal_type {
@@ -543,7 +551,13 @@ mod tests {
 
         // ffprobe 验证
         let output = std::process::Command::new("ffprobe")
-            .args(&["-v", "error", "-show_streams", "-show_format", "/tmp/test_flv_real.flv"])
+            .args(&[
+                "-v",
+                "error",
+                "-show_streams",
+                "-show_format",
+                "/tmp/test_flv_real.flv",
+            ])
             .output()
             .unwrap();
 
@@ -554,7 +568,10 @@ mod tests {
             panic!("ffprobe failed: {}", stderr);
         }
         println!("ffprobe FLV output:\n{}", stdout);
-        assert!(stdout.contains("h264") || stdout.contains("H264"), "no h264 stream found");
+        assert!(
+            stdout.contains("h264") || stdout.contains("H264"),
+            "no h264 stream found"
+        );
         assert!(stdout.contains("flv"), "not FLV format");
     }
 }

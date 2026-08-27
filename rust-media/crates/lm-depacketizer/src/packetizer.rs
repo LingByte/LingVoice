@@ -30,12 +30,8 @@ pub trait Packetizer: Send + Sync {
     /// `frame_data` 是完整的编码帧（VP8 payload / H.264 Annex-B NALU）
     /// `timestamp` 是 RTP 时间戳
     /// `keyframe` 是否为关键帧
-    fn packetize(
-        &mut self,
-        frame_data: &[u8],
-        timestamp: u32,
-        keyframe: bool,
-    ) -> Vec<RtpPacketOut>;
+    fn packetize(&mut self, frame_data: &[u8], timestamp: u32, keyframe: bool)
+        -> Vec<RtpPacketOut>;
 
     /// 编解码类型
     fn codec_type(&self) -> CodecType;
@@ -313,7 +309,7 @@ pub fn create_packetizer(codec: CodecType) -> Box<dyn Packetizer> {
         CodecType::Opus => Box::new(OpusPacketizer::new()),
         CodecType::Vp9 => Box::new(Vp8Packetizer::new()), // 简化：复用 VP8
         CodecType::H265 | CodecType::Av1 => Box::new(H264Packetizer::new()), // 简化
-        _ => Box::new(OpusPacketizer::new()), // 音频默认
+        _ => Box::new(OpusPacketizer::new()),             // 音频默认
     }
 }
 
@@ -387,7 +383,7 @@ mod packetizer_tests {
 
         let packets = pkt.packetize(&data, 9000, true);
         assert!(packets.len() >= 3); // 至少 3 个 NALU
-        // 最后一包 marker=true
+                                     // 最后一包 marker=true
         assert!(packets.last().unwrap().marker);
     }
 

@@ -830,7 +830,11 @@ impl Decoder for G722Decoder {
     fn max_decode_samples(&self, n_bytes: usize) -> usize {
         // 16kHz mode: 2 samples per byte. 8kHz mode: 1 sample per byte.
         // Use the larger bound so callers always size the buffer adequately.
-        if self.eight_k { n_bytes } else { n_bytes * 2 }
+        if self.eight_k {
+            n_bytes
+        } else {
+            n_bytes * 2
+        }
     }
 
     fn sample_rate(&self) -> u32 {

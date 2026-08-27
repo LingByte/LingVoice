@@ -274,14 +274,7 @@ impl Remuxer for RtmpRemuxer {
             }
         };
 
-        let chunk = self.create_chunk(
-            ChunkType::Type0,
-            cs_id,
-            timestamp_ms,
-            msg_type,
-            1,
-            &payload,
-        );
+        let chunk = self.create_chunk(ChunkType::Type0, cs_id, timestamp_ms, msg_type, 1, &payload);
 
         self.output_buffer.extend_from_slice(&chunk);
         self.last_timestamp = timestamp_ms;

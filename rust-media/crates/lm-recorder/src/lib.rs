@@ -220,7 +220,11 @@ impl OpusRecorder {
     }
 
     /// 写入一个 Opus 编码帧（已编码的 Opus payload）
-    pub async fn write_opus_packet(&mut self, payload: &[u8], samples_in_packet: u32) -> Result<()> {
+    pub async fn write_opus_packet(
+        &mut self,
+        payload: &[u8],
+        samples_in_packet: u32,
+    ) -> Result<()> {
         // 更新 granule position
         self.granule += samples_in_packet as i64;
 
@@ -243,7 +247,9 @@ impl OpusRecorder {
         // 需要编码 PCM → Opus，但 lm-recorder 不直接依赖 audio-codec
         // 调用方应使用 write_opus_packet 写入已编码的 Opus 数据
         // 这里提供 PCM 接口用于兼容，但会返回 error
-        Err(anyhow::anyhow!("OpusRecorder.write_frame not supported, use write_opus_packet instead"))
+        Err(anyhow::anyhow!(
+            "OpusRecorder.write_frame not supported, use write_opus_packet instead"
+        ))
     }
 
     /// 完成录制（写 EOS page）
@@ -283,7 +289,13 @@ impl OpusRecorder {
 }
 
 /// 构建 OGG page（简化版，单页单段或多段）
-fn build_ogg_page(serial: u32, page_seq: u32, granule: i64, header_type: u8, segments: &[&[u8]]) -> Vec<u8> {
+fn build_ogg_page(
+    serial: u32,
+    page_seq: u32,
+    granule: i64,
+    header_type: u8,
+    segments: &[&[u8]],
+) -> Vec<u8> {
     let total_size: usize = segments.iter().map(|s| s.len()).sum();
 
     // segment table: 每个 255 字节为一个 0xFF 段，最后一段为剩余长度
@@ -523,7 +535,8 @@ impl Mp4Recorder {
             sample_rate: 0,
             channels: 0,
             is_audio: false,
-            ivf_header_written: codec == lm_core::CodecType::Vp8 || codec == lm_core::CodecType::Vp9,
+            ivf_header_written: codec == lm_core::CodecType::Vp8
+                || codec == lm_core::CodecType::Vp9,
             first_timestamp: None,
             start_time: std::time::Instant::now(),
             written_bytes: 0,
@@ -634,7 +647,9 @@ impl Mp4Recorder {
         }
 
         let duration_ms = self.start_time.elapsed().as_millis() as u64;
-        let file_size = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(self.written_bytes as u64);
+        let file_size = std::fs::metadata(&output_path)
+            .map(|m| m.len())
+            .unwrap_or(self.written_bytes as u64);
 
         Ok(RecordingResult {
             file_path: output_path,
@@ -691,7 +706,9 @@ impl Recorder {
             Self::Wav(w) => w.write_frame(frame).await,
             Self::Opus(o) => o.write_frame(frame).await,
             Self::Mp4(m) => m.write_audio_frame(frame).await,
-            Self::Pcap(_) => Err(anyhow::anyhow!("PCAP recorder uses write_rtp_packet, not write_frame")),
+            Self::Pcap(_) => Err(anyhow::anyhow!(
+                "PCAP recorder uses write_rtp_packet, not write_frame"
+            )),
         }
     }
 
@@ -931,7 +948,9 @@ impl SegmentRecorder {
         let mut file = File::create(&path).await?;
 
         // 写入 IVF header（VP8/VP9）
-        if self.video_codec == lm_core::CodecType::Vp8 || self.video_codec == lm_core::CodecType::Vp9 {
+        if self.video_codec == lm_core::CodecType::Vp8
+            || self.video_codec == lm_core::CodecType::Vp9
+        {
             let fourcc: [u8; 4] = if self.video_codec == lm_core::CodecType::Vp8 {
                 *b"VP80"
             } else {
@@ -1000,12 +1019,15 @@ impl SegmentRecorder {
             self.remux_to_mp4(seg, &output_path).await?;
         } else {
             // 多分段：先合并再转封装
-            let merged_path = self.output_dir.join(format!("{}_merged.{}", self.recording_id,
+            let merged_path = self.output_dir.join(format!(
+                "{}_merged.{}",
+                self.recording_id,
                 match self.video_codec {
                     lm_core::CodecType::Vp8 | lm_core::CodecType::Vp9 => "ivf",
                     lm_core::CodecType::H264 => "h264",
                     _ => "raw",
-                }));
+                }
+            ));
             self.merge_segments(&merged_path).await?;
             self.remux_to_mp4(&merged_path, &output_path).await?;
             // 清理合并文件
@@ -1053,8 +1075,12 @@ impl SegmentRecorder {
 
     /// 用 ffmpeg 转封装为 MP4
     async fn remux_to_mp4(&self, input: &Path, output: &Path) -> Result<()> {
-        let input_str = input.to_str().ok_or_else(|| anyhow::anyhow!("invalid input path"))?;
-        let output_str = output.to_str().ok_or_else(|| anyhow::anyhow!("invalid output path"))?;
+        let input_str = input
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid input path"))?;
+        let output_str = output
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid output path"))?;
 
         let result = tokio::process::Command::new("ffmpeg")
             .args(["-y", "-i", input_str, "-c", "copy", output_str])
@@ -1198,9 +1224,10 @@ mod tests {
         // size = 1024 = 0x400 LE
         assert_eq!(u32::from_le_bytes([h[0], h[1], h[2], h[3]]), 1024);
         // timestamp = 123456 LE
-        assert_eq!(u64::from_le_bytes([
-            h[4], h[5], h[6], h[7], h[8], h[9], h[10], h[11]
-        ]), 123456);
+        assert_eq!(
+            u64::from_le_bytes([h[4], h[5], h[6], h[7], h[8], h[9], h[10], h[11]]),
+            123456
+        );
     }
 
     #[test]
@@ -1319,7 +1346,9 @@ mod tests {
 
         let mut rec = PcapRecorder::create(path).await.unwrap();
         // 写入几个模拟 RTP 包
-        let rtp_packet = [0x80, 0x60, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0xAB, 0xCD];
+        let rtp_packet = [
+            0x80, 0x60, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0xAB, 0xCD,
+        ];
         for _ in 0..3 {
             rec.write_rtp_packet(&rtp_packet).await.unwrap();
         }
@@ -1362,7 +1391,9 @@ mod tests {
         let path = dir.path().join("test_video.mp4");
         let path_str = path.to_str().unwrap();
 
-        let mut rec = Mp4Recorder::create_video(path_str, lm_core::CodecType::H264).await.unwrap();
+        let mut rec = Mp4Recorder::create_video(path_str, lm_core::CodecType::H264)
+            .await
+            .unwrap();
         // 写入模拟 H264 帧（SPS+PPS+IDR 简化）
         let frame = lm_core::MediaFrame::video(
             lm_core::CodecType::H264,
@@ -1465,6 +1496,9 @@ mod tests {
         // header_type = 0x02 (BOS)
         assert_eq!(page[5], 0x02);
         // serial number
-        assert_eq!(u32::from_le_bytes([page[14], page[15], page[16], page[17]]), 12345);
+        assert_eq!(
+            u32::from_le_bytes([page[14], page[15], page[16], page[17]]),
+            12345
+        );
     }
 }

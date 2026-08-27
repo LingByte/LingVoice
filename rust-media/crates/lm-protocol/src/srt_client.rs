@@ -153,7 +153,12 @@ const CTRL_TYPE_SHUTDOWN: u16 = 0x0002;
 
 /// 构造 SRT handshake 包
 /// SRT control packet: 0x8000 | type(15bits) + subtype(16bits) + ...
-fn build_handshake_packet(_version: u32, _encryption: u32, hs_type: HandshakeType, socket_id: u32) -> Vec<u8> {
+fn build_handshake_packet(
+    _version: u32,
+    _encryption: u32,
+    hs_type: HandshakeType,
+    socket_id: u32,
+) -> Vec<u8> {
     // SRT handshake: 16 (control header) + 48 (handshake data) = 64 bytes
     let mut packet = vec![0u8; 64];
 
@@ -252,7 +257,9 @@ fn build_shutdown_packet(socket_id: u32) -> Vec<u8> {
 
 /// 解析 SRT URL: srt://host:port?streamid=xxx
 fn parse_srt_url(url: &str) -> Result<(String, u16, String)> {
-    let url = url.strip_prefix("srt://").ok_or_else(|| anyhow!("invalid SRT URL"))?;
+    let url = url
+        .strip_prefix("srt://")
+        .ok_or_else(|| anyhow!("invalid SRT URL"))?;
     let (host_port, query) = url.split_once('?').unwrap_or((url, ""));
     let (host, port) = if let Some((h, p)) = host_port.split_once(':') {
         (h.to_string(), p.parse::<u16>().unwrap_or(9000))
@@ -290,9 +297,15 @@ mod tests {
         // Data packet: seq(4) + msg_no(4) + timestamp(4) + dst_socket_id(4) + payload
         assert_eq!(packet.len(), 16 + payload.len());
         // seq = 1
-        assert_eq!(u32::from_be_bytes([packet[0], packet[1], packet[2], packet[3]]), 1);
+        assert_eq!(
+            u32::from_be_bytes([packet[0], packet[1], packet[2], packet[3]]),
+            1
+        );
         // timestamp = 1000
-        assert_eq!(u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]), 1000);
+        assert_eq!(
+            u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]),
+            1000
+        );
     }
 
     #[test]

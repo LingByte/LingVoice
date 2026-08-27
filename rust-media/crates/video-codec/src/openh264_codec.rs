@@ -3,7 +3,7 @@
 //! OpenH264 是 Cisco 开源的 H.264 实现，支持 Baseline/Main/High profile。
 //! openh264 crate 默认下载预编译二进制，无需系统依赖。
 
-use crate::{EncodedFrame, VideoCodecError, YuvFrame, VideoDecoder, VideoEncoder};
+use crate::{EncodedFrame, VideoCodecError, VideoDecoder, VideoEncoder, YuvFrame};
 use openh264::decoder::{Decoder, DecoderConfig};
 use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate, FrameType};
 use openh264::formats::YUVSource;
@@ -31,8 +31,7 @@ impl VideoDecoder for Openh264Decoder {
             .decode(data)
             .map_err(|e| VideoCodecError::DecodeFailed(e.to_string()))?;
 
-        let yuv = yuv
-            .ok_or_else(|| VideoCodecError::DecodeFailed("no output frame yet".into()))?;
+        let yuv = yuv.ok_or_else(|| VideoCodecError::DecodeFailed("no output frame yet".into()))?;
 
         let (width, height) = yuv.dimensions();
         if width == 0 || height == 0 {
@@ -146,8 +145,7 @@ impl VideoEncoder for Openh264Encoder {
         };
 
         // 检查帧类型
-        let keyframe = stream.frame_type() == FrameType::IDR
-            || stream.frame_type() == FrameType::I;
+        let keyframe = stream.frame_type() == FrameType::IDR || stream.frame_type() == FrameType::I;
 
         // 收集所有 NAL 单元，合并为 Annex-B 格式
         let mut data = Vec::new();

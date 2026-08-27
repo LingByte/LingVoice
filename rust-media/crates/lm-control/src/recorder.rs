@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use lm_core::{CodecType, MediaFrame, SessionId, StreamSink, TrackId, TrackKind};
-use lm_recorder::{RecordingFormat, Recorder, RecordingResult};
+use lm_recorder::{Recorder, RecordingFormat, RecordingResult};
 use lm_stream::{MediaStream, StreamId, StreamRegistry};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -280,8 +280,10 @@ impl RecordingManager {
             _video_sink: video_sink,
         });
 
-        self.recordings.insert(recording_id.to_string(), task.clone());
-        self.session_recordings.insert(session_id, recording_id.to_string());
+        self.recordings
+            .insert(recording_id.to_string(), task.clone());
+        self.session_recordings
+            .insert(session_id, recording_id.to_string());
 
         info!(recording_id, session = %sid_str, "recording started");
         Ok(())
@@ -322,11 +324,10 @@ impl RecordingManager {
             info!(recording_id, path = %task.video_path, "video recording closed");
         }
 
-        let file_size = audio_result
-            .as_ref()
-            .map(|r| r.file_size)
-            .unwrap_or(0)
-            + std::fs::metadata(&task.video_path).map(|m| m.len()).unwrap_or(0);
+        let file_size = audio_result.as_ref().map(|r| r.file_size).unwrap_or(0)
+            + std::fs::metadata(&task.video_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
 
         let file_path = if task.video_path.is_empty() {
             audio_result.map(|r| r.file_path).unwrap_or_default()
@@ -468,7 +469,9 @@ async fn run_video_recording(
 
                             // 从 keyframe 提取 dimensions，更新 IVF header
                             if !dimensions_set && frame.keyframe {
-                                if let Some((w, h)) = lm_depacketizer::vp8_extract_dimensions(&frame.data) {
+                                if let Some((w, h)) =
+                                    lm_depacketizer::vp8_extract_dimensions(&frame.data)
+                                {
                                     info!(
                                         recording_id = %recording_id,
                                         width = w, height = h,

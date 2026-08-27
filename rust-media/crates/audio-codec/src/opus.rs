@@ -11,8 +11,8 @@ use opus_rs::{Application, OpusDecoder as OpusDecoderRaw, OpusEncoder as OpusEnc
 const OPUS_MAX_FRAME: usize = 960; // 20 ms @ 48 kHz per channel
 const OPUS_MAX_CHANNELS: usize = 2;
 const OPUS_MAX_SAMPLES: usize = OPUS_MAX_FRAME * OPUS_MAX_CHANNELS; // 1920
-// RFC 6716: a single Opus packet carries at most 1276 bytes. Used by the
-// std-only `encode` helper's scratch packet buffer.
+                                                                    // RFC 6716: a single Opus packet carries at most 1276 bytes. Used by the
+                                                                    // std-only `encode` helper's scratch packet buffer.
 #[cfg(feature = "std")]
 const OPUS_MAX_PACKET: usize = 1276;
 

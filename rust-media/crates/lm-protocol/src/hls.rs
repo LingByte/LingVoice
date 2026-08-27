@@ -122,7 +122,10 @@ impl HlsPlaylist {
         // header
         m3u8.push_str("#EXTM3U\n");
         m3u8.push_str("#EXT-X-VERSION:6\n");
-        m3u8.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", self.config.segment_duration.ceil() as u32));
+        m3u8.push_str(&format!(
+            "#EXT-X-TARGETDURATION:{}\n",
+            self.config.segment_duration.ceil() as u32
+        ));
         m3u8.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", self.media_sequence));
 
         match self.config.playlist_type {
@@ -241,7 +244,10 @@ impl HlsRemuxer {
             self.config.segment_duration
         };
 
-        let filename = format!("{}_seg{:04}.ts", self.config.stream_name, self.current_segment_index);
+        let filename = format!(
+            "{}_seg{:04}.ts",
+            self.config.stream_name, self.current_segment_index
+        );
         let segment = HlsSegment {
             index: self.current_segment_index,
             filename: filename.clone(),
@@ -298,7 +304,10 @@ impl Remuxer for HlsRemuxer {
         }
 
         // 第一个关键帧
-        if self.current_segment_start_ts.is_none() && frame.kind == TrackKind::Video && frame.keyframe {
+        if self.current_segment_start_ts.is_none()
+            && frame.kind == TrackKind::Video
+            && frame.keyframe
+        {
             self.current_segment_start_ts = Some(frame.timestamp);
         }
 
@@ -370,7 +379,13 @@ mod tests {
         remuxer.push_frame(&kf1);
 
         // P 帧（ts=90000 = 1秒）
-        let pf = MediaFrame::video(CodecType::H264, 90000, bytes::Bytes::from(vec![2]), 1, false);
+        let pf = MediaFrame::video(
+            CodecType::H264,
+            90000,
+            bytes::Bytes::from(vec![2]),
+            1,
+            false,
+        );
         remuxer.push_frame(&pf);
 
         // 第二个关键帧（ts=91000 > 1秒）→ 触发切分
@@ -417,7 +432,11 @@ mod tests {
 
         for (j, &(pos, sc_len)) in nalus.iter().enumerate() {
             let nal_type = h264_data[pos + sc_len] & 0x1F;
-            let end = if j + 1 < nalus.len() { nalus[j + 1].0 } else { h264_data.len() };
+            let end = if j + 1 < nalus.len() {
+                nalus[j + 1].0
+            } else {
+                h264_data.len()
+            };
             let nal_data = &h264_data[pos..end];
 
             match nal_type {
@@ -504,7 +523,10 @@ mod tests {
         let playlist_content = playlist.content();
         println!("\nPlaylist:\n{}", playlist_content);
         assert!(playlist_content.contains("#EXTM3U"), "invalid playlist");
-        assert!(playlist_content.contains(".ts"), "no .ts segments in playlist");
+        assert!(
+            playlist_content.contains(".ts"),
+            "no .ts segments in playlist"
+        );
 
         assert!(all_ok, "some segments failed ffprobe validation");
     }

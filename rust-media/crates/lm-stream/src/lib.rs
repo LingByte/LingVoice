@@ -367,7 +367,10 @@ impl StreamRegistry {
         self.streams.insert(id.clone(), stream);
 
         if let Some(room) = &room_id {
-            let mut entry = self.room_streams.entry(room.clone()).or_insert_with(Vec::new);
+            let mut entry = self
+                .room_streams
+                .entry(room.clone())
+                .or_insert_with(Vec::new);
             entry.push(id);
         }
     }
@@ -590,12 +593,7 @@ struct SubscriberEntry {
 
 impl SimulcastStream {
     /// 创建 Simulcast 流
-    pub fn new(
-        id: StreamId,
-        room_id: Option<String>,
-        codec: CodecType,
-        clock_rate: u32,
-    ) -> Self {
+    pub fn new(id: StreamId, room_id: Option<String>, codec: CodecType, clock_rate: u32) -> Self {
         let mut layer_enabled = std::collections::HashMap::new();
         layer_enabled.insert(SimulcastLayer::Low, true);
         layer_enabled.insert(SimulcastLayer::Mid, true);
@@ -684,7 +682,10 @@ impl SimulcastStream {
         } else {
             // 无 RID 时通过 SSRC 匹配
             let metas = self.layer_metas.read();
-            metas.iter().find(|(_, m)| m.ssrc == pkt.ssrc).map(|(l, _)| *l)
+            metas
+                .iter()
+                .find(|(_, m)| m.ssrc == pkt.ssrc)
+                .map(|(l, _)| *l)
         };
 
         let layer = match layer {
@@ -785,8 +786,7 @@ impl SimulcastStream {
                 // 如果是自适应策略，检查是否需要切换层
                 if entry.policy == LayerSelectionPolicy::Adaptive {
                     let new_layer = self.select_layer_for_policy(&entry.policy, bandwidth_kbps);
-                    let current_layer =
-                        self.select_layer_for_policy(&entry.policy, 0); // 简化
+                    let current_layer = self.select_layer_for_policy(&entry.policy, 0); // 简化
                     if new_layer != current_layer {
                         info!(
                             stream = ?self.id,
@@ -851,7 +851,8 @@ impl SimulcastStream {
                     } else {
                         SimulcastLayer::Low
                     }
-                } else if bandwidth_kbps >= high_bitrate && layers.contains_key(&SimulcastLayer::High)
+                } else if bandwidth_kbps >= high_bitrate
+                    && layers.contains_key(&SimulcastLayer::High)
                 {
                     SimulcastLayer::High
                 } else if bandwidth_kbps >= mid_bitrate && layers.contains_key(&SimulcastLayer::Mid)
@@ -876,7 +877,11 @@ impl SimulcastStream {
         }
 
         let mut enabled = self.layer_enabled.write();
-        for layer in [SimulcastLayer::Low, SimulcastLayer::Mid, SimulcastLayer::High] {
+        for layer in [
+            SimulcastLayer::Low,
+            SimulcastLayer::Mid,
+            SimulcastLayer::High,
+        ] {
             let is_needed = needed_layers.contains(&layer);
             let was_enabled = *enabled.get(&layer).unwrap_or(&true);
             *enabled.entry(layer).or_insert(true) = is_needed;
@@ -900,11 +905,7 @@ impl SimulcastStream {
     /// 切换订阅者的层
     ///
     /// 切换时请求关键帧（通过 RTCP PLI），确保新层可正确解码。
-    pub fn switch_layer(
-        &self,
-        sink: &Arc<dyn StreamSink>,
-        new_layer: SimulcastLayer,
-    ) -> bool {
+    pub fn switch_layer(&self, sink: &Arc<dyn StreamSink>, new_layer: SimulcastLayer) -> bool {
         let mut subs = self.subscribers.write();
 
         let mut found = false;
@@ -1033,9 +1034,21 @@ mod tests {
     fn test_gop_cache_replay() {
         let mut cache = GopCache::new(1, 2000);
 
-        let kf = MediaFrame::video(CodecType::Vp8, 1000, bytes::Bytes::from(vec![1, 2, 3]), 1, true);
+        let kf = MediaFrame::video(
+            CodecType::Vp8,
+            1000,
+            bytes::Bytes::from(vec![1, 2, 3]),
+            1,
+            true,
+        );
         cache.save(&kf);
-        let pf = MediaFrame::video(CodecType::Vp8, 2000, bytes::Bytes::from(vec![4, 5, 6]), 1, false);
+        let pf = MediaFrame::video(
+            CodecType::Vp8,
+            2000,
+            bytes::Bytes::from(vec![4, 5, 6]),
+            1,
+            false,
+        );
         cache.save(&pf);
 
         let collector = Arc::new(FrameCollector::new());
@@ -1053,7 +1066,12 @@ mod tests {
         let mut cache = GopCache::new(1, 5); // max 5 frames per GOP
 
         for i in 0..20 {
-            let frame = MediaFrame::audio(CodecType::Opus, i * 960, bytes::Bytes::from(vec![i as u8]), 1);
+            let frame = MediaFrame::audio(
+                CodecType::Opus,
+                i * 960,
+                bytes::Bytes::from(vec![i as u8]),
+                1,
+            );
             cache.save(&frame);
         }
 
@@ -1352,7 +1370,10 @@ mod tests {
         );
 
         let collector: Arc<dyn StreamSink> = Arc::new(FrameCollector::new());
-        sim.add_subscriber(collector.clone(), LayerSelectionPolicy::Fixed(SimulcastLayer::Low));
+        sim.add_subscriber(
+            collector.clone(),
+            LayerSelectionPolicy::Fixed(SimulcastLayer::Low),
+        );
 
         // 切换到 high 层
         let switched = sim.switch_layer(&collector, SimulcastLayer::High);

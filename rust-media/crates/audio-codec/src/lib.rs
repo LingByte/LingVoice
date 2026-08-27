@@ -20,7 +20,7 @@ pub mod telephone_event;
 #[cfg(feature = "std")]
 pub use resampler::Resampler;
 #[cfg(feature = "std")]
-pub use resampler::{BoxedResampler, resample};
+pub use resampler::{resample, BoxedResampler};
 
 pub type Sample = i16;
 

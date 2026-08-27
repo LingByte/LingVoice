@@ -155,10 +155,7 @@ pub struct RoutePlan {
 ///
 /// 当源与目标编解码一致时，直接转发 RTP payload，无需解码/重编码。
 /// 参考 RustPBX RewriteRelay：只重写 SSRC/PT/seq/timestamp，payload 不变。
-pub fn relay_fast_path(
-    subscribers: &[Arc<dyn RelaySubscriber>],
-    payload: &[u8],
-) -> RelayResult {
+pub fn relay_fast_path(subscribers: &[Arc<dyn RelaySubscriber>], payload: &[u8]) -> RelayResult {
     let mut delivered = 0;
     let mut dropped = 0;
 

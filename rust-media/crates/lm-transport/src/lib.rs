@@ -5,7 +5,7 @@
 
 pub use lm_core::Transport;
 
-use bytes::{Bytes, BytesMut, BufMut};
+use bytes::{BufMut, Bytes, BytesMut};
 
 // ============================================================================
 // RTP 包

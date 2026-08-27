@@ -3,8 +3,8 @@
 //! libvpx 是 Google 的 VP8/VP9 编解码库，WebRTC 默认使用。
 //! 本模块通过 FFI 直接调用 libvpx C API，无需 nightly Rust。
 
-use crate::{EncodedFrame, VideoCodecError, YuvFrame, VideoDecoder, VideoEncoder};
-use libc::{c_int, c_uint, c_void, c_char};
+use crate::{EncodedFrame, VideoCodecError, VideoDecoder, VideoEncoder, YuvFrame};
+use libc::{c_char, c_int, c_uint, c_void};
 use std::ptr;
 
 // ============================================================================
@@ -49,40 +49,40 @@ impl Default for VpxCodecEncCfg {
 
 #[repr(C)]
 pub struct VpxCodecCtx {
-    name: *const c_char,         // 0 (8 bytes)
-    iface: *mut c_void,          // 8 (8 bytes)
-    err: c_int,                  // 16 (4 bytes)
-    _pad1: c_int,                // 20 (4 bytes padding)
-    err_detail: *const c_char,   // 24 (8 bytes)
-    init_flags: i64,             // 32 (8 bytes, vpx_codec_flags_t = long)
-    config: *const c_void,       // 40 (8 bytes, union)
-    priv_: *mut c_void,          // 48 (8 bytes)
+    name: *const c_char,       // 0 (8 bytes)
+    iface: *mut c_void,        // 8 (8 bytes)
+    err: c_int,                // 16 (4 bytes)
+    _pad1: c_int,              // 20 (4 bytes padding)
+    err_detail: *const c_char, // 24 (8 bytes)
+    init_flags: i64,           // 32 (8 bytes, vpx_codec_flags_t = long)
+    config: *const c_void,     // 40 (8 bytes, union)
+    priv_: *mut c_void,        // 48 (8 bytes)
 }
 
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct VpxImage {
-    fmt: c_int,                  // 0 (4)
-    cs: c_int,                   // 4 (4) - vpx_color_space_t
-    range: c_int,                // 8 (4) - vpx_color_range_t
-    w: c_uint,                   // 12 (4)
-    h: c_uint,                   // 16 (4)
-    bit_depth: c_uint,           // 20 (4)
-    d_w: c_uint,                 // 24 (4)
-    d_h: c_uint,                 // 28 (4)
-    r_w: c_uint,                 // 32 (4)
-    r_h: c_uint,                 // 36 (4)
-    x_chroma_shift: c_uint,      // 40 (4)
-    y_chroma_shift: c_uint,      // 44 (4)
-    planes: [*mut u8; 4],        // 48 (32 bytes)
-    stride: [c_int; 4],          // 80 (16 bytes)
-    bps: c_int,                  // 96 (4) - bits per sample
-    _pad1: c_int,                // 100 (4) - padding to align pointer
-    user_priv: *mut c_void,      // 104 (8 bytes)
-    img_data: *mut u8,           // 112 (8 bytes)
-    img_data_owner: c_int,       // 120 (4)
-    self_allocd: c_int,          // 124 (4)
-    fb_priv: *mut c_void,        // 128 (8 bytes)
+    fmt: c_int,             // 0 (4)
+    cs: c_int,              // 4 (4) - vpx_color_space_t
+    range: c_int,           // 8 (4) - vpx_color_range_t
+    w: c_uint,              // 12 (4)
+    h: c_uint,              // 16 (4)
+    bit_depth: c_uint,      // 20 (4)
+    d_w: c_uint,            // 24 (4)
+    d_h: c_uint,            // 28 (4)
+    r_w: c_uint,            // 32 (4)
+    r_h: c_uint,            // 36 (4)
+    x_chroma_shift: c_uint, // 40 (4)
+    y_chroma_shift: c_uint, // 44 (4)
+    planes: [*mut u8; 4],   // 48 (32 bytes)
+    stride: [c_int; 4],     // 80 (16 bytes)
+    bps: c_int,             // 96 (4) - bits per sample
+    _pad1: c_int,           // 100 (4) - padding to align pointer
+    user_priv: *mut c_void, // 104 (8 bytes)
+    img_data: *mut u8,      // 112 (8 bytes)
+    img_data_owner: c_int,  // 120 (4)
+    self_allocd: c_int,     // 124 (4)
+    fb_priv: *mut c_void,   // 128 (8 bytes)
 }
 
 #[repr(C)]
@@ -198,10 +198,7 @@ extern "C" {
         deadline: c_int,
     ) -> c_int;
 
-    fn vpx_codec_get_frame(
-        ctx: *mut VpxCodecCtx,
-        iter: *mut *mut VpxCodecIter,
-    ) -> *mut VpxImage;
+    fn vpx_codec_get_frame(ctx: *mut VpxCodecCtx, iter: *mut *mut VpxCodecIter) -> *mut VpxImage;
 
     fn vpx_codec_destroy(ctx: *mut VpxCodecCtx) -> c_int;
 
@@ -233,10 +230,7 @@ extern "C" {
         iter: *mut *mut VpxCodecIter,
     ) -> *const VpxCodecCxPkt;
 
-    fn vpx_codec_enc_config_set(
-        ctx: *mut VpxCodecCtx,
-        cfg: *const VpxCodecEncCfg,
-    ) -> c_int;
+    fn vpx_codec_enc_config_set(ctx: *mut VpxCodecCtx, cfg: *const VpxCodecEncCfg) -> c_int;
 
     fn vpx_img_alloc(
         img: *mut VpxImage,
@@ -285,7 +279,9 @@ impl VpxDecoder {
             panic!("Failed to get VP8 decoder interface");
         }
 
-        let ret = unsafe { vpx_codec_dec_init_ver(&mut ctx, iface, ptr::null(), 0, VPX_DECODER_ABI_VERSION) };
+        let ret = unsafe {
+            vpx_codec_dec_init_ver(&mut ctx, iface, ptr::null(), 0, VPX_DECODER_ABI_VERSION)
+        };
         if ret != 0 {
             let err = unsafe { vpx_codec_error(&mut ctx) };
             let err_str = if !err.is_null() {
@@ -314,13 +310,7 @@ impl Drop for VpxDecoder {
 impl VideoDecoder for VpxDecoder {
     fn decode(&mut self, data: &[u8], timestamp: u64) -> Result<YuvFrame, VideoCodecError> {
         let ret = unsafe {
-            vpx_codec_decode(
-                &mut self.ctx,
-                data.as_ptr(),
-                data.len(),
-                ptr::null_mut(),
-                0,
-            )
+            vpx_codec_decode(&mut self.ctx, data.as_ptr(), data.len(), ptr::null_mut(), 0)
         };
         if ret != 0 {
             let err = unsafe { vpx_codec_error(&mut self.ctx) };
@@ -365,13 +355,11 @@ impl VideoDecoder for VpxDecoder {
         let u_stride = img_ref.stride[1] as usize;
         let v_stride = img_ref.stride[2] as usize;
         for row in 0..uv_h {
-            let src_u = unsafe {
-                std::slice::from_raw_parts(img_ref.planes[1].add(row * u_stride), uv_w)
-            };
+            let src_u =
+                unsafe { std::slice::from_raw_parts(img_ref.planes[1].add(row * u_stride), uv_w) };
             u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
-            let src_v = unsafe {
-                std::slice::from_raw_parts(img_ref.planes[2].add(row * v_stride), uv_w)
-            };
+            let src_v =
+                unsafe { std::slice::from_raw_parts(img_ref.planes[2].add(row * v_stride), uv_w) };
             v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
         }
 
@@ -443,7 +431,8 @@ impl VpxEncoder {
         cfg.kf_max_dist = 300; // 关键帧间隔
         cfg.g_threads = 2;
 
-        let ret = unsafe { vpx_codec_enc_init_ver(&mut ctx, iface, &cfg, 0, VPX_ENCODER_ABI_VERSION) };
+        let ret =
+            unsafe { vpx_codec_enc_init_ver(&mut ctx, iface, &cfg, 0, VPX_ENCODER_ABI_VERSION) };
         if ret != 0 {
             let err = unsafe { vpx_codec_error(&mut ctx) };
             let msg = if !err.is_null() {
@@ -479,7 +468,15 @@ impl VpxEncoder {
             fb_priv: ptr::null_mut(),
         };
 
-        let img_ptr = unsafe { vpx_img_alloc(&mut img, VPX_IMG_FMT_I420, width as c_uint, height as c_uint, 32) };
+        let img_ptr = unsafe {
+            vpx_img_alloc(
+                &mut img,
+                VPX_IMG_FMT_I420,
+                width as c_uint,
+                height as c_uint,
+                32,
+            )
+        };
         if img_ptr.is_null() {
             unsafe { vpx_codec_destroy(&mut ctx) };
             return Err(VideoCodecError::EncodeFailed("vpx_img_alloc failed".into()));
@@ -516,7 +513,8 @@ impl VideoEncoder for VpxEncoder {
 
         for row in 0..self.height as usize {
             let dst = unsafe { self.img.planes[0].add(row * y_stride) };
-            let src = &frame.y[row * frame.y_stride()..row * frame.y_stride() + self.width as usize];
+            let src =
+                &frame.y[row * frame.y_stride()..row * frame.y_stride() + self.width as usize];
             unsafe {
                 ptr::copy_nonoverlapping(src.as_ptr(), dst, self.width as usize);
             }
@@ -527,11 +525,15 @@ impl VideoEncoder for VpxEncoder {
         for row in 0..uv_h {
             let dst_u = unsafe { self.img.planes[1].add(row * u_stride) };
             let src_u = &frame.u[row * frame.uv_stride()..row * frame.uv_stride() + uv_w];
-            unsafe { ptr::copy_nonoverlapping(src_u.as_ptr(), dst_u, uv_w); }
+            unsafe {
+                ptr::copy_nonoverlapping(src_u.as_ptr(), dst_u, uv_w);
+            }
 
             let dst_v = unsafe { self.img.planes[2].add(row * v_stride) };
             let src_v = &frame.v[row * frame.uv_stride()..row * frame.uv_stride() + uv_w];
-            unsafe { ptr::copy_nonoverlapping(src_v.as_ptr(), dst_v, uv_w); }
+            unsafe {
+                ptr::copy_nonoverlapping(src_v.as_ptr(), dst_v, uv_w);
+            }
         }
 
         // 编码

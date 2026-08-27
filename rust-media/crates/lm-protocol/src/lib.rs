@@ -16,8 +16,8 @@
 //! Phase 5: 协议转封装框架 + HLS/RTMP/HTTP-FLV remuxer
 //! Phase 6-10: 各协议 ingest/output 适配器
 
-use std::sync::Arc;
 use lm_core::{CodecType, MediaFrame, StreamSink, TrackKind};
+use std::sync::Arc;
 use tracing::{info, warn};
 
 // ============================================================================
@@ -137,8 +137,16 @@ pub struct RemuxPipeline {
 }
 
 impl RemuxPipeline {
-    pub fn new(protocol: Protocol, remuxer: Box<dyn Remuxer>, output: Box<dyn ProtocolOutput>) -> Self {
-        Self { protocol, remuxer, output }
+    pub fn new(
+        protocol: Protocol,
+        remuxer: Box<dyn Remuxer>,
+        output: Box<dyn ProtocolOutput>,
+    ) -> Self {
+        Self {
+            protocol,
+            remuxer,
+            output,
+        }
     }
 
     /// 处理一帧
@@ -201,7 +209,7 @@ impl StreamSink for RemuxSink {
 // ============================================================================
 
 mod hls;
-pub use hls::{HlsRemuxer, HlsPlaylist, HlsConfig};
+pub use hls::{HlsConfig, HlsPlaylist, HlsRemuxer};
 
 // ============================================================================
 // MPEG-TS Muxer（HLS 使用的 TS 封装）
@@ -215,14 +223,14 @@ pub use ts::{TsMuxer, TS_PACKET_SIZE};
 // ============================================================================
 
 mod flv;
-pub use flv::{FlvRemuxer, FlvHeader};
+pub use flv::{FlvHeader, FlvRemuxer};
 
 // ============================================================================
 // Phase 5: RTMP Remuxer（输出侧）
 // ============================================================================
 
 mod rtmp;
-pub use rtmp::{RtmpRemuxer, RtmpHandshake};
+pub use rtmp::{RtmpHandshake, RtmpRemuxer};
 
 // ============================================================================
 // Phase 7: RTSP Demuxer/Remuxer
@@ -250,7 +258,7 @@ pub use gb28181::{Gb28181Demuxer, Gb28181Session};
 // ============================================================================
 
 mod whip_whep;
-pub use whip_whep::{WhipHandler, WhepHandler, WhipWhepConfig};
+pub use whip_whep::{WhepHandler, WhipHandler, WhipWhepConfig};
 
 // ============================================================================
 // 协议输出客户端（完整握手 + 信令 + 数据推送）

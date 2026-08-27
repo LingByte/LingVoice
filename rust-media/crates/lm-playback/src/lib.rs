@@ -15,11 +15,11 @@
 //! ```
 
 use anyhow::{anyhow, Result};
-use lm_core::{MediaFrame, CodecType, TrackKind};
+use lm_core::{CodecType, MediaFrame, TrackKind};
 use lm_stream::StreamRegistry;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::process::Command;
 use tracing::{info, warn};
 
@@ -66,14 +66,19 @@ impl Player {
 
     /// 获取文件信息（时长、编码等）通过 ffprobe
     pub async fn probe(&mut self) -> Result<MediaInfo> {
-        let path_str = self.file_path.to_str()
+        let path_str = self
+            .file_path
+            .to_str()
             .ok_or_else(|| anyhow!("invalid path"))?;
 
         let output = Command::new("ffprobe")
             .args([
-                "-v", "quiet",
-                "-print_format", "json",
-                "-show_format", "-show_streams",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
                 path_str,
             ])
             .output()
@@ -105,7 +110,9 @@ impl Player {
         self.child_stopped.store(false, Ordering::Relaxed);
         self.state = PlaybackState::Playing;
 
-        let path_str = self.file_path.to_str()
+        let path_str = self
+            .file_path
+            .to_str()
             .ok_or_else(|| anyhow!("invalid path"))?;
 
         info!(path = path_str, speed = self.speed, "playback started");
@@ -118,7 +125,11 @@ impl Player {
         let speed = self.speed;
         tokio::spawn(async move {
             let speed_filter = if (speed - 1.0).abs() > 0.01 {
-                format!("-filter_complex [0:v]setpts={}/PTS[v];[0:a]atempo={}[a]", 1.0/speed, speed)
+                format!(
+                    "-filter_complex [0:v]setpts={}/PTS[v];[0:a]atempo={}[a]",
+                    1.0 / speed,
+                    speed
+                )
             } else {
                 String::new()
             };
@@ -231,15 +242,25 @@ impl Player {
             tokio::spawn(async move {
                 let mut cmd = Command::new("ffmpeg");
                 cmd.args([
-                    "-ss", &format!("{seek_pos}"),
-                    "-re", "-i", path.to_str().unwrap_or(""),
+                    "-ss",
+                    &format!("{seek_pos}"),
+                    "-re",
+                    "-i",
+                    path.to_str().unwrap_or(""),
                 ]);
 
                 if (speed - 1.0).abs() > 0.01 {
                     cmd.args([
                         "-filter_complex",
-                        &format!("[0:v]setpts={}/PTS[v];[0:a]atempo={}[a]", 1.0/speed, speed),
-                        "-map", "[v]", "-map", "[a]",
+                        &format!(
+                            "[0:v]setpts={}/PTS[v];[0:a]atempo={}[a]",
+                            1.0 / speed,
+                            speed
+                        ),
+                        "-map",
+                        "[v]",
+                        "-map",
+                        "[a]",
                     ]);
                 } else {
                     cmd.args(["-c", "copy"]);
@@ -336,7 +357,12 @@ fn parse_ffprobe_json(json: &str) -> Result<MediaInfo> {
             let end = rest[1..].find('"').map(|p| p + 1).unwrap_or(0);
             if end > 0 {
                 let codec = &rest[1..end];
-                if codec.starts_with('h') || codec == "h264" || codec == "hevc" || codec == "vp8" || codec == "vp9" {
+                if codec.starts_with('h')
+                    || codec == "h264"
+                    || codec == "hevc"
+                    || codec == "vp8"
+                    || codec == "vp9"
+                {
                     info.video_codec = Some(codec.to_string());
                 } else {
                     info.audio_codec = Some(codec.to_string());
@@ -348,14 +374,18 @@ fn parse_ffprobe_json(json: &str) -> Result<MediaInfo> {
     // 查找 width/height
     if let Some(idx) = json.find("\"width\"") {
         let rest = &json[idx + 8..];
-        let end = rest.find(|c: char| c == ',' || c == '}').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| c == ',' || c == '}')
+            .unwrap_or(rest.len());
         if let Ok(w) = rest[..end].trim().parse::<u32>() {
             info.width = Some(w);
         }
     }
     if let Some(idx) = json.find("\"height\"") {
         let rest = &json[idx + 9..];
-        let end = rest.find(|c: char| c == ',' || c == '}').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| c == ',' || c == '}')
+            .unwrap_or(rest.len());
         if let Ok(h) = rest[..end].trim().parse::<u32>() {
             info.height = Some(h);
         }

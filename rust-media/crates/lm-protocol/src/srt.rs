@@ -62,12 +62,9 @@ impl Demuxer for SrtDemuxer {
         let mut frames = Vec::new();
 
         // 尝试视频解包
-        let result = self.video_depacketizer.push_packet(
-            rtp_payload,
-            marker,
-            sequence_number,
-            timestamp,
-        );
+        let result =
+            self.video_depacketizer
+                .push_packet(rtp_payload, marker, sequence_number, timestamp);
 
         if matches!(result, lm_core::DepacketizeResult::FrameComplete) {
             if let Some(frame) = self.video_depacketizer.take_frame() {
@@ -207,12 +204,7 @@ mod tests {
     fn test_srt_remuxer_sequence_increment() {
         let mut remuxer = SrtRemuxer::new();
 
-        let frame = MediaFrame::audio(
-            CodecType::Opus,
-            4800,
-            bytes::Bytes::from(vec![0x01]),
-            1,
-        );
+        let frame = MediaFrame::audio(CodecType::Opus, 4800, bytes::Bytes::from(vec![0x01]), 1);
 
         remuxer.push_frame(&frame);
         let output2 = remuxer.push_frame(&frame);
@@ -226,12 +218,7 @@ mod tests {
     fn test_srt_remuxer_reset() {
         let mut remuxer = SrtRemuxer::new();
 
-        let frame = MediaFrame::audio(
-            CodecType::Opus,
-            4800,
-            bytes::Bytes::from(vec![0x01]),
-            1,
-        );
+        let frame = MediaFrame::audio(CodecType::Opus, 4800, bytes::Bytes::from(vec![0x01]), 1);
 
         remuxer.push_frame(&frame);
         remuxer.reset();

@@ -112,7 +112,10 @@ impl std::fmt::Debug for ConferenceMixer {
             .field("mix_id", &self.mix_id)
             .field("sample_rate", &self.sample_rate)
             .field("frame_size", &self.frame_size)
-            .field("participants", &self.participant_count.load(Ordering::Relaxed))
+            .field(
+                "participants",
+                &self.participant_count.load(Ordering::Relaxed),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -380,7 +383,11 @@ impl ConferenceMixer {
                     .cloned()
                     .collect();
                 for pid in &to_decay {
-                    let h = speaker_hold.get(pid).copied().unwrap_or(0).saturating_sub(1);
+                    let h = speaker_hold
+                        .get(pid)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_sub(1);
                     if h == 0 {
                         speaker_hold.remove(pid);
                         current_speakers.remove(pid);
@@ -607,8 +614,20 @@ mod tests {
         let (tx3, _rx3) = mixer.add_participant("p3").await.unwrap();
 
         // p2 发大声（高能量），p3 发小声（低能量）
-        tx2.send(AudioFrame { samples: vec![30000i16; 160], sample_rate: 8000, timestamp: 0 }).await.unwrap();
-        tx3.send(AudioFrame { samples: vec![100i16; 160], sample_rate: 8000, timestamp: 0 }).await.unwrap();
+        tx2.send(AudioFrame {
+            samples: vec![30000i16; 160],
+            sample_rate: 8000,
+            timestamp: 0,
+        })
+        .await
+        .unwrap();
+        tx3.send(AudioFrame {
+            samples: vec![100i16; 160],
+            sample_rate: 8000,
+            timestamp: 0,
+        })
+        .await
+        .unwrap();
 
         // 等待几个 tick 让 Top-K 选择生效（需要超过 hold_frames 才会切换）
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -619,7 +638,10 @@ mod tests {
         let mixed = received.unwrap();
         assert!(!mixed.samples.is_empty());
         // 混音应该接近 p2 的值（30000），因为 p3 没被选中
-        assert!(mixed.samples.iter().all(|&s| s > 20000), "mixed should be dominated by p2 (high energy)");
+        assert!(
+            mixed.samples.iter().all(|&s| s > 20000),
+            "mixed should be dominated by p2 (high energy)"
+        );
 
         mixer.stop();
     }

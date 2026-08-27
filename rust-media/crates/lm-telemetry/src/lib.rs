@@ -128,10 +128,8 @@ impl TrackCounter {
                 self.bytes_received.load(Ordering::Relaxed),
                 Ordering::Relaxed,
             );
-            self.last_bytes_sent.store(
-                self.bytes_sent.load(Ordering::Relaxed),
-                Ordering::Relaxed,
-            );
+            self.last_bytes_sent
+                .store(self.bytes_sent.load(Ordering::Relaxed), Ordering::Relaxed);
             return;
         }
         let elapsed_ms = now_ms.saturating_sub(last_ms);
@@ -216,14 +214,12 @@ impl StatsCollector {
     }
 
     /// 注册 track 计数器
-    pub fn register_track(
-        &self,
-        session_id: &str,
-        track_id: &str,
-    ) -> Arc<TrackCounter> {
+    pub fn register_track(&self, session_id: &str, track_id: &str) -> Arc<TrackCounter> {
         let counter = Arc::new(TrackCounter::new(track_id, session_id));
-        self.tracks
-            .insert((session_id.to_string(), track_id.to_string()), counter.clone());
+        self.tracks.insert(
+            (session_id.to_string(), track_id.to_string()),
+            counter.clone(),
+        );
         counter
     }
 
@@ -255,8 +251,7 @@ impl StatsCollector {
     /// 累加全局发送计数（热路径调用）
     #[inline]
     pub fn add_packets_sent(&self, count: u64) {
-        self.total_packets_sent
-            .fetch_add(count, Ordering::Relaxed);
+        self.total_packets_sent.fetch_add(count, Ordering::Relaxed);
     }
 
     /// 获取 session 级别统计
@@ -439,7 +434,11 @@ mod tests {
 
         let stats = counter.snapshot();
         // 16000 bytes * 8 bits / 1000 ms = 128 kbps
-        assert!(stats.bitrate_kbps > 0, "bitrate should be > 0, got {}", stats.bitrate_kbps);
+        assert!(
+            stats.bitrate_kbps > 0,
+            "bitrate should be > 0, got {}",
+            stats.bitrate_kbps
+        );
     }
 
     #[test]

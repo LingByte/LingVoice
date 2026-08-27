@@ -77,10 +77,8 @@ impl BridgeManager {
         let stopped = Arc::new(AtomicBool::new(false));
 
         // 收集两 session 的所有 track
-        let tracks_a: Vec<Arc<TrackState>> =
-            session_a.tracks.iter().map(|t| t.clone()).collect();
-        let tracks_b: Vec<Arc<TrackState>> =
-            session_b.tracks.iter().map(|t| t.clone()).collect();
+        let tracks_a: Vec<Arc<TrackState>> = session_a.tracks.iter().map(|t| t.clone()).collect();
+        let tracks_b: Vec<Arc<TrackState>> = session_b.tracks.iter().map(|t| t.clone()).collect();
 
         // A → B 转发
         for src_track in &tracks_a {
@@ -162,11 +160,7 @@ impl BridgeManager {
     }
 
     /// 解除桥接
-    pub fn unbridge_sessions(
-        &self,
-        session_a: &str,
-        session_b: &str,
-    ) -> Result<(), String> {
+    pub fn unbridge_sessions(&self, session_a: &str, session_b: &str) -> Result<(), String> {
         let key = BridgeKey {
             session_a: session_a.to_string(),
             session_b: session_b.to_string(),

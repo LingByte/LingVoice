@@ -154,7 +154,14 @@ impl RtmpClient {
         };
 
         // 封装 chunk 并发送
-        let chunk = create_chunk_type0(cs_id, timestamp_ms, msg_type, self.stream_id as u32, &payload, self.chunk_size);
+        let chunk = create_chunk_type0(
+            cs_id,
+            timestamp_ms,
+            msg_type,
+            self.stream_id as u32,
+            &payload,
+            self.chunk_size,
+        );
         self.write_all(&chunk).await?;
 
         Ok(())
@@ -177,8 +184,11 @@ impl RtmpClient {
         // C0 + C1
         let mut c0c1 = vec![0u8; 1 + 1536];
         c0c1[0] = 0x03; // version
-        // C1: time (4) + zero (4) + random (1528)
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as u32;
+                        // C1: time (4) + zero (4) + random (1528)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
         c0c1[1..5].copy_from_slice(&now.to_be_bytes());
         // random bytes
         for i in 5..1537 {
@@ -232,7 +242,11 @@ impl RtmpClient {
         amf_push_object_start(&mut amf);
         amf_push_string_kv(&mut amf, "app", &app);
         amf_push_string_kv(&mut amf, "flashVer", "FMLE/3.0");
-        amf_push_string_kv(&mut amf, "tcUrl", &format!("rtmp://{}/{}", _host_port(&self.url), app));
+        amf_push_string_kv(
+            &mut amf,
+            "tcUrl",
+            &format!("rtmp://{}/{}", _host_port(&self.url), app),
+        );
         amf_push_bool_kv(&mut amf, "fpad", false);
         amf_push_number_kv(&mut amf, "capabilities", 15.0);
         amf_push_object_end(&mut amf);
@@ -309,7 +323,9 @@ impl RtmpClient {
 
 /// 解析 RTMP URL: rtmp://host:port/app/stream
 fn parse_rtmp_url(url: &str) -> Result<(String, u16, String, String)> {
-    let url = url.strip_prefix("rtmp://").ok_or_else(|| anyhow!("invalid RTMP URL"))?;
+    let url = url
+        .strip_prefix("rtmp://")
+        .ok_or_else(|| anyhow!("invalid RTMP URL"))?;
     let (host_port, path) = url.split_once('/').unwrap_or((url, ""));
     let (host, port) = if let Some((h, p)) = host_port.split_once(':') {
         (h.to_string(), p.parse::<u16>().unwrap_or(1935))
@@ -323,11 +339,23 @@ fn parse_rtmp_url(url: &str) -> Result<(String, u16, String, String)> {
 }
 
 fn _host_port(url: &str) -> String {
-    url.strip_prefix("rtmp://").unwrap_or(url).split('/').next().unwrap_or("").to_string()
+    url.strip_prefix("rtmp://")
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 /// 创建 Type0 chunk
-fn create_chunk_type0(cs_id: u32, timestamp: u32, msg_type: u8, stream_id: u32, payload: &[u8], chunk_size: u32) -> Vec<u8> {
+fn create_chunk_type0(
+    cs_id: u32,
+    timestamp: u32,
+    msg_type: u8,
+    stream_id: u32,
+    payload: &[u8],
+    chunk_size: u32,
+) -> Vec<u8> {
     let mut chunk = Vec::new();
 
     // Basic header: type0, cs_id
@@ -417,7 +445,8 @@ mod tests {
 
     #[test]
     fn test_parse_rtmp_url() {
-        let (host, port, app, stream) = parse_rtmp_url("rtmp://localhost:1935/live/stream1").unwrap();
+        let (host, port, app, stream) =
+            parse_rtmp_url("rtmp://localhost:1935/live/stream1").unwrap();
         assert_eq!(host, "localhost");
         assert_eq!(port, 1935);
         assert_eq!(app, "live");

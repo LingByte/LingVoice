@@ -4,13 +4,13 @@
 
 use std::sync::Arc;
 
-use lm_core::{EndpointId, SessionId, TrackId};
-use lm_stream::{MediaStream, StreamId, StreamRegistry};
 use crate::bridge::BridgeManager;
 use crate::events::{EventBus, MediaNodeEvent};
 use crate::mixer::MixManager;
 use crate::recorder::RecordingManager;
 use crate::session::SessionManager;
+use lm_core::{EndpointId, SessionId, TrackId};
+use lm_stream::{MediaStream, StreamId, StreamRegistry};
 use lm_telemetry::StatsCollector;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
@@ -135,12 +135,20 @@ impl media_node_server::MediaNode for MediaNodeServer {
         let session_id = SessionId(req.session_id.clone());
 
         self.sessions
-            .create_session(session_id.clone(), Some(req.room_id.clone()), Some(req.tenant_id))
+            .create_session(
+                session_id.clone(),
+                Some(req.room_id.clone()),
+                Some(req.tenant_id),
+            )
             .map_err(|e| Status::already_exists(e.to_string()))?;
 
         self.events.publish(MediaNodeEvent::SessionCreated {
             session_id: req.session_id.clone(),
-            room_id: if req.room_id.is_empty() { None } else { Some(req.room_id.clone()) },
+            room_id: if req.room_id.is_empty() {
+                None
+            } else {
+                Some(req.room_id.clone())
+            },
         });
 
         info!(session = %req.session_id, "gRPC create_session");
@@ -219,7 +227,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
             codec,
         };
 
-        session.endpoints.insert(EndpointId(req.endpoint_id.clone()), endpoint);
+        session
+            .endpoints
+            .insert(EndpointId(req.endpoint_id.clone()), endpoint);
 
         info!(
             session = %req.session_id,
@@ -272,7 +282,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
             .get_session(&session_id)
             .ok_or_else(|| Status::not_found(format!("session {} not found", req.session_id)))?;
 
-        let track = req.track.ok_or_else(|| Status::invalid_argument("missing track"))?;
+        let track = req
+            .track
+            .ok_or_else(|| Status::invalid_argument("missing track"))?;
         let track_id = TrackId(track.track_id.clone());
         let codec = lm_codecs::codec_from_name(&track.codec).unwrap_or(lm_core::CodecType::PcmU);
         let kind = match track.kind.as_str() {
@@ -289,7 +301,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
             track.ssrc,
         );
 
-        session.tracks.insert(track_id.clone(), Arc::new(track_state));
+        session
+            .tracks
+            .insert(track_id.clone(), Arc::new(track_state));
 
         // 同时注册 MediaStream（新的流抽象）
         let room_id = session.room_id.clone();
@@ -319,7 +333,12 @@ impl media_node_server::MediaNode for MediaNodeServer {
         self.events.publish(MediaNodeEvent::TrackAdded {
             session_id: req.session_id.clone(),
             track_id: track.track_id.clone(),
-            kind: if kind == lm_core::TrackKind::Video { "video" } else { "audio" }.to_string(),
+            kind: if kind == lm_core::TrackKind::Video {
+                "video"
+            } else {
+                "audio"
+            }
+            .to_string(),
             codec: track.codec.clone(),
         });
 
@@ -349,7 +368,8 @@ impl media_node_server::MediaNode for MediaNodeServer {
         session.tracks.remove(&TrackId(req.track_id.clone()));
 
         // 同时注销 MediaStream
-        self.streams.unregister(&StreamId::new(req.session_id.clone(), req.track_id.clone()));
+        self.streams
+            .unregister(&StreamId::new(req.session_id.clone(), req.track_id.clone()));
 
         // 注销统计
         self.stats.unregister_track(&req.session_id, &req.track_id);
@@ -385,7 +405,8 @@ impl media_node_server::MediaNode for MediaNodeServer {
 
         // SFU 转码缓存：按 peer track_id 缓存 decoder/encoder/resampler
         // 避免每包都创建新的转码器（Opus decoder 有内部状态，重建会丢失帧间预测）
-        let mut transcode_cache: std::collections::HashMap<String, TranscodeState> = std::collections::HashMap::new();
+        let mut transcode_cache: std::collections::HashMap<String, TranscodeState> =
+            std::collections::HashMap::new();
 
         while let Some(req) = stream.next().await {
             let req = req?;
@@ -398,7 +419,8 @@ impl media_node_server::MediaNode for MediaNodeServer {
 
                 // 记录统计
                 self.stats.add_packets_received(1);
-                if let Some(counter) = self.stats.get_track_counter(&req.session_id, &req.track_id) {
+                if let Some(counter) = self.stats.get_track_counter(&req.session_id, &req.track_id)
+                {
                     counter.record_received(pkt_bytes);
                 }
 
@@ -443,7 +465,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
                     // 不做 SFU 转发，混音输出通过 mix-output track 的 pull_rtp 获取
                 } else {
                     // === SFU 转发模式 ===
-                    let src_kind = self.sessions.get_session(&session_id)
+                    let src_kind = self
+                        .sessions
+                        .get_session(&session_id)
                         .and_then(|s| s.tracks.get(&track_id).map(|t| t.kind));
 
                     let pkt_out = crate::session::RtpPacketOut {
@@ -460,7 +484,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
                     // 1. SFU 转发：广播到同 room 其他 session 的 peer track
                     //    如果源 codec 与目标 codec 不同，做转码（仅音频）
                     let peer_tracks = match src_kind {
-                        Some(kind) => self.sessions.get_room_peer_tracks_by_kind(&session_id, kind),
+                        Some(kind) => self
+                            .sessions
+                            .get_room_peer_tracks_by_kind(&session_id, kind),
                         None => {
                             warn!(session = %req.session_id, track = %req.track_id, "source track kind unknown, skipping kind filter");
                             Vec::new()
@@ -469,7 +495,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
                     let peer_count = peer_tracks.len();
 
                     // 获取源 codec（用于转码判断）
-                    let src_codec = self.sessions.get_session(&session_id)
+                    let src_codec = self
+                        .sessions
+                        .get_session(&session_id)
                         .and_then(|s| s.tracks.get(&track_id).map(|t| t.codec));
 
                     for peer_track in &peer_tracks {
@@ -479,9 +507,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
                             && ((src_kind == Some(lm_core::TrackKind::Audio)
                                 && peer_track.codec.is_audio()
                                 && src_codec.unwrap().is_audio())
-                            || (src_kind == Some(lm_core::TrackKind::Video)
-                                && peer_track.codec.is_video()
-                                && src_codec.unwrap().is_video()));
+                                || (src_kind == Some(lm_core::TrackKind::Video)
+                                    && peer_track.codec.is_video()
+                                    && src_codec.unwrap().is_video()));
 
                         if need_transcode {
                             let src_c = src_codec.unwrap();
@@ -490,7 +518,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
                             // 获取或创建持久的转码器状态
                             let tc_state = transcode_cache
                                 .entry(peer_track.track_id.0.clone())
-                                .or_insert_with(|| TranscodeState::new(src_c, dst_c, pkt_out.clock_rate));
+                                .or_insert_with(|| {
+                                    TranscodeState::new(src_c, dst_c, pkt_out.clock_rate)
+                                });
 
                             if packets_received == 1 {
                                 info!(
@@ -610,12 +640,18 @@ impl media_node_server::MediaNode for MediaNodeServer {
                             clock_rate: pkt.clock_rate,
                         };
                         if tx.send(Ok(rtp_packet)).await.is_err() {
-                            info!(packets_sent, lagged_total, "pull_rtp stream closed, stopping forwarder");
+                            info!(
+                                packets_sent,
+                                lagged_total, "pull_rtp stream closed, stopping forwarder"
+                            );
                             break;
                         }
                         packets_sent += 1;
                         if packets_sent % 1000 == 0 {
-                            info!(packets_sent, lagged_total, "pull_rtp progress (sampled 1/1000)");
+                            info!(
+                                packets_sent,
+                                lagged_total, "pull_rtp progress (sampled 1/1000)"
+                            );
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -625,7 +661,10 @@ impl media_node_server::MediaNode for MediaNodeServer {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        info!(packets_sent, lagged_total, "pull_rtp broadcast closed, stopping forwarder");
+                        info!(
+                            packets_sent,
+                            lagged_total, "pull_rtp broadcast closed, stopping forwarder"
+                        );
                         break;
                     }
                 }
@@ -672,8 +711,16 @@ impl media_node_server::MediaNode for MediaNodeServer {
 
                 // 懒初始化编码器
                 if opus_encoder.is_none() {
-                    let sample_rate = if frame.sample_rate > 0 { frame.sample_rate } else { 48000 };
-                    let channels = if frame.channels > 0 { frame.channels } else { 1 };
+                    let sample_rate = if frame.sample_rate > 0 {
+                        frame.sample_rate
+                    } else {
+                        48000
+                    };
+                    let channels = if frame.channels > 0 {
+                        frame.channels
+                    } else {
+                        1
+                    };
                     opus_encoder = Some(audio_codec::create_opus_encoder(
                         sample_rate,
                         channels as u16,
@@ -697,7 +744,11 @@ impl media_node_server::MediaNode for MediaNodeServer {
                 };
 
                 if !encoded.is_empty() {
-                    let clock_rate = if frame.sample_rate > 0 { frame.sample_rate } else { 48000 };
+                    let clock_rate = if frame.sample_rate > 0 {
+                        frame.sample_rate
+                    } else {
+                        48000
+                    };
                     let pkt = crate::session::RtpPacketOut {
                         ssrc: inject_ssrc,
                         payload_type: 111, // Opus
@@ -719,7 +770,9 @@ impl media_node_server::MediaNode for MediaNodeServer {
 
                     // 记录统计
                     self.stats.add_packets_sent(1);
-                    if let Some(counter) = self.stats.get_track_counter(&req.session_id, &req.track_id) {
+                    if let Some(counter) =
+                        self.stats.get_track_counter(&req.session_id, &req.track_id)
+                    {
                         counter.record_sent(frame.samples.len() as u64);
                     }
                 }
@@ -801,11 +854,21 @@ impl media_node_server::MediaNode for MediaNodeServer {
         request: Request<StartMixRequest>,
     ) -> Result<Response<StartMixResponse>, Status> {
         let req = request.into_inner();
-        let sample_rate = if req.sample_rate > 0 { req.sample_rate } else { 48000 };
+        let sample_rate = if req.sample_rate > 0 {
+            req.sample_rate
+        } else {
+            48000
+        };
         let max_speakers = req.max_speakers as usize;
-        let output_codec = if req.output_codec.is_empty() { "opus" } else { req.output_codec.as_str() };
+        let output_codec = if req.output_codec.is_empty() {
+            "opus"
+        } else {
+            req.output_codec.as_str()
+        };
 
-        let state = self.mixes.start_mix(&req.room_id, sample_rate, max_speakers, output_codec);
+        let state = self
+            .mixes
+            .start_mix(&req.room_id, sample_rate, max_speakers, output_codec);
         let mix_id = state.mix_id.clone();
 
         info!(
@@ -817,9 +880,7 @@ impl media_node_server::MediaNode for MediaNodeServer {
             "gRPC start_mix"
         );
 
-        Ok(Response::new(StartMixResponse {
-            mix_id,
-        }))
+        Ok(Response::new(StartMixResponse { mix_id }))
     }
 
     async fn stop_mix(
@@ -851,10 +912,7 @@ impl media_node_server::MediaNode for MediaNodeServer {
         let source_track_id = TrackId(req.track_id.clone());
 
         // 获取采样率和输出编码（从 mix state）
-        let sample_rate = self
-            .mixes
-            .mix_sample_rate(&req.mix_id)
-            .unwrap_or(48000);
+        let sample_rate = self.mixes.mix_sample_rate(&req.mix_id).unwrap_or(48000);
         let output_codec = self
             .mixes
             .mix_output_codec(&req.mix_id)
@@ -862,18 +920,21 @@ impl media_node_server::MediaNode for MediaNodeServer {
 
         let mix_track_id = self
             .mixes
-            .add_participant(&req.mix_id, &session, &source_track_id, sample_rate, &output_codec)
+            .add_participant(
+                &req.mix_id,
+                &session,
+                &source_track_id,
+                sample_rate,
+                &output_codec,
+            )
             .await
             .map_err(|e| Status::internal(e))?;
 
         // 如果 muted，设置 self→all 的增益为 0
         if req.muted {
-            let _ = self.mixes.set_route_gain(
-                &req.mix_id,
-                &req.session_id,
-                "__all__",
-                0.0,
-            );
+            let _ = self
+                .mixes
+                .set_route_gain(&req.mix_id, &req.session_id, "__all__", 0.0);
         }
 
         self.events.publish(MediaNodeEvent::MixParticipantJoined {
@@ -1231,24 +1292,24 @@ fn convert_event(event: &MediaNodeEvent) -> MediaEvent {
             message: message.clone(),
             track_id: track_id.clone(),
         })),
-        MediaNodeEvent::MixParticipantJoined { mix_id, .. } => {
-            Some(media_event::Event::MixParticipantJoined(MixParticipantJoined {
+        MediaNodeEvent::MixParticipantJoined { mix_id, .. } => Some(
+            media_event::Event::MixParticipantJoined(MixParticipantJoined {
                 mix_id: mix_id.clone(),
                 session_id: session_id.clone(),
-            }))
-        }
+            }),
+        ),
         MediaNodeEvent::MixParticipantLeft { mix_id, .. } => {
             Some(media_event::Event::MixParticipantLeft(MixParticipantLeft {
                 mix_id: mix_id.clone(),
                 session_id: session_id.clone(),
             }))
         }
-        MediaNodeEvent::DominantSpeakerChanged { mix_id, .. } => {
-            Some(media_event::Event::DominantSpeakerChanged(DominantSpeakerChanged {
+        MediaNodeEvent::DominantSpeakerChanged { mix_id, .. } => Some(
+            media_event::Event::DominantSpeakerChanged(DominantSpeakerChanged {
                 mix_id: mix_id.clone(),
                 session_id: session_id.clone(),
-            }))
-        }
+            }),
+        ),
         MediaNodeEvent::SessionCreated { .. } | MediaNodeEvent::SessionDestroyed { .. } => {
             // gRPC proto 没有定义 SessionCreated/SessionDestroyed 事件
             // 使用 ErrorEvent 作为载体（简化）
@@ -1321,7 +1382,20 @@ impl TranscodeState {
                 lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
                 lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
                 lm_core::CodecType::G722 => audio_codec::CodecType::G722,
-                _ => return Self { decoder: None, encoder: None, resampler: None, src_sample_rate: 0, dst_sample_rate: 0, video_decoder: None, video_encoder: None, depacketizer: None, packetizer: None, out_seq: 0 },
+                _ => {
+                    return Self {
+                        decoder: None,
+                        encoder: None,
+                        resampler: None,
+                        src_sample_rate: 0,
+                        dst_sample_rate: 0,
+                        video_decoder: None,
+                        video_encoder: None,
+                        depacketizer: None,
+                        packetizer: None,
+                        out_seq: 0,
+                    }
+                }
             };
             Some(audio_codec::create_decoder(ac))
         };
@@ -1349,14 +1423,28 @@ impl TranscodeState {
                 lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
                 lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
                 lm_core::CodecType::G722 => audio_codec::CodecType::G722,
-                _ => return Self { decoder: None, encoder: None, resampler: None, src_sample_rate: 0, dst_sample_rate: 0, video_decoder: None, video_encoder: None, depacketizer: None, packetizer: None, out_seq: 0 },
+                _ => {
+                    return Self {
+                        decoder: None,
+                        encoder: None,
+                        resampler: None,
+                        src_sample_rate: 0,
+                        dst_sample_rate: 0,
+                        video_decoder: None,
+                        video_encoder: None,
+                        depacketizer: None,
+                        packetizer: None,
+                        out_seq: 0,
+                    }
+                }
             };
             Some(audio_codec::create_encoder(ac))
         };
 
         // 创建重采样器（如果采样率不同）
         let resampler = if src_sample_rate != dst_sample_rate {
-            audio_codec::BoxedResampler::new(src_sample_rate as usize, dst_sample_rate as usize).ok()
+            audio_codec::BoxedResampler::new(src_sample_rate as usize, dst_sample_rate as usize)
+                .ok()
         } else {
             None
         };
@@ -1395,7 +1483,10 @@ impl TranscodeState {
                 return Vec::new();
             }
             (
-                payload.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>(),
+                payload
+                    .chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect::<Vec<_>>(),
                 self.src_sample_rate,
             )
         } else if let Some(dec) = &mut self.decoder {
@@ -1563,38 +1654,43 @@ fn transcode_audio_packet(
     dst_codec: lm_core::CodecType,
 ) -> Option<crate::session::RtpPacketOut> {
     // 源采样率（从 RTP clock_rate 获取）
-    let src_sample_rate = if pkt.clock_rate > 0 { pkt.clock_rate } else { 48000 };
+    let src_sample_rate = if pkt.clock_rate > 0 {
+        pkt.clock_rate
+    } else {
+        48000
+    };
 
     // 解码到 PCM samples
-    let (mut samples, decoded_sample_rate): (Vec<audio_codec::Sample>, u32) = if src_codec == lm_core::CodecType::Pcm {
-        // L16 little-endian → i16 samples，采样率 = clock_rate
-        let payload = &pkt.payload;
-        if payload.len() % 2 != 0 {
-            return None;
-        }
-        (
-            payload
-                .chunks_exact(2)
-                .map(|c| i16::from_le_bytes([c[0], c[1]]))
-                .collect(),
-            src_sample_rate,
-        )
-    } else if src_codec == lm_core::CodecType::Opus {
-        // Opus decoder：用源采样率，mono
-        let mut decoder = audio_codec::create_opus_decoder(src_sample_rate, 1);
-        (decoder.decode(&pkt.payload), src_sample_rate)
-    } else {
-        // PCMU/PCMA/G722
-        let ac_src = match src_codec {
-            lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
-            lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
-            lm_core::CodecType::G722 => audio_codec::CodecType::G722,
-            _ => return None,
+    let (mut samples, decoded_sample_rate): (Vec<audio_codec::Sample>, u32) =
+        if src_codec == lm_core::CodecType::Pcm {
+            // L16 little-endian → i16 samples，采样率 = clock_rate
+            let payload = &pkt.payload;
+            if payload.len() % 2 != 0 {
+                return None;
+            }
+            (
+                payload
+                    .chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect(),
+                src_sample_rate,
+            )
+        } else if src_codec == lm_core::CodecType::Opus {
+            // Opus decoder：用源采样率，mono
+            let mut decoder = audio_codec::create_opus_decoder(src_sample_rate, 1);
+            (decoder.decode(&pkt.payload), src_sample_rate)
+        } else {
+            // PCMU/PCMA/G722
+            let ac_src = match src_codec {
+                lm_core::CodecType::PcmU => audio_codec::CodecType::PCMU,
+                lm_core::CodecType::PcmA => audio_codec::CodecType::PCMA,
+                lm_core::CodecType::G722 => audio_codec::CodecType::G722,
+                _ => return None,
+            };
+            let mut decoder = audio_codec::create_decoder(ac_src);
+            let sr = decoder.sample_rate();
+            (decoder.decode(&pkt.payload), sr)
         };
-        let mut decoder = audio_codec::create_decoder(ac_src);
-        let sr = decoder.sample_rate();
-        (decoder.decode(&pkt.payload), sr)
-    };
 
     if samples.is_empty() {
         return None;
@@ -1786,14 +1882,14 @@ mod transcode_tests {
             vp8_encoded.timestamp as u32,
             vp8_encoded.keyframe,
         );
-        assert!(!vp8_rtp_packets.is_empty(), "vp8 packetize produced 0 packets");
+        assert!(
+            !vp8_rtp_packets.is_empty(),
+            "vp8 packetize produced 0 packets"
+        );
 
         // 3. 构造 session::RtpPacketOut 并喂给 TranscodeState
-        let mut tc_state = TranscodeState::new(
-            lm_core::CodecType::Vp8,
-            lm_core::CodecType::H264,
-            90000,
-        );
+        let mut tc_state =
+            TranscodeState::new(lm_core::CodecType::Vp8, lm_core::CodecType::H264, 90000);
 
         let mut h264_rtp_out: Vec<crate::session::RtpPacketOut> = Vec::new();
         let mut seq: u16 = 0;
@@ -1820,7 +1916,11 @@ mod transcode_tests {
 
         // 所有输出包应该是 H.264 PT (102)
         for p in &h264_rtp_out {
-            assert_eq!(p.payload_type, 102, "expected H.264 PT=102, got {}", p.payload_type);
+            assert_eq!(
+                p.payload_type, 102,
+                "expected H.264 PT=102, got {}",
+                p.payload_type
+            );
             assert_eq!(p.clock_rate, 90000, "video clock rate should be 90000");
             assert!(!p.payload.is_empty(), "H.264 RTP payload empty");
         }
@@ -1833,12 +1933,8 @@ mod transcode_tests {
         let mut h264_depkt = lm_depacketizer::create_depacketizer(lm_core::CodecType::H264);
         let mut got_h264_frame = false;
         for p in &h264_rtp_out {
-            let result = h264_depkt.push_packet(
-                &p.payload,
-                p.marker,
-                p.sequence_number as u16,
-                p.timestamp,
-            );
+            let result =
+                h264_depkt.push_packet(&p.payload, p.marker, p.sequence_number as u16, p.timestamp);
             if result == lm_core::DepacketizeResult::FrameComplete {
                 let frame = h264_depkt.take_frame();
                 if let Some(f) = frame {
@@ -1848,11 +1944,14 @@ mod transcode_tests {
                 }
             }
         }
-        assert!(got_h264_frame, "H.264 depacketizer did not produce a complete frame");
+        assert!(
+            got_h264_frame,
+            "H.264 depacketizer did not produce a complete frame"
+        );
 
         // 6. H.264 decode: 验证可以解码回 YUV
-        let mut h264_dec = video_codec::create_decoder(lm_core::CodecType::H264)
-            .expect("create h264 decoder");
+        let mut h264_dec =
+            video_codec::create_decoder(lm_core::CodecType::H264).expect("create h264 decoder");
         // 重新提取帧
         let mut h264_depkt2 = lm_depacketizer::create_depacketizer(lm_core::CodecType::H264);
         for p in &h264_rtp_out {
@@ -1880,11 +1979,8 @@ mod transcode_tests {
     fn test_e2e_video_transcode_multi_frame() {
         let mut vp8_enc = video_codec::create_encoder(lm_core::CodecType::Vp8, 160, 120)
             .expect("create vp8 encoder");
-        let mut tc_state = TranscodeState::new(
-            lm_core::CodecType::Vp8,
-            lm_core::CodecType::H264,
-            90000,
-        );
+        let mut tc_state =
+            TranscodeState::new(lm_core::CodecType::Vp8, lm_core::CodecType::H264, 90000);
 
         let mut total_h264_packets = 0;
         let mut frames_transcoded = 0;
@@ -1913,15 +2009,10 @@ mod transcode_tests {
             let mut seq: u16 = (i * 100) as u16;
             let mut frame_output = 0;
             for p in &vp8_rtp {
-                let pkt = make_video_pkt(
-                    p.payload.clone(),
-                    seq,
-                    p.timestamp,
-                    p.marker,
-                    96,
-                );
+                let pkt = make_video_pkt(p.payload.clone(), seq, p.timestamp, p.marker, 96);
                 seq = seq.wrapping_add(1);
-                let out = tc_state.transcode(&pkt, lm_core::CodecType::Vp8, lm_core::CodecType::H264);
+                let out =
+                    tc_state.transcode(&pkt, lm_core::CodecType::Vp8, lm_core::CodecType::H264);
                 frame_output += out.len();
             }
 
@@ -1945,13 +2036,14 @@ mod transcode_tests {
         let vp8_encoded = vp8_enc.encode(&yuv).expect("vp8 encode");
 
         let mut vp8_pktizer = lm_depacketizer::create_packetizer(lm_core::CodecType::Vp8);
-        let vp8_rtp = vp8_pktizer.packetize(&vp8_encoded.data, vp8_encoded.timestamp as u32, vp8_encoded.keyframe);
-
-        let mut tc_state = TranscodeState::new(
-            lm_core::CodecType::Vp8,
-            lm_core::CodecType::H264,
-            90000,
+        let vp8_rtp = vp8_pktizer.packetize(
+            &vp8_encoded.data,
+            vp8_encoded.timestamp as u32,
+            vp8_encoded.keyframe,
         );
+
+        let mut tc_state =
+            TranscodeState::new(lm_core::CodecType::Vp8, lm_core::CodecType::H264, 90000);
 
         let mut seq: u16 = 0;
         let mut out_seqs: Vec<u32> = Vec::new();

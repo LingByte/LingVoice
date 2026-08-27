@@ -68,10 +68,7 @@ pub fn create_decoder(codec: CodecType) -> Box<dyn ac::Decoder> {
 }
 
 /// 创建重采样器
-pub fn create_resampler(
-    input_rate: u32,
-    output_rate: u32,
-) -> anyhow::Result<ac::BoxedResampler> {
+pub fn create_resampler(input_rate: u32, output_rate: u32) -> anyhow::Result<ac::BoxedResampler> {
     ac::BoxedResampler::new(input_rate as usize, output_rate as usize)
         .map_err(|e| anyhow::anyhow!("create resampler: {e}"))
 }

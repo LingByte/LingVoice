@@ -71,8 +71,10 @@ impl Demuxer for RtspDemuxer {
             if rtp_data.len() >= 12 {
                 let payload_type = rtp_data[1] & 0x7f;
                 let sequence_number = u16::from_be_bytes([rtp_data[2], rtp_data[3]]);
-                let timestamp = u32::from_be_bytes([rtp_data[4], rtp_data[5], rtp_data[6], rtp_data[7]]);
-                let ssrc = u32::from_be_bytes([rtp_data[8], rtp_data[9], rtp_data[10], rtp_data[11]]);
+                let timestamp =
+                    u32::from_be_bytes([rtp_data[4], rtp_data[5], rtp_data[6], rtp_data[7]]);
+                let ssrc =
+                    u32::from_be_bytes([rtp_data[8], rtp_data[9], rtp_data[10], rtp_data[11]]);
                 let marker = rtp_data[1] & 0x80 != 0;
                 let payload = &rtp_data[12..];
 
@@ -266,7 +268,10 @@ mod tests {
         // timestamp = 9000
         assert_eq!(u32::from_be_bytes([rtp[4], rtp[5], rtp[6], rtp[7]]), 9000);
         // ssrc = 12345
-        assert_eq!(u32::from_be_bytes([rtp[8], rtp[9], rtp[10], rtp[11]]), 12345);
+        assert_eq!(
+            u32::from_be_bytes([rtp[8], rtp[9], rtp[10], rtp[11]]),
+            12345
+        );
         // payload
         assert_eq!(&rtp[12..], &[0x01, 0x02, 0x03]);
     }
@@ -274,12 +279,7 @@ mod tests {
     #[test]
     fn test_rtsp_audio_channel() {
         let mut remuxer = RtspRemuxer::new();
-        let frame = MediaFrame::audio(
-            CodecType::Opus,
-            4800,
-            bytes::Bytes::from(vec![0x4F]),
-            999,
-        );
+        let frame = MediaFrame::audio(CodecType::Opus, 4800, bytes::Bytes::from(vec![0x4F]), 999);
         let output = remuxer.push_frame(&frame);
         assert_eq!(output[0], b'$');
         assert_eq!(output[1], 1); // audio channel = 1

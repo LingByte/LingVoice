@@ -104,10 +104,7 @@ impl StreamSink for FlvSink {
 // 启动 HTTP 服务器
 // ============================================================================
 
-pub async fn start_http_server(
-    media_node: MediaNodeServer,
-    addr: &str,
-) -> anyhow::Result<()> {
+pub async fn start_http_server(media_node: MediaNodeServer, addr: &str) -> anyhow::Result<()> {
     let streams = media_node.streams().clone();
 
     let state = HttpState {
@@ -205,7 +202,11 @@ async fn hls_start_handler(
     state.hls_outputs.write().insert(stream_id.clone(), output);
 
     info!(stream = %stream_id, "HLS output started");
-    (StatusCode::OK, format!("HLS output started for {stream_id}")).into_response()
+    (
+        StatusCode::OK,
+        format!("HLS output started for {stream_id}"),
+    )
+        .into_response()
 }
 
 /// HLS playlist
@@ -224,7 +225,11 @@ async fn hls_playlist_handler(
             .body(Body::from(playlist.content().to_string()))
             .unwrap()
     } else {
-        (StatusCode::NOT_FOUND, "HLS output not found, POST /hls/{stream_id}/start first").into_response()
+        (
+            StatusCode::NOT_FOUND,
+            "HLS output not found, POST /hls/{stream_id}/start first",
+        )
+            .into_response()
     }
 }
 
@@ -292,7 +297,11 @@ async fn flv_start_handler(
     state.flv_outputs.write().insert(stream_id.clone(), output);
 
     info!(stream = %stream_id, "FLV output started");
-    (StatusCode::OK, format!("FLV output started for {stream_id}")).into_response()
+    (
+        StatusCode::OK,
+        format!("FLV output started for {stream_id}"),
+    )
+        .into_response()
 }
 
 /// HTTP-FLV 流（chunked transfer streaming）
@@ -319,8 +328,7 @@ async fn flv_stream_handler(
     output.subscribers.write().push(tx);
 
     // chunked stream body
-    let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
-        .map(Ok::<_, std::io::Error>);
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<_, std::io::Error>);
 
     Response::builder()
         .status(StatusCode::OK)
@@ -334,9 +342,7 @@ async fn flv_stream_handler(
 // API handlers
 // ============================================================================
 
-async fn list_streams_handler(
-    State(state): State<HttpState>,
-) -> Response {
+async fn list_streams_handler(State(state): State<HttpState>) -> Response {
     let hls_count = state.hls_outputs.read().len();
     let flv_count = state.flv_outputs.read().len();
 
@@ -353,9 +359,7 @@ async fn list_streams_handler(
         .unwrap()
 }
 
-async fn health_handler(
-    State(state): State<HttpState>,
-) -> Response {
+async fn health_handler(State(state): State<HttpState>) -> Response {
     let response = serde_json::json!({
         "status": "ok",
         "node_id": state.media_node.node_id(),

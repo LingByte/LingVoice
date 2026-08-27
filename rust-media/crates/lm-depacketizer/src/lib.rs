@@ -199,7 +199,9 @@ impl Depacketizer for Vp8Depacketizer {
         if desc.start_of_partition && desc.partition_index == 0 {
             if self.frame_started && !self.frame_buffer.is_empty() {
                 // 上一个帧没有 marker 就收到了新帧的起始，说明丢包
-                debug!("VP8: new frame started before previous completed, discarding partial frame");
+                debug!(
+                    "VP8: new frame started before previous completed, discarding partial frame"
+                );
             }
             self.frame_buffer.clear();
             self.current_timestamp = timestamp;
@@ -537,7 +539,8 @@ impl Depacketizer for H264Depacketizer {
                     }
                     // 写入起始码 + NALU
                     self.frame_buffer.extend_from_slice(&[0, 0, 0, 1]);
-                    self.frame_buffer.extend_from_slice(&payload[i..i + nalu_size]);
+                    self.frame_buffer
+                        .extend_from_slice(&payload[i..i + nalu_size]);
                     i += nalu_size;
                 }
 
@@ -782,7 +785,9 @@ impl Depacketizer for Vp9Depacketizer {
         // B=1 表示新帧开始
         if desc.beginning_of_frame {
             if self.frame_started && !self.frame_buffer.is_empty() {
-                debug!("VP9: new frame started before previous completed, discarding partial frame");
+                debug!(
+                    "VP9: new frame started before previous completed, discarding partial frame"
+                );
             }
             self.frame_buffer.clear();
             self.current_timestamp = timestamp;
@@ -955,7 +960,7 @@ mod tests {
         let frame = dep.take_frame().unwrap();
         assert_eq!(frame.codec, CodecType::H264);
         assert!(frame.keyframe); // IDR
-        // 验证起始码
+                                 // 验证起始码
         assert_eq!(&frame.data[..4], &[0, 0, 0, 1]);
     }
 

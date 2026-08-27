@@ -20,7 +20,11 @@ impl Resampler {
     pub fn new(from_rate: u32, to_rate: u32) -> anyhow::Result<Self> {
         let inner = audio_codec::BoxedResampler::new(from_rate as usize, to_rate as usize)
             .map_err(|e| anyhow::anyhow!("create resampler: {e}"))?;
-        Ok(Self { inner, from_rate, to_rate })
+        Ok(Self {
+            inner,
+            from_rate,
+            to_rate,
+        })
     }
 
     /// 重采样一帧
@@ -80,7 +84,7 @@ impl VadDetector {
             threshold,
             speech_counter: 0,
             silence_counter: 0,
-            speech_onset_frames: 3,  // 60ms @ 20ms frames
+            speech_onset_frames: 3,   // 60ms @ 20ms frames
             speech_offset_frames: 15, // 300ms @ 20ms frames
             is_speaking: false,
         }

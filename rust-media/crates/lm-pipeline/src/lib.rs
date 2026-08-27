@@ -102,8 +102,8 @@ impl IngressPipeline {
 
     /// 处理原始 RTP 字节
     pub fn handle_rtp_bytes(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        let packet = RtpPacket::from_bytes(data)
-            .ok_or_else(|| anyhow::anyhow!("invalid rtp packet"))?;
+        let packet =
+            RtpPacket::from_bytes(data).ok_or_else(|| anyhow::anyhow!("invalid rtp packet"))?;
         self.handle_rtp(&packet)
     }
 
@@ -224,7 +224,9 @@ impl EgressPipeline {
             }
 
             // 使用帧或静音（保持流连续性）
-            let samples = frame.map(|f| f.samples).unwrap_or_else(|| silence_buf.clone());
+            let samples = frame
+                .map(|f| f.samples)
+                .unwrap_or_else(|| silence_buf.clone());
 
             // 编码
             let encoded = self.encoder.encode(&samples);

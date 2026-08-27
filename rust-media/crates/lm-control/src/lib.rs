@@ -7,8 +7,8 @@ pub mod bridge;
 pub mod events;
 pub mod mixer;
 pub mod recorder;
-pub mod session;
 pub mod service;
+pub mod session;
 
 pub use bridge::BridgeManager;
 pub use events::EventBus;

@@ -252,14 +252,14 @@ impl TsMuxer {
         // + program_number(2) + reserved+PMT_PID(2) + CRC32(4)
         let mut pat_data = Vec::new();
         pat_data.push(0x00); // table_id = PAT
-        // section_length = 5 + 4 (program info) + 4 (CRC) = 13
+                             // section_length = 5 + 4 (program info) + 4 (CRC) = 13
         pat_data.push(0xB0); // section_syntax_indicator=1, reserved=0x03, length high
         pat_data.push(0x0D); // length low = 13
         pat_data.extend_from_slice(&[0x00, 0x01]); // transport_stream_id = 1
         pat_data.push(0xC1); // version=0, current_next=1
         pat_data.push(0x00); // section_number
         pat_data.push(0x00); // last_section_number
-        // program_number = 1
+                             // program_number = 1
         pat_data.extend_from_slice(&[0x00, 0x01]);
         // reserved(3) + PMT_PID(13) = 0xE0 | PMT_PID
         pat_data.push(0xE0 | ((PMT_PID >> 8) as u8 & 0x1F));
@@ -277,13 +277,13 @@ impl TsMuxer {
     fn write_pmt(&mut self) -> Vec<u8> {
         let mut pmt_data = Vec::new();
         pmt_data.push(0x02); // table_id = PMT
-        // section_length: 5 + 4 (PCR_PID) + program_info(0) + streams + CRC
+                             // section_length: 5 + 4 (PCR_PID) + program_info(0) + streams + CRC
         let mut section = Vec::new();
         section.extend_from_slice(&[0x00, 0x01]); // program_number = 1
         section.push(0xC1); // version=0, current_next=1
         section.push(0x00); // section_number
         section.push(0x00); // last_section_number
-        // reserved(3) + PCR_PID(13)
+                            // reserved(3) + PCR_PID(13)
         section.push(0xE0 | ((PCR_PID >> 8) as u8 & 0x1F));
         section.push((PCR_PID & 0xFF) as u8);
         // program_info_length = 0
@@ -395,12 +395,7 @@ impl TsMuxer {
     }
 
     /// 生成视频 TS 包
-    fn make_video_ts_packet(
-        &mut self,
-        is_start: bool,
-        data: &[u8],
-        pcr: Option<u64>,
-    ) -> Vec<u8> {
+    fn make_video_ts_packet(&mut self, is_start: bool, data: &[u8], pcr: Option<u64>) -> Vec<u8> {
         let header = TsHeader {
             sync_byte: TS_SYNC_BYTE,
             transport_error_indicator: false,
@@ -673,19 +668,15 @@ mod tests {
         // 模拟 H.264 关键帧（SPS + PPS + IDR）
         let mut h264_data = Vec::new();
         // SPS (7)
-        h264_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x0a, 0xf8, 0x41, 0xa2]);
+        h264_data.extend_from_slice(&[
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x0a, 0xf8, 0x41, 0xa2,
+        ]);
         // PPS (8)
         h264_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80]);
         // IDR slice (5)
         h264_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x80, 0x40]);
 
-        let frame = MediaFrame::video(
-            CodecType::H264,
-            0,
-            Bytes::from(h264_data),
-            1,
-            true,
-        );
+        let frame = MediaFrame::video(CodecType::H264, 0, Bytes::from(h264_data), 1, true);
 
         let ts_data = muxer.write_frame(&frame);
         // 应该有 PAT + PMT + 至少一个视频包
@@ -714,12 +705,7 @@ mod tests {
 
         // 写音频帧
         let aac_data = vec![0xFF, 0xF1, 0x4C, 0x80, 0x00, 0x1F, 0xFC]; // ADTS header
-        let audio_frame = MediaFrame::audio(
-            CodecType::Aac,
-            0,
-            Bytes::from(aac_data),
-            1,
-        );
+        let audio_frame = MediaFrame::audio(CodecType::Aac, 0, Bytes::from(aac_data), 1);
         let ts_data = muxer.write_frame(&audio_frame);
         // 音频帧应该至少一个包
         assert!(ts_data.len() >= TS_PACKET_SIZE);
@@ -757,7 +743,9 @@ mod tests {
         for i in 0..10 {
             let mut h264_data = Vec::new();
             if i == 0 {
-                h264_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x0a, 0xf8, 0x41, 0xa2]);
+                h264_data.extend_from_slice(&[
+                    0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x0a, 0xf8, 0x41, 0xa2,
+                ]);
                 h264_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x68, 0xce, 0x38, 0x80]);
                 h264_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x80, 0x40]);
             } else {

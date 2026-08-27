@@ -90,7 +90,11 @@ impl MixManager {
         output_codec: &str,
     ) -> Arc<MixState> {
         let mix_id = uuid::Uuid::new_v4().to_string();
-        let mixer = Arc::new(ConferenceMixer::with_max_speakers(&mix_id, sample_rate, max_speakers));
+        let mixer = Arc::new(ConferenceMixer::with_max_speakers(
+            &mix_id,
+            sample_rate,
+            max_speakers,
+        ));
         mixer.start();
 
         let state = Arc::new(MixState {
@@ -115,8 +119,11 @@ impl MixManager {
             .ok_or_else(|| format!("mix {} not found", mix_id))?;
 
         // 停止所有 bridge tasks
-        let session_ids: Vec<SessionId> =
-            state.participants.iter().map(|p| p.session_id.clone()).collect();
+        let session_ids: Vec<SessionId> = state
+            .participants
+            .iter()
+            .map(|p| p.session_id.clone())
+            .collect();
         for entry in state.participants.iter() {
             entry.stopped.store(true, Ordering::Relaxed);
         }
@@ -177,7 +184,9 @@ impl MixManager {
             0,
         );
         let broadcast_tx = mix_track.rtp_broadcast.clone();
-        session.tracks.insert(mix_track_id.clone(), Arc::new(mix_track));
+        session
+            .tracks
+            .insert(mix_track_id.clone(), Arc::new(mix_track));
 
         // 3. 启动 egress bridge task
         let stopped = Arc::new(AtomicBool::new(false));
@@ -212,9 +221,12 @@ impl MixManager {
         );
 
         // 5. 注册 track_mix_inputs（push_rtp 热路径查这个表）
-        self.track_mix_inputs
-            .insert((session_id.clone(), source_track_id.clone()), mixer_input_tx);
-        self.session_mix.insert(session_id.clone(), mix_id.to_string());
+        self.track_mix_inputs.insert(
+            (session_id.clone(), source_track_id.clone()),
+            mixer_input_tx,
+        );
+        self.session_mix
+            .insert(session_id.clone(), mix_id.to_string());
 
         info!(
             mix_id = %mix_id,
@@ -281,7 +293,9 @@ impl MixManager {
             .get(mix_id)
             .map(|m| m.clone())
             .ok_or_else(|| format!("mix {} not found", mix_id))?;
-        mix_state.mixer.set_route_gain(src_session, dst_session, gain);
+        mix_state
+            .mixer
+            .set_route_gain(src_session, dst_session, gain);
         Ok(())
     }
 
@@ -327,9 +341,11 @@ impl MixManager {
         mix_id: &str,
         session_id: &SessionId,
     ) -> Option<TrackId> {
-        self.mixes
-            .get(mix_id)
-            .and_then(|m| m.participants.get(session_id).map(|p| p.source_track_id.clone()))
+        self.mixes.get(mix_id).and_then(|m| {
+            m.participants
+                .get(session_id)
+                .map(|p| p.source_track_id.clone())
+        })
     }
 
     /// 获取 mix 中所有参与者的 session_id

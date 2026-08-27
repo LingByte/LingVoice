@@ -68,7 +68,12 @@ impl Gb28181Demuxer {
                 break;
             }
 
-            let start_code = u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+            let start_code = u32::from_be_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ]);
 
             if start_code == 0x000001BA {
                 // PS pack header
@@ -104,14 +109,19 @@ impl Gb28181Demuxer {
                 }
 
                 let pes_payload_start = offset + 9 + pes_header_length;
-                let pes_payload_end = std::cmp::min(pes_payload_start + pes_length.saturating_sub(3 + pes_header_length), data.len());
+                let pes_payload_end = std::cmp::min(
+                    pes_payload_start + pes_length.saturating_sub(3 + pes_header_length),
+                    data.len(),
+                );
 
                 if pes_payload_start < pes_payload_end {
                     // PES payload 是 H264 NALU 数据
                     let pes_data = &data[pes_payload_start..pes_payload_end];
 
                     // 简化：直接作为一帧
-                    let keyframe = pes_data.windows(5).any(|w| w[0..4] == [0, 0, 0, 1] && (w[4] & 0x1f) == 5);
+                    let keyframe = pes_data
+                        .windows(5)
+                        .any(|w| w[0..4] == [0, 0, 0, 1] && (w[4] & 0x1f) == 5);
                     let frame = MediaFrame::video(
                         CodecType::H264,
                         0, // 时间戳从 PES 提取（简化）

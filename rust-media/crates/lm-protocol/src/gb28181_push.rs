@@ -10,8 +10,8 @@
 //! SIP 信令由 Go 协议层处理，这里只负责媒体推送。
 
 use anyhow::{anyhow, Result};
+use lm_core::{CodecType, MediaFrame, TrackKind};
 use tokio::net::UdpSocket;
-use lm_core::{MediaFrame, TrackKind, CodecType};
 
 /// GB28181 推流客户端
 pub struct Gb28181Pusher {
@@ -46,7 +46,8 @@ impl Gb28181Pusher {
         let socket = UdpSocket::bind("0.0.0.0:0")
             .await
             .map_err(|e| anyhow!("bind UDP: {e}"))?;
-        socket.connect(&self.remote_addr)
+        socket
+            .connect(&self.remote_addr)
             .await
             .map_err(|e| anyhow!("connect {addr}: {e}", addr = self.remote_addr))?;
         self.socket = Some(socket);
@@ -158,7 +159,14 @@ const PS_PACK_START_CODE: [u8; 4] = [0x00, 0x00, 0x01, 0xBA];
 const SYSTEM_HEADER_START_CODE: [u8; 4] = [0x00, 0x00, 0x01, 0xBB];
 
 /// 构造 RTP 包
-fn build_rtp_packet(seq: u16, timestamp: u32, ssrc: u32, pt: u8, payload: &[u8], marker: bool) -> Vec<u8> {
+fn build_rtp_packet(
+    seq: u16,
+    timestamp: u32,
+    ssrc: u32,
+    pt: u8,
+    payload: &[u8],
+    marker: bool,
+) -> Vec<u8> {
     let mut packet = Vec::with_capacity(12 + payload.len());
 
     // RTP header
@@ -206,12 +214,7 @@ mod tests {
     #[test]
     fn test_ps_muxer_audio() {
         let mut muxer = PsMuxer::new();
-        let frame = MediaFrame::audio(
-            CodecType::PcmU,
-            160,
-            Bytes::from(vec![0xFF; 160]),
-            1,
-        );
+        let frame = MediaFrame::audio(CodecType::PcmU, 160, Bytes::from(vec![0xFF; 160]), 1);
         let ps = muxer.mux_frame(&frame);
         assert!(!ps.is_empty());
     }
@@ -230,9 +233,15 @@ mod tests {
         // Seq = 1
         assert_eq!(u16::from_be_bytes([packet[2], packet[3]]), 1);
         // Timestamp = 9000
-        assert_eq!(u32::from_be_bytes([packet[4], packet[5], packet[6], packet[7]]), 9000);
+        assert_eq!(
+            u32::from_be_bytes([packet[4], packet[5], packet[6], packet[7]]),
+            9000
+        );
         // SSRC = 12345
-        assert_eq!(u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]), 12345);
+        assert_eq!(
+            u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]),
+            12345
+        );
     }
 
     #[test]
@@ -247,13 +256,7 @@ mod tests {
         let mut muxer = PsMuxer::new();
         assert!(!muxer.header_sent);
 
-        let frame = MediaFrame::video(
-            CodecType::H264,
-            9000,
-            Bytes::from(vec![0x01]),
-            1,
-            true,
-        );
+        let frame = MediaFrame::video(CodecType::H264, 9000, Bytes::from(vec![0x01]), 1, true);
         let ps1 = muxer.mux_frame(&frame);
         assert!(muxer.header_sent);
 

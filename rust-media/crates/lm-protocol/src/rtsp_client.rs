@@ -17,7 +17,7 @@
 //! ```
 
 use anyhow::{anyhow, Result};
-use tokio::io::{AsyncWriteExt, AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 /// RTSP 推流客户端
@@ -62,9 +62,14 @@ impl RtspClient {
         }
 
         // 发送 ANNOUNCE
-        let resp = self.send_request("ANNOUNCE", &url, &[
-            ("Content-Type", "application/sdp"),
-        ], Some(sdp.as_bytes())).await?;
+        let resp = self
+            .send_request(
+                "ANNOUNCE",
+                &url,
+                &[("Content-Type", "application/sdp")],
+                Some(sdp.as_bytes()),
+            )
+            .await?;
         if !resp.status.starts_with("200") {
             return Err(anyhow!("ANNOUNCE failed: {}", resp.status));
         }
@@ -81,9 +86,9 @@ impl RtspClient {
             let track_url = format!("{url}/trackID={i}");
             let interleaved = format!("interleaved={}-{}", i * 2, i * 2 + 1);
             let transport = format!("RTP/AVP/TCP;unicast;{interleaved}");
-            let resp = self.send_request("SETUP", &track_url, &[
-                ("Transport", &transport),
-            ], None).await?;
+            let resp = self
+                .send_request("SETUP", &track_url, &[("Transport", &transport)], None)
+                .await?;
             if !resp.status.starts_with("200") {
                 return Err(anyhow!("SETUP track {i} failed: {}", resp.status));
             }
@@ -159,7 +164,10 @@ impl RtspClient {
         headers: &[(&str, &str)],
         body: Option<&[u8]>,
     ) -> Result<RtspResponse> {
-        let stream = self.stream.as_mut().ok_or_else(|| anyhow!("not connected"))?;
+        let stream = self
+            .stream
+            .as_mut()
+            .ok_or_else(|| anyhow!("not connected"))?;
         let cseq = self.cseq;
         self.cseq += 1;
 
@@ -213,7 +221,9 @@ async fn read_rtsp_response<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Resul
 
 /// 解析 RTSP URL: rtsp://host:port/path
 fn parse_rtsp_url(url: &str) -> Result<(String, u16, String)> {
-    let url = url.strip_prefix("rtsp://").ok_or_else(|| anyhow!("invalid RTSP URL"))?;
+    let url = url
+        .strip_prefix("rtsp://")
+        .ok_or_else(|| anyhow!("invalid RTSP URL"))?;
     let (host_port, path) = url.split_once('/').unwrap_or((url, ""));
     let (host, port) = if let Some((h, p)) = host_port.split_once(':') {
         (h.to_string(), p.parse::<u16>().unwrap_or(554))

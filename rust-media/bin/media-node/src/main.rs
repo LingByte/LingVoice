@@ -55,8 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// 初始化日志：同时输出到 stdout 和 logs/rust-media/（按天滚动）
 fn init_logging() -> WorkerGuard {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info,lm_control=debug".into());
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,lm_control=debug".into());
 
     // 文件日志：按天滚动
     let file_appender = tracing_appender::rolling::daily("logs/rust-media", "media-node.log");
@@ -76,8 +76,6 @@ fn init_logging() -> WorkerGuard {
 
 fn hostname_or_id() -> String {
     std::env::var("NODE_ID").unwrap_or_else(|_| {
-        std::env::var("HOSTNAME").unwrap_or_else(|_| {
-            uuid::Uuid::new_v4().to_string()
-        })
+        std::env::var("HOSTNAME").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
     })
 }

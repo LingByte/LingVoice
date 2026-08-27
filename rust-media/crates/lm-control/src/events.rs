@@ -61,29 +61,18 @@ pub enum MediaNodeEvent {
         track_id: String,
     },
     /// 混音参与者加入
-    MixParticipantJoined {
-        mix_id: String,
-        session_id: String,
-    },
+    MixParticipantJoined { mix_id: String, session_id: String },
     /// 混音参与者离开
-    MixParticipantLeft {
-        mix_id: String,
-        session_id: String,
-    },
+    MixParticipantLeft { mix_id: String, session_id: String },
     /// 主发言者切换
-    DominantSpeakerChanged {
-        mix_id: String,
-        session_id: String,
-    },
+    DominantSpeakerChanged { mix_id: String, session_id: String },
     /// 会话创建
     SessionCreated {
         session_id: String,
         room_id: Option<String>,
     },
     /// 会话销毁
-    SessionDestroyed {
-        session_id: String,
-    },
+    SessionDestroyed { session_id: String },
 }
 
 impl MediaNodeEvent {
