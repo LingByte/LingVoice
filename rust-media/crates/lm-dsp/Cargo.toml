@@ -13,4 +13,5 @@ silero = ["dep:ort"]
 lm-core = { path = "../lm-core" }
 audio-codec.workspace = true
 anyhow.workspace = true
+rustfft.workspace = true
 ort = { version = "2.0.0-rc.13", optional = true }

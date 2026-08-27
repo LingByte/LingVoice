@@ -18,6 +18,8 @@ members = [
     "crates/lm-telemetry",
     "crates/lm-playback",
     "crates/lm-thumbnail",
+    "crates/lm-webrtc",
+    "crates/lm-srtp",
     "bin/media-node",
 ]
 
@@ -51,9 +53,13 @@ lm-transport = { path = "crates/lm-transport" }
 lm-depacketizer = { path = "crates/lm-depacketizer" }
 lm-stream = { path = "crates/lm-stream" }
 lm-protocol = { path = "crates/lm-protocol" }
+lm-webrtc = { path = "crates/lm-webrtc" }
 
 # WebRTC（暂不启用 str0m，Phase 1 先做 RTP 透传）
 # str0m = "0.7"
+
+# DSP
+rustfft = "6"
 
 # 并发
 dashmap = "6"

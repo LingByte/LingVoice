@@ -5,7 +5,10 @@
 
 pub use lm_core::Transport;
 
+pub mod fec;
+pub mod retransmit;
 pub mod rtcp;
+pub mod twcc;
 
 use bytes::{BufMut, Bytes, BytesMut};
 

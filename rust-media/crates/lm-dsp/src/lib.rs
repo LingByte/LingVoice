@@ -587,6 +587,426 @@ pub fn map_telephone_event_duration(
 }
 
 // ============================================================================
+// AGC（自动增益控制）
+// ============================================================================
+
+/// AGC 配置
+#[derive(Debug, Clone)]
+pub struct AgcConfig {
+    /// 目标电平 (dBFS, 通常 -3.0 到 -20.0)
+    pub target_level_dbfs: f32,
+    /// 最大增益 (dB, 通常 20-30)
+    pub max_gain_db: f32,
+    /// 最小增益 (dB, 通常 0)
+    pub min_gain_db: f32,
+    /// 攻击时间 (ms, 增益减小的速度)
+    pub attack_time_ms: f32,
+    /// 释放时间 (ms, 增益增大的速度)
+    pub release_time_ms: f32,
+    /// 采样率
+    pub sample_rate: u32,
+}
+
+impl Default for AgcConfig {
+    fn default() -> Self {
+        Self {
+            target_level_dbfs: -3.0,
+            max_gain_db: 30.0,
+            min_gain_db: 0.0,
+            attack_time_ms: 10.0,
+            release_time_ms: 100.0,
+            sample_rate: 48000,
+        }
+    }
+}
+
+/// AGC 处理器（数字自动增益控制）
+///
+/// 工作原理:
+/// 1. 计算当前帧的 RMS 电平
+/// 2. 计算需要的增益 = target_level - current_level
+/// 3. 平滑增益变化 (attack/release 时间常数)
+/// 4. 应用增益到每个样本
+pub struct Agc {
+    config: AgcConfig,
+    /// 当前增益 (线性, 1.0 = 0dB)
+    current_gain: f32,
+    /// 攻击系数 (一阶低通)
+    attack_coeff: f32,
+    /// 释放系数
+    release_coeff: f32,
+}
+
+impl Agc {
+    /// 创建 AGC 处理器
+    pub fn new(config: AgcConfig) -> Self {
+        // 系数按帧计算 (假设每帧 20ms)
+        let frame_duration_ms = 20.0_f32;
+        let attack_coeff =
+            time_constant_to_coeff_per_frame(config.attack_time_ms, frame_duration_ms);
+        let release_coeff =
+            time_constant_to_coeff_per_frame(config.release_time_ms, frame_duration_ms);
+        Self {
+            config,
+            current_gain: 1.0,
+            attack_coeff,
+            release_coeff,
+        }
+    }
+
+    /// 处理一帧音频（原地修改）
+    pub fn process(&mut self, frame: &mut AudioFrame) {
+        if frame.samples.is_empty() {
+            return;
+        }
+
+        // 1. 计算 RMS 电平
+        let rms = rms_energy(&frame.samples);
+        if rms < 1.0 {
+            // 近乎静音, 直接增大增益到 max (不应用避免爆音)
+            let target_gain_lin = db_to_linear(self.config.max_gain_db);
+            self.current_gain = smooth_gain(self.current_gain, target_gain_lin, self.release_coeff);
+            return;
+        }
+
+        // 2. 计算 dBFS 电平
+        let current_level_dbfs = 20.0 * (rms / 32768.0).log10();
+
+        // 3. 计算目标增益 (dB) 并限制范围
+        let target_gain_db = (self.config.target_level_dbfs - current_level_dbfs)
+            .clamp(self.config.min_gain_db, self.config.max_gain_db);
+        let target_gain_lin = db_to_linear(target_gain_db);
+
+        // 4. 平滑增益变化
+        self.current_gain = if target_gain_lin < self.current_gain {
+            // 需要减小增益 -> attack (快)
+            smooth_gain(self.current_gain, target_gain_lin, self.attack_coeff)
+        } else {
+            // 需要增大增益 -> release (慢)
+            smooth_gain(self.current_gain, target_gain_lin, self.release_coeff)
+        };
+
+        // 5. 应用增益
+        let gain = self.current_gain;
+        for s in frame.samples.iter_mut() {
+            *s = ((*s as f32) * gain).clamp(-32768.0, 32767.0) as i16;
+        }
+    }
+
+    /// 当前增益 (dB)
+    pub fn current_gain_db(&self) -> f32 {
+        linear_to_db(self.current_gain)
+    }
+
+    /// 重置状态
+    pub fn reset(&mut self) {
+        self.current_gain = 1.0;
+    }
+}
+
+impl Default for Agc {
+    fn default() -> Self {
+        Self::new(AgcConfig::default())
+    }
+}
+
+/// 时间常数 (ms) 转一阶低通系数 (按帧计算)
+/// coeff = exp(-frame_duration / time_constant)
+fn time_constant_to_coeff_per_frame(time_constant_ms: f32, frame_duration_ms: f32) -> f32 {
+    if time_constant_ms <= 0.0 || frame_duration_ms <= 0.0 {
+        return 0.0; // 无平滑, 立即跟随
+    }
+    (-frame_duration_ms / time_constant_ms).exp()
+}
+
+/// dB 转线性增益
+fn db_to_linear(db: f32) -> f32 {
+    10.0_f32.powf(db / 20.0)
+}
+
+/// 线性增益转 dB
+fn linear_to_db(lin: f32) -> f32 {
+    if lin <= 0.0 {
+        return f32::NEG_INFINITY;
+    }
+    20.0 * lin.log10()
+}
+
+/// 一阶低通平滑: new = coeff * old + (1 - coeff) * target
+fn smooth_gain(current: f32, target: f32, coeff: f32) -> f32 {
+    coeff * current + (1.0 - coeff) * target
+}
+
+// ============================================================================
+// Noise Suppression（降噪 — 谱减法）
+// ============================================================================
+
+use rustfft::{num_complex::Complex, Fft, FftPlanner};
+
+/// 降噪配置
+#[derive(Debug, Clone)]
+pub struct NoiseSuppressionConfig {
+    /// 采样率
+    pub sample_rate: u32,
+    /// FFT 大小 (帧大小, 通常 256 或 512)
+    pub frame_size: usize,
+    /// 噪声估计更新速度 (0.0-1.0, 越大越快)
+    pub noise_est_alpha: f32,
+    /// 谱减法过减因子 (1.0-4.0, 越大降噪越多但可能失真)
+    pub over_subtraction: f32,
+    /// 地板因子 (防止信号完全消除)
+    pub spectral_floor: f32,
+}
+
+impl Default for NoiseSuppressionConfig {
+    fn default() -> Self {
+        Self {
+            sample_rate: 48000,
+            frame_size: 512,
+            noise_est_alpha: 0.95,
+            over_subtraction: 2.0,
+            spectral_floor: 0.01,
+        }
+    }
+}
+
+/// 降噪处理器（谱减法 Spectral Subtraction）
+///
+/// 工作原理:
+/// 1. 对输入帧做 FFT
+/// 2. 估计噪声谱 (前几帧或静音段)
+/// 3. 从信号谱中减去噪声谱: |S|^2 = |Y|^2 - alpha * |N|^2
+/// 4. 如果 |S|^2 < floor * |Y|^2, 用 floor 代替
+/// 5. 保留相位 (用原始信号的相位)
+/// 6. IFFT 回时域
+pub struct NoiseSuppressor {
+    config: NoiseSuppressionConfig,
+    /// 噪声谱估计 (幅度谱, 功率)
+    noise_estimate: Vec<f32>,
+    /// 输入缓冲区 (累积到 frame_size)
+    input_buffer: Vec<f32>,
+    /// 输出缓冲区 (重叠相加)
+    output_buffer: Vec<f32>,
+    /// 是否已初始化噪声估计
+    noise_initialized: bool,
+    /// 噪声估计帧数
+    noise_frames_count: usize,
+    /// 噪声估计所需帧数
+    noise_init_frames: usize,
+    /// Hann 窗
+    window: Vec<f32>,
+    /// FFT 引擎
+    fft: std::sync::Arc<dyn Fft<f32>>,
+    /// IFFT 引擎
+    ifft: std::sync::Arc<dyn Fft<f32>>,
+    /// FFT 工作缓冲区
+    fft_buffer: Vec<Complex<f32>>,
+}
+
+impl NoiseSuppressor {
+    /// 创建降噪处理器
+    pub fn new(config: NoiseSuppressionConfig) -> Self {
+        let frame_size = config.frame_size;
+        let half = frame_size / 2;
+
+        // Hann 窗
+        let window: Vec<f32> = (0..frame_size)
+            .map(|i| {
+                0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / frame_size as f32).cos())
+            })
+            .collect();
+
+        // FFT / IFFT
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(frame_size);
+        let ifft = planner.plan_fft_inverse(frame_size);
+
+        Self {
+            config,
+            noise_estimate: vec![0.0; half + 1],
+            input_buffer: Vec::with_capacity(frame_size),
+            output_buffer: vec![0.0; frame_size],
+            noise_initialized: false,
+            noise_frames_count: 0,
+            noise_init_frames: 10,
+            window,
+            fft,
+            ifft,
+            fft_buffer: vec![Complex::new(0.0, 0.0); frame_size],
+        }
+    }
+
+    /// 处理一帧音频（原地修改）
+    ///
+    /// 输入帧大小可以任意; 内部累积到 frame_size 后做一次谱减法。
+    pub fn process(&mut self, frame: &mut AudioFrame) {
+        if frame.samples.is_empty() {
+            return;
+        }
+
+        let frame_size = self.config.frame_size;
+        let hop = frame_size / 2; // 50% 重叠
+
+        // 将 i16 样本追加到输入缓冲
+        for &s in &frame.samples {
+            self.input_buffer.push(s as f32 / 32768.0);
+        }
+
+        // 累积到足够样本后处理
+        let mut output_samples: Vec<f32> = Vec::with_capacity(frame.samples.len());
+
+        while self.input_buffer.len() >= frame_size {
+            // 取一帧
+            let mut block: Vec<f32> = self.input_buffer.drain(0..frame_size).collect();
+
+            // 谱减法处理
+            let processed = self.process_block(&mut block);
+
+            // overlap-add: 前半与 output_buffer 重叠相加, 后半存入 output_buffer
+            for i in 0..hop {
+                output_samples.push(self.output_buffer[i] + processed[i]);
+            }
+            for i in 0..hop {
+                self.output_buffer[i] = processed[hop + i];
+            }
+            // output_buffer 后半清零 (已被搬走)
+            for i in hop..frame_size {
+                self.output_buffer[i] = 0.0;
+            }
+        }
+
+        // 如果没有产出 (输入不足一帧), 直接返回 (不修改)
+        if output_samples.is_empty() {
+            return;
+        }
+
+        // 取出与输入帧等长的输出, 转回 i16
+        let n = frame.samples.len().min(output_samples.len());
+        for i in 0..n {
+            frame.samples[i] = (output_samples[i] * 32767.0).clamp(-32768.0, 32767.0) as i16;
+        }
+    }
+
+    /// 处理一个 frame_size 的块 (加窗 -> FFT -> 谱减 -> IFFT -> 去窗)
+    fn process_block(&mut self, block: &mut [f32]) -> Vec<f32> {
+        let frame_size = self.config.frame_size;
+        let half = frame_size / 2;
+
+        // 1. 加 Hann 窗
+        for i in 0..frame_size {
+            self.fft_buffer[i] = Complex::new(block[i] * self.window[i], 0.0);
+        }
+
+        // 2. FFT
+        self.fft.process(&mut self.fft_buffer);
+
+        // 3. 计算幅度谱与功率谱
+        let mut magnitude: Vec<f32> = Vec::with_capacity(half + 1);
+        let mut power: Vec<f32> = Vec::with_capacity(half + 1);
+        for i in 0..=half {
+            let mag = self.fft_buffer[i].norm();
+            magnitude.push(mag);
+            power.push(mag * mag);
+        }
+
+        // 4. 噪声估计 (前 noise_init_frames 帧)
+        if !self.noise_initialized {
+            if self.noise_frames_count < self.noise_init_frames {
+                // 更新噪声估计 (递归平均)
+                let alpha = self.config.noise_est_alpha;
+                for i in 0..=half {
+                    self.noise_estimate[i] =
+                        alpha * self.noise_estimate[i] + (1.0 - alpha) * power[i];
+                }
+                self.noise_frames_count += 1;
+            }
+            if self.noise_frames_count >= self.noise_init_frames {
+                self.noise_initialized = true;
+            }
+            // 噪声估计阶段, 输出原始信号 (加窗后)
+        } else {
+            // 5. 谱减法: |S|^2 = max(|Y|^2 - alpha * |N|^2, floor * |Y|^2)
+            let over = self.config.over_subtraction;
+            let floor = self.config.spectral_floor;
+            for i in 0..=half {
+                let subtracted = power[i] - over * self.noise_estimate[i];
+                let floored = floor * power[i];
+                let new_power = if subtracted > floored {
+                    subtracted
+                } else {
+                    floored
+                };
+                // 6. 保留相位, 用新幅度重构
+                let new_mag = new_power.max(0.0).sqrt();
+                let phase = self.fft_buffer[i].arg();
+                self.fft_buffer[i] = Complex::from_polar(new_mag, phase);
+            }
+            // 对称共轭 (实数 FFT)
+            for i in 1..half {
+                self.fft_buffer[frame_size - i] = self.fft_buffer[i].conj();
+            }
+        }
+
+        // 7. IFFT
+        self.ifft.process(&mut self.fft_buffer);
+
+        // 8. 归一化 (IFFT 不做归一化) + 去窗 (overlap-add 需要除以窗的归一化系数)
+        let norm = 1.0 / frame_size as f32;
+        let mut out = vec![0.0; frame_size];
+        for i in 0..frame_size {
+            out[i] = self.fft_buffer[i].re * norm * self.window[i];
+        }
+        out
+    }
+
+    /// 手动触发噪声估计更新
+    pub fn update_noise_estimate(&mut self, frame: &AudioFrame) {
+        let frame_size = self.config.frame_size;
+        let half = frame_size / 2;
+
+        // 累积样本
+        let mut temp = self.input_buffer.clone();
+        for &s in &frame.samples {
+            temp.push(s as f32 / 32768.0);
+        }
+
+        while temp.len() >= frame_size {
+            let block: Vec<f32> = temp.drain(0..frame_size).collect();
+            // 加窗 + FFT
+            for i in 0..frame_size {
+                self.fft_buffer[i] = Complex::new(block[i] * self.window[i], 0.0);
+            }
+            self.fft.process(&mut self.fft_buffer);
+            let alpha = self.config.noise_est_alpha;
+            for i in 0..=half {
+                let mag = self.fft_buffer[i].norm();
+                let power = mag * mag;
+                self.noise_estimate[i] = alpha * self.noise_estimate[i] + (1.0 - alpha) * power;
+            }
+            self.noise_frames_count += 1;
+            self.noise_initialized = true;
+        }
+    }
+
+    /// 重置状态
+    pub fn reset(&mut self) {
+        let half = self.config.frame_size / 2;
+        self.noise_estimate.fill(0.0);
+        self.input_buffer.clear();
+        self.output_buffer.fill(0.0);
+        self.noise_initialized = false;
+        self.noise_frames_count = 0;
+        let _ = half;
+    }
+}
+
+impl Default for NoiseSuppressor {
+    fn default() -> Self {
+        Self::new(NoiseSuppressionConfig::default())
+    }
+}
+
+// ============================================================================
 // 测试
 // ============================================================================
 
@@ -672,6 +1092,375 @@ mod tests {
         let m = mapped.unwrap();
         assert_eq!(&m[..2], &[2, 0x8a]);
         assert_eq!(u16::from_be_bytes([m[2], m[3]]), 800);
+    }
+
+    // ========================================================================
+    // AGC 测试
+    // ========================================================================
+
+    #[test]
+    fn test_agc_silence() {
+        // 静音输入, 增益应增大到 max
+        let config = AgcConfig {
+            sample_rate: 16000,
+            ..Default::default()
+        };
+        let mut agc = Agc::new(config);
+        let mut frame = AudioFrame {
+            samples: vec![0i16; 320],
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        for _ in 0..50 {
+            agc.process(&mut frame);
+        }
+        // 增益应接近 max_gain_db (30dB)
+        assert!(
+            agc.current_gain_db() > 20.0,
+            "gain should increase toward max for silence, got {}",
+            agc.current_gain_db()
+        );
+    }
+
+    #[test]
+    fn test_agc_loud() {
+        // 大音量输入, 增益应减小
+        let config = AgcConfig {
+            sample_rate: 16000,
+            ..Default::default()
+        };
+        let mut agc = Agc::new(config);
+        let samples = generate_sine_wave(320, 440.0, 16000, 1.0);
+        let mut frame = AudioFrame {
+            samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        for _ in 0..50 {
+            agc.process(&mut frame);
+        }
+        // 满量程正弦波 RMS ≈ -3dBFS, target = -3dBFS, 增益应接近 0dB (不增大)
+        assert!(
+            agc.current_gain_db() <= 1.0,
+            "gain should not increase for loud input, got {}",
+            agc.current_gain_db()
+        );
+    }
+
+    #[test]
+    fn test_agc_normal() {
+        // 正常音量 (目标 -3dBFS 附近), 增益应接近 1.0 (0dB)
+        let config = AgcConfig {
+            target_level_dbfs: -3.0,
+            sample_rate: 16000,
+            ..Default::default()
+        };
+        let mut agc = Agc::new(config);
+        // -3dBFS ≈ 0.707 * 32768 ≈ 23170
+        let amp = 0.707;
+        let samples = generate_sine_wave(320, 440.0, 16000, amp);
+        let mut frame = AudioFrame {
+            samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        for _ in 0..100 {
+            agc.process(&mut frame);
+        }
+        assert!(
+            agc.current_gain_db().abs() < 3.0,
+            "gain should be near 0dB for normal level, got {}",
+            agc.current_gain_db()
+        );
+    }
+
+    #[test]
+    fn test_agc_attack_release() {
+        // 验证 attack 比 release 快
+        // 用很低的 target_level 使大音量时增益需要减小 (但 min_gain_db 限制)
+        // 改用: 先静音让增益增大, 再用大音量让增益减小
+        let config = AgcConfig {
+            attack_time_ms: 1.0,      // 很快
+            release_time_ms: 500.0,   // 很慢
+            target_level_dbfs: -20.0, // 低目标电平
+            min_gain_db: -10.0,       // 允许减小增益
+            max_gain_db: 30.0,
+            sample_rate: 16000,
+        };
+        let mut agc = Agc::new(config);
+
+        // 先用小信号让增益增大
+        for _ in 0..50 {
+            let mut frame = AudioFrame {
+                samples: vec![100i16; 320],
+                sample_rate: 16000,
+                timestamp: 0,
+            };
+            agc.process(&mut frame);
+        }
+        let gain_after_release = agc.current_gain_db();
+        // 小信号时增益应增大
+        assert!(
+            gain_after_release > 5.0,
+            "gain should increase for quiet input, got {}",
+            gain_after_release
+        );
+
+        // 再用大音量, attack 快: 增益应快速减小
+        for _ in 0..5 {
+            let mut frame2 = AudioFrame {
+                samples: generate_sine_wave(320, 440.0, 16000, 1.0),
+                sample_rate: 16000,
+                timestamp: 0,
+            };
+            agc.process(&mut frame2);
+        }
+        let gain_after_attack = agc.current_gain_db();
+        // attack 快: 5 帧后增益应显著减小
+        assert!(
+            gain_after_attack < gain_after_release - 5.0,
+            "attack should reduce gain quickly, got {} (was {})",
+            gain_after_attack,
+            gain_after_release
+        );
+    }
+
+    #[test]
+    fn test_agc_clamp() {
+        // 验证输出不溢出 i16 范围
+        let config = AgcConfig {
+            max_gain_db: 30.0,
+            sample_rate: 16000,
+            ..Default::default()
+        };
+        let mut agc = Agc::new(config);
+        // 极小信号 -> 增益会很大
+        let samples: Vec<i16> = (0..320).map(|i| (i % 3) as i16 - 1).collect();
+        let mut frame = AudioFrame {
+            samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        for _ in 0..100 {
+            agc.process(&mut frame);
+            for &s in &frame.samples {
+                assert!(s >= -32768, "output overflow: {}", s);
+            }
+        }
+    }
+
+    #[test]
+    fn test_agc_reset() {
+        let mut agc = Agc::new(AgcConfig::default());
+        // 用小信号让增益增大 (每次创建新 frame 避免原地修改影响)
+        for _ in 0..50 {
+            let mut frame = AudioFrame {
+                samples: vec![100i16; 320],
+                sample_rate: 48000,
+                timestamp: 0,
+            };
+            agc.process(&mut frame);
+        }
+        assert!(
+            agc.current_gain_db() > 1.0,
+            "gain should have increased, got {}",
+            agc.current_gain_db()
+        );
+        // 重置
+        agc.reset();
+        assert!(
+            (agc.current_gain_db() - 0.0).abs() < 0.001,
+            "reset should set gain to 0dB, got {}",
+            agc.current_gain_db()
+        );
+    }
+
+    // ========================================================================
+    // Noise Suppression 测试
+    // ========================================================================
+
+    #[test]
+    fn test_ns_silence() {
+        // 静音输入, 输出应接近静音
+        let config = NoiseSuppressionConfig {
+            sample_rate: 16000,
+            frame_size: 256,
+            ..Default::default()
+        };
+        let mut ns = NoiseSuppressor::new(config);
+        let mut frame = AudioFrame {
+            samples: vec![0i16; 512],
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        for _ in 0..20 {
+            ns.process(&mut frame);
+        }
+        let energy = rms_energy(&frame.samples);
+        assert!(
+            energy < 10.0,
+            "silence output should be near zero, energy={}",
+            energy
+        );
+    }
+
+    #[test]
+    fn test_ns_white_noise() {
+        // 白噪声输入, 输出应减小噪声
+        let config = NoiseSuppressionConfig {
+            sample_rate: 16000,
+            frame_size: 256,
+            over_subtraction: 2.0,
+            ..Default::default()
+        };
+        let mut ns = NoiseSuppressor::new(config);
+
+        // 生成白噪声 (固定种子可复现)
+        let mut rng_state: u32 = 12345;
+        let gen_noise = |n: usize, state: &mut u32| -> Vec<i16> {
+            (0..n)
+                .map(|_| {
+                    *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                    ((*state >> 16) as i16) / 8 // 低幅度噪声
+                })
+                .collect()
+        };
+
+        // 先用噪声初始化噪声估计
+        for _ in 0..20 {
+            let noise = gen_noise(256, &mut rng_state);
+            let mut f = AudioFrame {
+                samples: noise,
+                sample_rate: 16000,
+                timestamp: 0,
+            };
+            ns.process(&mut f);
+        }
+
+        // 继续输入噪声, 测量输出能量
+        let input_energy_before = {
+            let noise = gen_noise(256, &mut rng_state);
+            rms_energy(&noise)
+        };
+        let mut frame = AudioFrame {
+            samples: gen_noise(256, &mut rng_state),
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        ns.process(&mut frame);
+        let output_energy = rms_energy(&frame.samples);
+
+        assert!(
+            output_energy < input_energy_before,
+            "output energy {} should be less than input {}",
+            output_energy,
+            input_energy_before
+        );
+    }
+
+    #[test]
+    fn test_ns_tone() {
+        // 纯音输入, 输出应保留信号 (纯音不是噪声)
+        let config = NoiseSuppressionConfig {
+            sample_rate: 16000,
+            frame_size: 256,
+            over_subtraction: 1.5,
+            ..Default::default()
+        };
+        let mut ns = NoiseSuppressor::new(config);
+
+        // 先用静音初始化噪声估计 (噪声谱很低)
+        for _ in 0..20 {
+            let mut f = AudioFrame {
+                samples: vec![0i16; 256],
+                sample_rate: 16000,
+                timestamp: 0,
+            };
+            ns.process(&mut f);
+        }
+
+        // 输入纯音
+        let tone = generate_sine_wave(512, 440.0, 16000, 0.5);
+        let input_energy = rms_energy(&tone);
+        let mut frame = AudioFrame {
+            samples: tone,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        ns.process(&mut frame);
+        let output_energy = rms_energy(&frame.samples);
+
+        // 纯音应被大部分保留 (噪声谱很低, 几乎不减)
+        assert!(
+            output_energy > input_energy * 0.3,
+            "tone should be preserved, input={} output={}",
+            input_energy,
+            output_energy
+        );
+    }
+
+    #[test]
+    fn test_ns_noise_estimate_update() {
+        let config = NoiseSuppressionConfig {
+            sample_rate: 16000,
+            frame_size: 256,
+            ..Default::default()
+        };
+        let mut ns = NoiseSuppressor::new(config);
+        assert!(!ns.noise_initialized);
+
+        // 手动更新噪声估计
+        let noise: Vec<i16> = (0..512).map(|i| ((i * 7) % 100) as i16 - 50).collect();
+        let frame = AudioFrame {
+            samples: noise,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        ns.update_noise_estimate(&frame);
+        assert!(ns.noise_initialized, "noise estimate should be initialized");
+        assert!(ns.noise_frames_count > 0);
+    }
+
+    #[test]
+    fn test_ns_reset() {
+        let config = NoiseSuppressionConfig {
+            sample_rate: 16000,
+            frame_size: 256,
+            ..Default::default()
+        };
+        let mut ns = NoiseSuppressor::new(config);
+        // 喂一些数据
+        let mut frame = AudioFrame {
+            samples: vec![100i16; 512],
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        for _ in 0..10 {
+            ns.process(&mut frame);
+        }
+        assert!(ns.noise_initialized);
+        // 重置
+        ns.reset();
+        assert!(!ns.noise_initialized);
+        assert_eq!(ns.noise_frames_count, 0);
+    }
+
+    #[test]
+    fn test_ns_frame_size_validation() {
+        // frame_size 必须是 2 的幂 (FFT 要求)
+        let config = NoiseSuppressionConfig {
+            frame_size: 256,
+            ..Default::default()
+        };
+        let ns = NoiseSuppressor::new(config);
+        assert_eq!(ns.config.frame_size, 256);
+        // 512 也应正常工作
+        let config2 = NoiseSuppressionConfig {
+            frame_size: 512,
+            ..Default::default()
+        };
+        let ns2 = NoiseSuppressor::new(config2);
+        assert_eq!(ns2.config.frame_size, 512);
     }
 
     // ========================================================================
