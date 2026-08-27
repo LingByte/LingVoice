@@ -1580,10 +1580,10 @@ mod tests {
         assert_eq!(chroma_qt.len(), 64, "DQT must have 64 values");
 
         for &v in luma_qt {
-            assert!(v >= 1 && v <= 255, "DQT value out of range: {}", v);
+            assert!(v >= 1, "DQT value out of range: {}", v);
         }
         for &v in chroma_qt {
-            assert!(v >= 1 && v <= 255, "DQT value out of range: {}", v);
+            assert!(v >= 1, "DQT value out of range: {}", v);
         }
     }
 

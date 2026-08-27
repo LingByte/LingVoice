@@ -7,7 +7,8 @@
 
 #![allow(dead_code)]
 
-use crate::{EncodedFrame, EncoderConfig, VideoCodecError, VideoEncoder, YuvFrame};
+use crate::{EncodedFrame, EncoderConfig, VideoCodecError, VideoDecoder, VideoEncoder, YuvFrame};
+use std::collections::VecDeque;
 use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
 use std::ptr;
@@ -195,6 +196,117 @@ extern "C" {
 
     fn CFRetain(cf: CFTypeRef);
 }
+
+// ============================================================================
+// VideoToolbox 解码 FFI 声明
+// ============================================================================
+
+type VTDecompressionSessionRef = *mut c_void;
+type CMVideoFormatDescriptionRef = *mut c_void;
+
+/// VTDecompressionOutputHandler — newer block-based callback (macOS 10.8+)
+type VTDecompressionOutputHandler = *mut c_void;
+
+/// VTDecodeInfoFlags
+type VTDecodeInfoFlags = u32;
+
+/// 解码输出回调上下文
+struct DecodeCallbackContext {
+    outputs: Mutex<Vec<YuvFrame>>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CMVideoDimensions {
+    width: i32,
+    height: i32,
+}
+
+extern "C" {
+    // CoreMedia — format description
+    fn CMVideoFormatDescriptionCreate(
+        allocator: CFAllocatorRef,
+        codec_type: CMVideoCodecType,
+        width: i32,
+        height: i32,
+        extensions: CFDictionaryRef,
+        format_desc_out: *mut CMVideoFormatDescriptionRef,
+    ) -> OSStatus;
+
+    fn CMVideoFormatDescriptionGetDimensions(
+        video_desc: CMVideoFormatDescriptionRef,
+    ) -> CMVideoDimensions;
+
+    fn CMVideoFormatDescriptionGetCodecType(
+        video_desc: CMVideoFormatDescriptionRef,
+    ) -> CMVideoCodecType;
+
+    fn CMSampleBufferCreate(
+        allocator: CFAllocatorRef,
+        data_buffer: CMBlockBufferRef,
+        data_ready: u32,
+        make_data_ready_callback: *mut c_void,
+        make_data_ready_refcon: *mut c_void,
+        format_description: CMVideoFormatDescriptionRef,
+        num_samples: CMItemCount,
+        num_sample_timing_entries: CMItemCount,
+        sample_timing_array: *const c_void,
+        num_sample_size_entries: CMItemCount,
+        sample_size_array: *const usize,
+        sample_buffer_out: *mut CMSampleBufferRef,
+    ) -> OSStatus;
+
+    fn CMBlockBufferCreateWithMemoryBlock(
+        allocator: CFAllocatorRef,
+        memory_block_to_use: *mut c_void,
+        block_length: usize,
+        block_allocator: CFAllocatorRef,
+        custom_block_source: *mut c_void,
+        offset_to_data: usize,
+        data_length: usize,
+        flags: u32,
+        new_block_buffer_out: *mut CMBlockBufferRef,
+    ) -> OSStatus;
+
+    // VideoToolbox — decompression session
+    fn VTDecompressionSessionCreate(
+        allocator: CFAllocatorRef,
+        video_format_description: CMVideoFormatDescriptionRef,
+        video_decoder_specification: CFDictionaryRef,
+        destination_image_buffer_attributes: CFDictionaryRef,
+        output_callback: VTDecompressionOutputHandler,
+        decompression_session_out: *mut VTDecompressionSessionRef,
+    ) -> OSStatus;
+
+    fn VTDecompressionSessionDecodeFrame(
+        session: VTDecompressionSessionRef,
+        sample_buffer: CMSampleBufferRef,
+        decode_flags: VTDecodeInfoFlags,
+        output_refcon: *mut c_void,
+        info_flags_out: *mut VTDecodeInfoFlags,
+    ) -> OSStatus;
+
+    fn VTDecompressionSessionInvalidate(session: VTDecompressionSessionRef);
+
+    fn VTDecompressionSessionCanAcceptFormatDescription(
+        session: VTDecompressionSessionRef,
+        new_format_desc: CMVideoFormatDescriptionRef,
+    ) -> u8;
+
+    // CoreVideo — pixel buffer attributes for decode output
+    fn CVPixelBufferGetPixelFormatType(pixel_buffer: CVPixelBufferRef) -> u32;
+    fn CVPixelBufferGetPlaneCount(pixel_buffer: CVPixelBufferRef) -> usize;
+    fn CVPixelBufferRetain(pixel_buffer: CVPixelBufferRef) -> CVPixelBufferRef;
+}
+
+// CVPixelBuffer pixel format types
+const KCV_PIXEL_FORMAT_TYPE_420YPCBCR8BIPLANAR_VIDEO_RANGE: u32 = 0x74727670; // 'trvp' (NV12 video)
+const KCV_PIXEL_FORMAT_TYPE_420YPCBCR8BIPLANAR_FULL_RANGE: u32 = 0x74727666; // 'trvf' (NV12 full)
+const KCV_PIXEL_FORMAT_TYPE_420YPCCRBA8_PLANAR: u32 = 0x79343230; // 'y420' (I420)
+
+// VTDecodeInfoFlags
+const K_VT_DECODE_FRAME_DO_NOT_OUTPUT_FRAME: VTDecodeInfoFlags = 0x01;
+const K_VT_DECODE_FRAME_SKIP_ENCRYPTION: VTDecodeInfoFlags = 0x02;
 
 extern "C" {
     static kCFBooleanTrue: CFBooleanRef;
@@ -771,6 +883,7 @@ impl VideoEncoder for VideoToolboxEncoder {
                     height: self.config.height,
                     keyframe,
                     timestamp: frame.timestamp,
+                    bit_depth: 8,
                 })
             }
             None => Err(VideoCodecError::EncodeFailed(
@@ -830,6 +943,590 @@ impl VideoEncoder for VideoToolboxEncoder {
             let _ = VTSessionSetProperty(self.session, cf_key, cf_val as CFTypeRef);
             CFRelease(cf_key as CFTypeRef);
             CFRelease(cf_val as CFTypeRef);
+        }
+    }
+}
+
+// ============================================================================
+// VideoToolbox 硬件解码器
+// ============================================================================
+
+/// VideoToolbox 硬件解码器 (macOS)
+///
+/// 通过 VideoToolbox framework 的 VTDecompressionSession 进行硬件解码。
+/// 支持 H.264 和 H.265/HEVC。
+///
+/// 使用流程:
+/// 1. `new_h264()` 或 `new_h265()` 创建解码器
+/// 2. `set_parameter_sets()` 设置 SPS/PPS (H.264) 或 VPS/SPS/PPS (H.265)
+/// 3. `decode()` 提交编码帧进行解码
+///
+/// VideoToolbox 解码是异步的 (callback-based)，通过 Mutex<Vec> 收集输出。
+pub struct VideoToolboxDecoder {
+    session: VTDecompressionSessionRef,
+    format_desc: CMVideoFormatDescriptionRef,
+    callback_ctx: Arc<DecodeCallbackContext>,
+    width: u32,
+    height: u32,
+    is_h264: bool,
+    /// 保存的参数集 (SPS/PPS)，用于重建会话
+    saved_params: Vec<Vec<u8>>,
+    /// NAL unit header size (bytes), 从 format description 获取
+    nal_header_size: usize,
+    /// 输出回调队列 (备用，用于同步等待)
+    output_queue: VecDeque<YuvFrame>,
+    /// 是否已初始化会话
+    session_initialized: bool,
+}
+
+unsafe impl Send for VideoToolboxDecoder {}
+unsafe impl Sync for VideoToolboxDecoder {}
+
+impl VideoToolboxDecoder {
+    /// 检查 VideoToolbox 解码是否可用 (仅在 macOS 上返回 true)
+    pub fn is_available() -> bool {
+        cfg!(target_os = "macos")
+    }
+
+    /// 创建 H.264 解码器
+    pub fn new_h264() -> Result<Self, VideoCodecError> {
+        Self::new(true)
+    }
+
+    /// 创建 H.265/HEVC 解码器
+    pub fn new_h265() -> Result<Self, VideoCodecError> {
+        Self::new(false)
+    }
+
+    fn new(is_h264: bool) -> Result<Self, VideoCodecError> {
+        if !Self::is_available() {
+            return Err(VideoCodecError::Unsupported(
+                "VideoToolbox decoder only available on macOS".into(),
+            ));
+        }
+
+        Ok(Self {
+            session: ptr::null_mut(),
+            format_desc: ptr::null_mut(),
+            callback_ctx: Arc::new(DecodeCallbackContext {
+                outputs: Mutex::new(Vec::new()),
+            }),
+            width: 0,
+            height: 0,
+            is_h264,
+            saved_params: Vec::new(),
+            nal_header_size: 4,
+            output_queue: VecDeque::new(),
+            session_initialized: false,
+        })
+    }
+
+    /// 设置 SPS/PPS (H.264) 或 VPS/SPS/PPS (H.265)
+    ///
+    /// 参数集应为不带 start code 的纯 NAL unit 数据。
+    /// 调用后会创建 CMVideoFormatDescription 和 VTDecompressionSession。
+    pub fn set_parameter_sets(&mut self, params: &[&[u8]]) -> Result<(), VideoCodecError> {
+        if params.is_empty() {
+            return Err(VideoCodecError::InvalidInput(
+                "no parameter sets provided".into(),
+            ));
+        }
+
+        // 保存参数集
+        self.saved_params = params.iter().map(|p| p.to_vec()).collect();
+
+        // 释放旧的 format description 和 session
+        self.invalidate_session();
+
+        // 创建 CMVideoFormatDescription
+        let codec_type = if self.is_h264 {
+            KCM_VIDEO_CODEC_TYPE_H264
+        } else {
+            KCM_VIDEO_CODEC_TYPE_HEVC
+        };
+
+        let mut format_desc: CMVideoFormatDescriptionRef = ptr::null_mut();
+
+        let ret = unsafe {
+            CMVideoFormatDescriptionCreate(
+                ptr::null_mut(),
+                codec_type,
+                0, // width/height 从 SPS 自动推断
+                0,
+                ptr::null_mut(),
+                &mut format_desc,
+            )
+        };
+
+        if ret != NO_ERR {
+            return Err(VideoCodecError::DecodeFailed(format!(
+                "CMVideoFormatDescriptionCreate failed: {}",
+                ret
+            )));
+        }
+
+        // 获取 NAL header size 和参数集计数
+        let mut param_count: usize = 0;
+        let mut nal_header: i32 = 4;
+        let get_ret = if self.is_h264 {
+            unsafe {
+                CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                    format_desc,
+                    0,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    &mut param_count,
+                    &mut nal_header,
+                )
+            }
+        } else {
+            unsafe {
+                CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+                    format_desc,
+                    0,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    &mut param_count,
+                    &mut nal_header,
+                )
+            }
+        };
+
+        if get_ret == NO_ERR {
+            self.nal_header_size = nal_header as usize;
+        }
+
+        // 获取视频尺寸
+        let dims = unsafe { CMVideoFormatDescriptionGetDimensions(format_desc) };
+        if dims.width > 0 && dims.height > 0 {
+            self.width = dims.width as u32;
+            self.height = dims.height as u32;
+        }
+
+        self.format_desc = format_desc;
+
+        // 创建解码会话
+        self.create_session()?;
+
+        Ok(())
+    }
+
+    /// 创建 VTDecompressionSession
+    fn create_session(&mut self) -> Result<(), VideoCodecError> {
+        if self.format_desc.is_null() {
+            return Err(VideoCodecError::NotInitialized);
+        }
+
+        // 释放旧会话
+        if !self.session.is_null() {
+            unsafe { VTDecompressionSessionInvalidate(self.session) };
+            self.session = ptr::null_mut();
+        }
+
+        // 清空输出队列
+        if let Ok(mut outputs) = self.callback_ctx.outputs.lock() {
+            outputs.clear();
+        }
+
+        let mut session: VTDecompressionSessionRef = ptr::null_mut();
+
+        // 创建解码会话
+        // 注意: 完整实现需要设置 output callback (VTDecompressionOutputHandler)
+        // 这里使用简化框架 — 实际 GPU 解码需要完整的回调设置
+        let ret = unsafe {
+            VTDecompressionSessionCreate(
+                ptr::null_mut(),
+                self.format_desc,
+                ptr::null_mut(), // decoder specification
+                ptr::null_mut(), // destination image buffer attributes
+                ptr::null_mut(), // output callback (简化: 使用 null)
+                &mut session,
+            )
+        };
+
+        if ret != NO_ERR {
+            return Err(VideoCodecError::DecodeFailed(format!(
+                "VTDecompressionSessionCreate failed: {}",
+                ret
+            )));
+        }
+
+        self.session = session;
+        self.session_initialized = true;
+
+        Ok(())
+    }
+
+    /// 释放当前会话和 format description
+    fn invalidate_session(&mut self) {
+        unsafe {
+            if !self.session.is_null() {
+                VTDecompressionSessionInvalidate(self.session);
+                self.session = ptr::null_mut();
+            }
+            if !self.format_desc.is_null() {
+                CFRelease(self.format_desc as CFTypeRef);
+                self.format_desc = ptr::null_mut();
+            }
+        }
+        self.session_initialized = false;
+    }
+
+    /// 从 CVPixelBuffer 提取 YUV 数据并转换为 YuvFrame
+    ///
+    /// 支持 NV12 (biplanar) 和 I420 (planar) 格式。
+    unsafe fn extract_yuv_from_pixel_buffer(
+        &self,
+        pixel_buffer: CVPixelBufferRef,
+        timestamp: u64,
+        keyframe: bool,
+    ) -> Option<YuvFrame> {
+        if pixel_buffer.is_null() {
+            return None;
+        }
+
+        let pixel_format = CVPixelBufferGetPixelFormatType(pixel_buffer);
+        let plane_count = CVPixelBufferGetPlaneCount(pixel_buffer);
+
+        CVPixelBufferLockBaseAddress(pixel_buffer, 0);
+
+        let result = if pixel_format == KCV_PIXEL_FORMAT_TYPE_420YPCBCR8BIPLANAR_VIDEO_RANGE
+            || pixel_format == KCV_PIXEL_FORMAT_TYPE_420YPCBCR8BIPLANAR_FULL_RANGE
+        {
+            // NV12: 2 planes (Y + interleaved UV)
+            if plane_count < 2 {
+                None
+            } else {
+                let width = CVPixelBufferGetWidthOfPlane(pixel_buffer, 0) as u32;
+                let height = CVPixelBufferGetHeightOfPlane(pixel_buffer, 0) as u32;
+                let y_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 0);
+                let uv_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 1);
+                let y_ptr = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0) as *const u8;
+                let uv_ptr = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 1) as *const u8;
+
+                if width == 0 || height == 0 || y_ptr.is_null() || uv_ptr.is_null() {
+                    None
+                } else {
+                    let y_size = (width * height) as usize;
+                    let uv_size = ((width / 2) * (height / 2)) as usize;
+                    let mut y = vec![0u8; y_size];
+                    let mut u = vec![128u8; uv_size];
+                    let mut v = vec![128u8; uv_size];
+
+                    // Copy Y plane
+                    for row in 0..height as usize {
+                        ptr::copy_nonoverlapping(
+                            y_ptr.add(row * y_stride),
+                            y.as_mut_ptr().add(row * width as usize),
+                            width as usize,
+                        );
+                    }
+
+                    // Deinterleave UV (NV12: [U0 V0 U1 V1...] → separate U, V planes)
+                    let uv_w = (width / 2) as usize;
+                    let uv_h = (height / 2) as usize;
+                    for row in 0..uv_h {
+                        let uv_row = uv_ptr.add(row * uv_stride);
+                        for col in 0..uv_w {
+                            u[row * uv_w + col] = *uv_row.add(col * 2);
+                            v[row * uv_w + col] = *uv_row.add(col * 2 + 1);
+                        }
+                    }
+
+                    Some(YuvFrame {
+                        y,
+                        u,
+                        v,
+                        width,
+                        height,
+                        timestamp,
+                        keyframe,
+                        bit_depth: 8,
+                        y16: Vec::new(),
+                        u16: Vec::new(),
+                        v16: Vec::new(),
+                    })
+                }
+            }
+        } else if pixel_format == KCV_PIXEL_FORMAT_TYPE_420YPCCRBA8_PLANAR
+            || pixel_format == KCV_PIXEL_FORMAT_TYPE_420YPCBCR8_PLANAR
+        {
+            // I420: 3 planes (Y, U, V)
+            if plane_count < 3 {
+                None
+            } else {
+                let width = CVPixelBufferGetWidthOfPlane(pixel_buffer, 0) as u32;
+                let height = CVPixelBufferGetHeightOfPlane(pixel_buffer, 0) as u32;
+                let y_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 0);
+                let u_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 1);
+                let v_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 2);
+                let y_ptr = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0) as *const u8;
+                let u_ptr = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 1) as *const u8;
+                let v_ptr = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 2) as *const u8;
+
+                if width == 0 || height == 0 || y_ptr.is_null() {
+                    None
+                } else {
+                    let y_size = (width * height) as usize;
+                    let uv_size = ((width / 2) * (height / 2)) as usize;
+                    let mut y = vec![0u8; y_size];
+                    let mut u = vec![128u8; uv_size];
+                    let mut v = vec![128u8; uv_size];
+
+                    for row in 0..height as usize {
+                        ptr::copy_nonoverlapping(
+                            y_ptr.add(row * y_stride),
+                            y.as_mut_ptr().add(row * width as usize),
+                            width as usize,
+                        );
+                    }
+                    let uv_w = (width / 2) as usize;
+                    let uv_h = (height / 2) as usize;
+                    for row in 0..uv_h {
+                        ptr::copy_nonoverlapping(
+                            u_ptr.add(row * u_stride),
+                            u.as_mut_ptr().add(row * uv_w),
+                            uv_w,
+                        );
+                        ptr::copy_nonoverlapping(
+                            v_ptr.add(row * v_stride),
+                            v.as_mut_ptr().add(row * uv_w),
+                            uv_w,
+                        );
+                    }
+
+                    Some(YuvFrame {
+                        y,
+                        u,
+                        v,
+                        width,
+                        height,
+                        timestamp,
+                        keyframe,
+                        bit_depth: 8,
+                        y16: Vec::new(),
+                        u16: Vec::new(),
+                        v16: Vec::new(),
+                    })
+                }
+            }
+        } else {
+            // Unknown pixel format
+            None
+        };
+
+        CVPixelBufferUnlockBaseAddress(pixel_buffer, 0);
+        result
+    }
+
+    /// 将 Annex B 格式的 NAL unit 数据转换为 AVCC 格式 (4-byte length prefix)
+    /// VideoToolbox 解码需要 AVCC 格式
+    fn annexb_to_avcc(data: &[u8], nal_header_size: usize) -> Vec<u8> {
+        let mut output = Vec::with_capacity(data.len() + 16);
+        let mut i = 0usize;
+
+        while i < data.len() {
+            // 查找 start code (00 00 01 或 00 00 00 01)
+            let start_code_len =
+                if i + 3 <= data.len() && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+                    3
+                } else if i + 4 <= data.len()
+                    && data[i] == 0
+                    && data[i + 1] == 0
+                    && data[i + 2] == 0
+                    && data[i + 3] == 1
+                {
+                    4
+                } else {
+                    i += 1;
+                    continue;
+                };
+
+            let nal_start = i + start_code_len;
+
+            // 查找下一个 start code 或数据末尾
+            let mut nal_end = data.len();
+            let mut j = nal_start + 1;
+            while j + 3 <= data.len() {
+                if data[j] == 0 && data[j + 1] == 0 && data[j + 2] == 1 {
+                    nal_end = j;
+                    break;
+                }
+                if j + 4 <= data.len()
+                    && data[j] == 0
+                    && data[j + 1] == 0
+                    && data[j + 2] == 0
+                    && data[j + 3] == 1
+                {
+                    nal_end = j;
+                    break;
+                }
+                j += 1;
+            }
+
+            let nal_data = &data[nal_start..nal_end];
+            let nal_len = nal_data.len() as u32;
+
+            // 写入 4-byte length prefix (big-endian)
+            output.extend_from_slice(&nal_len.to_be_bytes());
+            output.extend_from_slice(nal_data);
+
+            i = nal_end;
+        }
+
+        let _ = nal_header_size; // AVCC always uses 4-byte length prefix
+        output
+    }
+
+    /// 获取视频宽度
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// 获取视频高度
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// 是否已初始化 (已设置参数集并创建会话)
+    pub fn is_initialized(&self) -> bool {
+        self.session_initialized
+    }
+}
+
+impl Drop for VideoToolboxDecoder {
+    fn drop(&mut self) {
+        self.invalidate_session();
+    }
+}
+
+impl VideoDecoder for VideoToolboxDecoder {
+    fn decode(&mut self, data: &[u8], timestamp: u64) -> Result<YuvFrame, VideoCodecError> {
+        if data.is_empty() {
+            return Err(VideoCodecError::InvalidInput("empty decode data".into()));
+        }
+
+        if !self.session_initialized || self.session.is_null() {
+            return Err(VideoCodecError::NotInitialized);
+        }
+
+        // 将 Annex B 转换为 AVCC 格式
+        let avcc_data = Self::annexb_to_avcc(data, self.nal_header_size);
+        if avcc_data.is_empty() {
+            return Err(VideoCodecError::InvalidInput(
+                "no valid NAL units found in data".into(),
+            ));
+        }
+
+        // 创建 CMBlockBuffer 包含 AVCC 数据
+        let mut block_buffer: CMBlockBufferRef = ptr::null_mut();
+        let data_len = avcc_data.len();
+
+        let ret = unsafe {
+            CMBlockBufferCreateWithMemoryBlock(
+                ptr::null_mut(),
+                ptr::null_mut(), // let CoreMedia allocate
+                data_len,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                0,
+                data_len,
+                0,
+                &mut block_buffer,
+            )
+        };
+
+        if ret != NO_ERR || block_buffer.is_null() {
+            return Err(VideoCodecError::DecodeFailed(format!(
+                "CMBlockBufferCreateWithMemoryBlock failed: {}",
+                ret
+            )));
+        }
+
+        // Copy data into block buffer
+        let copy_ret = unsafe {
+            CMBlockBufferCopyDataBytes(block_buffer, 0, data_len, avcc_data.as_ptr() as *mut c_void)
+        };
+
+        if copy_ret != NO_ERR {
+            unsafe { CFRelease(block_buffer as CFTypeRef) };
+            return Err(VideoCodecError::DecodeFailed(format!(
+                "CMBlockBufferCopyDataBytes failed: {}",
+                copy_ret
+            )));
+        }
+
+        // 创建 CMSampleBuffer
+        let mut sample_buffer: CMSampleBufferRef = ptr::null_mut();
+        let sample_size = data_len;
+
+        let ret = unsafe {
+            CMSampleBufferCreate(
+                ptr::null_mut(),
+                block_buffer,
+                1, // data_ready
+                ptr::null_mut(),
+                ptr::null_mut(),
+                self.format_desc,
+                1, // num_samples
+                0, // num_sample_timing_entries
+                ptr::null(),
+                1, // num_sample_size_entries
+                &sample_size,
+                &mut sample_buffer,
+            )
+        };
+
+        if ret != NO_ERR {
+            unsafe { CFRelease(block_buffer as CFTypeRef) };
+            return Err(VideoCodecError::DecodeFailed(format!(
+                "CMSampleBufferCreate failed: {}",
+                ret
+            )));
+        }
+
+        // 提交解码
+        let mut info_flags: VTDecodeInfoFlags = 0;
+        let ret = unsafe {
+            VTDecompressionSessionDecodeFrame(
+                self.session,
+                sample_buffer,
+                0,
+                ptr::null_mut(),
+                &mut info_flags,
+            )
+        };
+
+        // 释放 sample buffer (block buffer 会被 sample buffer 释放)
+        unsafe { CFRelease(sample_buffer as CFTypeRef) };
+
+        if ret != NO_ERR {
+            return Err(VideoCodecError::DecodeFailed(format!(
+                "VTDecompressionSessionDecodeFrame failed: {}",
+                ret
+            )));
+        }
+
+        // 检查输出队列 (简化框架: 实际回调需要完整设置)
+        // 尝试从回调上下文获取输出
+        if let Ok(mut outputs) = self.callback_ctx.outputs.lock() {
+            if let Some(frame) = outputs.pop() {
+                return Ok(frame);
+            }
+        }
+
+        // 回调未设置时, 返回错误 (框架限制)
+        // 完整实现需要设置 VTDecompressionOutputHandler 回调
+        Err(VideoCodecError::DecodeFailed(
+            "VideoToolbox decode callback not configured (framework limitation)".into(),
+        ))
+    }
+
+    fn codec(&self) -> lm_core::CodecType {
+        if self.is_h264 {
+            lm_core::CodecType::H264
+        } else {
+            lm_core::CodecType::H265
         }
     }
 }

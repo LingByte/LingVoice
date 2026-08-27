@@ -302,6 +302,8 @@ pub struct EncodedFrame {
     pub height: u32,
     pub keyframe: bool,
     pub timestamp: u64,
+    /// 色深位数 (8 或 10)。默认 8-bit。
+    pub bit_depth: u8,
 }
 
 /// 编码器配置 — 运行时可调参数

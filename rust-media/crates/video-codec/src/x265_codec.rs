@@ -16,6 +16,7 @@ const X265_BUILD: c_int = 215;
 const X265_TYPE_AUTO: c_int = 0x0000;
 const X265_TYPE_IDR: c_int = 0x0001;
 const X265_CSP_I420: c_int = 1;
+const X265_CSP_I420_10: c_int = 2;
 
 #[repr(C)]
 struct X265Nal {
@@ -120,8 +121,17 @@ impl X265Encoder {
             parse(param, "b-adapt", "0")?;
             parse(param, "ref", "1")?;
             parse(param, "threads", &config.threads.to_string())?;
-            parse(param, "input-csp", "i420")?;
             parse(param, "repeat-headers", "1")?;
+
+            // 10-bit 色深配置
+            let is_10bit = config.bit_depth == 10;
+            if is_10bit {
+                parse(param, "internal-bitdepth", "10")?;
+                parse(param, "input-bitdepth", "10")?;
+                parse(param, "input-csp", "i42010")?;
+            } else {
+                parse(param, "input-csp", "i420")?;
+            }
 
             let encoder = x265_encoder_open_215(param);
             if encoder.is_null() {
@@ -140,8 +150,13 @@ impl X265Encoder {
                 ));
             }
             x265_picture_init(param, pic);
-            (*pic).color_space = X265_CSP_I420;
-            (*pic).bit_depth = 8;
+            if is_10bit {
+                (*pic).color_space = X265_CSP_I420_10;
+                (*pic).bit_depth = 10;
+            } else {
+                (*pic).color_space = X265_CSP_I420;
+                (*pic).bit_depth = 8;
+            }
 
             Ok(Self {
                 encoder,
@@ -181,14 +196,30 @@ impl VideoEncoder for X265Encoder {
 
         unsafe {
             (*self.pic).pts = frame.timestamp as i64;
-            (*self.pic).planes[0] = frame.y.as_ptr() as *mut c_void;
-            (*self.pic).planes[1] = frame.u.as_ptr() as *mut c_void;
-            (*self.pic).planes[2] = frame.v.as_ptr() as *mut c_void;
-            (*self.pic).stride[0] = frame.y_stride() as c_int;
-            (*self.pic).stride[1] = frame.uv_stride() as c_int;
-            (*self.pic).stride[2] = frame.uv_stride() as c_int;
-            (*self.pic).bit_depth = 8;
-            (*self.pic).color_space = X265_CSP_I420;
+
+            let is_10bit = self.config.bit_depth == 10;
+            if is_10bit {
+                // 10-bit: 使用 y16/u16/v16 数据 (P010 格式, little-endian u16)
+                (*self.pic).planes[0] = frame.y16.as_ptr() as *mut c_void;
+                (*self.pic).planes[1] = frame.u16.as_ptr() as *mut c_void;
+                (*self.pic).planes[2] = frame.v16.as_ptr() as *mut c_void;
+                // 10-bit stride 以 u16 元素为单位 (x265 期望 stride 为像素数)
+                (*self.pic).stride[0] = frame.y_stride() as c_int;
+                (*self.pic).stride[1] = frame.uv_stride() as c_int;
+                (*self.pic).stride[2] = frame.uv_stride() as c_int;
+                (*self.pic).bit_depth = 10;
+                (*self.pic).color_space = X265_CSP_I420_10;
+            } else {
+                // 8-bit: 使用 y/u/v 数据 (I420 格式)
+                (*self.pic).planes[0] = frame.y.as_ptr() as *mut c_void;
+                (*self.pic).planes[1] = frame.u.as_ptr() as *mut c_void;
+                (*self.pic).planes[2] = frame.v.as_ptr() as *mut c_void;
+                (*self.pic).stride[0] = frame.y_stride() as c_int;
+                (*self.pic).stride[1] = frame.uv_stride() as c_int;
+                (*self.pic).stride[2] = frame.uv_stride() as c_int;
+                (*self.pic).bit_depth = 8;
+                (*self.pic).color_space = X265_CSP_I420;
+            }
 
             if self.force_keyframe {
                 self.force_keyframe = false;
@@ -247,6 +278,7 @@ impl VideoEncoder for X265Encoder {
                 height: self.config.height,
                 keyframe: is_keyframe,
                 timestamp: frame.timestamp,
+                bit_depth: self.config.bit_depth,
             })
         }
     }

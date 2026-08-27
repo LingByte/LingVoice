@@ -1149,6 +1149,403 @@ fn ivf_frame_header(size: u32, timestamp: u64) -> [u8; 12] {
     h
 }
 
+// ============================================================================
+// IVF 录制器（独立结构，用于 VP8/VP9/AV1 等视频帧）
+// ============================================================================
+
+/// IVF 录制器 — 将视频帧写入 IVF 容器文件
+///
+/// IVF 是 WebM 项目定义的简单视频容器，用于 VP8/VP9/AV1。
+/// Header (32 bytes) + 每帧 (12 bytes frame header + data)。
+pub struct IvfRecorder {
+    file: File,
+    frame_count: u64,
+    codec_fourcc: [u8; 4],
+    width: u16,
+    height: u16,
+    fps_num: u32,
+    fps_den: u32,
+}
+
+impl IvfRecorder {
+    /// 创建 IVF 文件并写入文件头
+    pub async fn create(
+        path: &str,
+        fourcc: [u8; 4],
+        width: u16,
+        height: u16,
+        fps: u32,
+    ) -> Result<Self> {
+        if let Some(parent) = Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+        }
+
+        let mut file = File::create(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("create ivf file {path}: {e}"))?;
+
+        let mut recorder = Self {
+            file,
+            frame_count: 0,
+            codec_fourcc: fourcc,
+            width,
+            height,
+            fps_num: fps,
+            fps_den: 1,
+        };
+
+        recorder.write_header().await?;
+        recorder.file.flush().await?;
+        Ok(recorder)
+    }
+
+    async fn write_header(&mut self) -> Result<()> {
+        let mut h = [0u8; 32];
+        h[0..4].copy_from_slice(b"DKIF");
+        h[4..6].copy_from_slice(&0u16.to_le_bytes()); // version
+        h[6..8].copy_from_slice(&32u16.to_le_bytes()); // header length
+        h[8..12].copy_from_slice(&self.codec_fourcc);
+        h[12..14].copy_from_slice(&self.width.to_le_bytes());
+        h[14..16].copy_from_slice(&self.height.to_le_bytes());
+        h[16..20].copy_from_slice(&self.fps_num.to_le_bytes());
+        h[20..24].copy_from_slice(&self.fps_den.to_le_bytes());
+        h[24..28].copy_from_slice(&(self.frame_count as u32).to_le_bytes());
+        h[28..32].copy_from_slice(&0u32.to_le_bytes()); // unused
+        self.file.write_all(&h).await?;
+        Ok(())
+    }
+
+    /// 写入一帧视频数据
+    pub async fn write_frame(&mut self, data: &[u8], timestamp: u64) -> Result<()> {
+        let frame_hdr = ivf_frame_header(data.len() as u32, timestamp);
+        self.file.write_all(&frame_hdr).await?;
+        self.file.write_all(data).await?;
+        self.frame_count += 1;
+        Ok(())
+    }
+
+    /// 关闭文件（回写 frame_count 到 header）
+    pub async fn close(mut self) -> Result<()> {
+        // 回到 header 的 frame_count 位置 (offset 24) 回写
+        self.file.seek(SeekFrom::Start(24)).await?;
+        let count = self.frame_count as u32;
+        self.file.write_all(&count.to_le_bytes()).await?;
+        self.file.flush().await?;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// WebM 录制器（简化 EBML/Matroska）
+// ============================================================================
+
+/// EBML 元素 ID 常量
+const EBML_ID_EBML: u32 = 0x1A45DFA3;
+const EBML_ID_SEGMENT: u32 = 0x18538067;
+const EBML_ID_INFO: u32 = 0x1549A966;
+const EBML_ID_TIMECODE_SCALE: u32 = 0x2AD7B1;
+const EBML_ID_TRACKS: u32 = 0x1654AE6B;
+const EBML_ID_TRACK_ENTRY: u32 = 0xAE;
+const EBML_ID_TRACK_NUMBER: u32 = 0xD7;
+const EBML_ID_TRACK_TYPE: u32 = 0x83;
+const EBML_ID_CODEC_ID: u32 = 0x86;
+const EBML_ID_CLUSTER: u32 = 0x1F43B675;
+const EBML_ID_TIMECODE: u32 = 0xE7;
+const EBML_ID_SIMPLE_BLOCK: u32 = 0xA3;
+
+/// 将 EBML 元素 ID 编码为 1-4 字节的 VINT
+fn encode_ebml_id(id: u32) -> Vec<u8> {
+    if id <= 0xFF {
+        vec![id as u8]
+    } else if id <= 0xFFFF {
+        vec![(id >> 8) as u8, id as u8]
+    } else if id <= 0xFFFFFF {
+        vec![(id >> 16) as u8, (id >> 8) as u8, id as u8]
+    } else {
+        vec![
+            (id >> 24) as u8,
+            (id >> 16) as u8,
+            (id >> 8) as u8,
+            id as u8,
+        ]
+    }
+}
+
+/// 将数据大小编码为 EBML VINT (variable-size integer)
+fn encode_ebml_size(size: u64) -> Vec<u8> {
+    if size < (1 << 7) - 1 {
+        vec![size as u8]
+    } else if size < (1 << 14) - 1 {
+        vec![(0x80 | (size >> 8) as u8), (size & 0xFF) as u8]
+    } else if size < (1 << 21) - 1 {
+        vec![
+            (0xC0 | (size >> 16) as u8),
+            ((size >> 8) & 0xFF) as u8,
+            (size & 0xFF) as u8,
+        ]
+    } else if size < (1 << 28) - 1 {
+        vec![
+            (0xE0 | (size >> 24) as u8),
+            ((size >> 16) & 0xFF) as u8,
+            ((size >> 8) & 0xFF) as u8,
+            (size & 0xFF) as u8,
+        ]
+    } else {
+        // 8-byte VINT
+        vec![
+            0x01,
+            ((size >> 48) & 0xFF) as u8,
+            ((size >> 40) & 0xFF) as u8,
+            ((size >> 32) & 0xFF) as u8,
+            ((size >> 24) & 0xFF) as u8,
+            ((size >> 16) & 0xFF) as u8,
+            ((size >> 8) & 0xFF) as u8,
+            (size & 0xFF) as u8,
+        ]
+    }
+}
+
+/// 编码一个 EBML 元素 (ID + size + data)
+fn encode_ebml_element(id: u32, data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&encode_ebml_id(id));
+    out.extend_from_slice(&encode_ebml_size(data.len() as u64));
+    out.extend_from_slice(data);
+    out
+}
+
+/// 编码一个 EBML 无符号整数元素
+fn encode_ebml_uint(id: u32, value: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&encode_ebml_id(id));
+
+    // 将 value 编码为最小字节数的 big-endian
+    let mut bytes = Vec::new();
+    let mut v = value;
+    if v == 0 {
+        bytes.push(0);
+    } else {
+        while v > 0 {
+            bytes.insert(0, (v & 0xFF) as u8);
+            v >>= 8;
+        }
+    }
+    out.extend_from_slice(&encode_ebml_size(bytes.len() as u64));
+    out.extend_from_slice(&bytes);
+    out
+}
+
+/// 编码一个 EBML 字符串元素
+fn encode_ebml_string(id: u32, s: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&encode_ebml_id(id));
+    out.extend_from_slice(&encode_ebml_size(s.len() as u64));
+    out.extend_from_slice(s.as_bytes());
+    out
+}
+
+/// WebM 录制器 (简化 EBML/Matroska)
+///
+/// 写入 EBML header + Segment + Info + Tracks + Cluster。
+/// 视频帧使用 SimpleBlock，音频帧也使用 SimpleBlock。
+pub struct WebmRecorder {
+    file: File,
+    video_track: u8,
+    audio_track: Option<u8>,
+    cluster_timestamp: u64,
+}
+
+impl WebmRecorder {
+    /// 创建 WebM 文件并写入 EBML header + Segment + Tracks
+    pub async fn create(path: &str, has_audio: bool) -> Result<Self> {
+        if let Some(parent) = Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+        }
+
+        let mut file = File::create(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("create webm file {path}: {e}"))?;
+
+        let mut recorder = Self {
+            file,
+            video_track: 1,
+            audio_track: if has_audio { Some(2) } else { None },
+            cluster_timestamp: u64::MAX,
+        };
+
+        recorder.write_ebml_header().await?;
+        recorder.write_segment_and_tracks().await?;
+        recorder.file.flush().await?;
+        Ok(recorder)
+    }
+
+    async fn write_ebml_header(&mut self) -> Result<()> {
+        // EBML header element
+        let mut ebml_body = Vec::new();
+        ebml_body.extend_from_slice(&encode_ebml_uint(0x4286, 1)); // EBMLVersion
+        ebml_body.extend_from_slice(&encode_ebml_uint(0x42F7, 1)); // EBMLReadVersion
+        ebml_body.extend_from_slice(&encode_ebml_uint(0x42F2, 4)); // EBMLMaxIDLength
+        ebml_body.extend_from_slice(&encode_ebml_uint(0x42F3, 8)); // EBMLMaxSizeLength
+        ebml_body.extend_from_slice(&encode_ebml_string(0x4282, "webm")); // DocType
+        ebml_body.extend_from_slice(&encode_ebml_uint(0x4287, 2)); // DocTypeVersion
+        ebml_body.extend_from_slice(&encode_ebml_uint(0x4285, 2)); // DocTypeReadVersion
+
+        let header = encode_ebml_element(EBML_ID_EBML, &ebml_body);
+        self.file.write_all(&header).await?;
+        Ok(())
+    }
+
+    async fn write_segment_and_tracks(&mut self) -> Result<()> {
+        // Build Info + Tracks content first, then wrap in Segment.
+        let mut segment_body = Vec::new();
+
+        // Info element: TimecodeScale = 1000000 (1ms in nanoseconds)
+        let info_body = encode_ebml_uint(EBML_ID_TIMECODE_SCALE, 1000000);
+        segment_body.extend_from_slice(&encode_ebml_element(EBML_ID_INFO, &info_body));
+
+        // Tracks element
+        let mut tracks_body = Vec::new();
+
+        // Video track entry
+        let mut video_entry = Vec::new();
+        video_entry.extend_from_slice(&encode_ebml_uint(
+            EBML_ID_TRACK_NUMBER,
+            self.video_track as u64,
+        ));
+        video_entry.extend_from_slice(&encode_ebml_uint(0x73C5, self.video_track as u64)); // TrackUID
+        video_entry.extend_from_slice(&encode_ebml_uint(EBML_ID_TRACK_TYPE, 1)); // TrackType = video
+        video_entry.extend_from_slice(&encode_ebml_string(EBML_ID_CODEC_ID, "V_VP8"));
+        tracks_body.extend_from_slice(&encode_ebml_element(EBML_ID_TRACK_ENTRY, &video_entry));
+
+        // Audio track entry (optional)
+        if let Some(audio_track) = self.audio_track {
+            let mut audio_entry = Vec::new();
+            audio_entry
+                .extend_from_slice(&encode_ebml_uint(EBML_ID_TRACK_NUMBER, audio_track as u64));
+            audio_entry.extend_from_slice(&encode_ebml_uint(0x73C5, audio_track as u64)); // TrackUID
+            audio_entry.extend_from_slice(&encode_ebml_uint(EBML_ID_TRACK_TYPE, 2)); // TrackType = audio
+            audio_entry.extend_from_slice(&encode_ebml_string(EBML_ID_CODEC_ID, "A_OPUS"));
+            tracks_body.extend_from_slice(&encode_ebml_element(EBML_ID_TRACK_ENTRY, &audio_entry));
+        }
+
+        segment_body.extend_from_slice(&encode_ebml_element(EBML_ID_TRACKS, &tracks_body));
+
+        // Write Segment element with unknown size (use 0x01FFFFFFFFFFFFFF for unknown)
+        let segment_id = encode_ebml_id(EBML_ID_SEGMENT);
+        self.file.write_all(&segment_id).await?;
+        // Unknown size: 8 bytes, all 0xFF after the marker bit
+        self.file
+            .write_all(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+            .await?;
+        self.file.write_all(&segment_body).await?;
+        Ok(())
+    }
+
+    /// 写入视频帧
+    pub async fn write_video_frame(
+        &mut self,
+        data: &[u8],
+        timestamp: u64,
+        is_keyframe: bool,
+    ) -> Result<()> {
+        self.write_simple_block(self.video_track, data, timestamp, is_keyframe)
+            .await
+    }
+
+    /// 写入音频帧
+    pub async fn write_audio_frame(&mut self, data: &[u8], timestamp: u64) -> Result<()> {
+        if let Some(audio_track) = self.audio_track {
+            self.write_simple_block(audio_track, data, timestamp, true)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// 写入 SimpleBlock
+    ///
+    /// SimpleBlock format: track_number (VINT) + timecode (i16, relative to cluster) + flags (1 byte) + data
+    async fn write_simple_block(
+        &mut self,
+        track: u8,
+        data: &[u8],
+        timestamp: u64,
+        is_keyframe: bool,
+    ) -> Result<()> {
+        // Start a new cluster if this is a keyframe with a new timestamp
+        if is_keyframe && timestamp != self.cluster_timestamp {
+            self.cluster_timestamp = timestamp;
+            // Write Cluster element
+            let cluster_id = encode_ebml_id(EBML_ID_CLUSTER);
+            self.file.write_all(&cluster_id).await?;
+            // Unknown size
+            self.file
+                .write_all(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+                .await?;
+            // Timecode (absolute, in ms)
+            let tc = encode_ebml_uint(EBML_ID_TIMECODE, timestamp);
+            self.file.write_all(&tc).await?;
+        }
+
+        // SimpleBlock body: track_number (1 byte VINT) + timecode (2 bytes, i16 BE, relative) + flags + data
+        let mut block = Vec::with_capacity(4 + data.len());
+        block.push(track & 0x7F); // track number as 1-byte VINT
+                                  // Relative timecode (i16, big-endian) — 0 relative to cluster
+        block.push(0x00);
+        block.push(0x00);
+        // Flags: bit 7 = keyframe (0x80), bit 0-2 = lace mode
+        block.push(if is_keyframe { 0x80 } else { 0x00 });
+        block.extend_from_slice(data);
+
+        let simple_block = encode_ebml_element(EBML_ID_SIMPLE_BLOCK, &block);
+        self.file.write_all(&simple_block).await?;
+        Ok(())
+    }
+
+    /// 关闭文件
+    pub async fn close(mut self) -> Result<()> {
+        self.file.flush().await?;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// PCAP 扩展方法（write_packet with timestamp）
+// ============================================================================
+
+impl PcapRecorder {
+    /// 写入一个数据包，使用显式时间戳（微秒）
+    ///
+    /// 与 `write_rtp_packet` 不同，此方法接受显式的时间戳参数，
+    /// 适用于需要精确控制时间戳的场景。
+    pub async fn write_packet(&mut self, data: &[u8], timestamp_us: u64) -> Result<()> {
+        let ts_sec = (timestamp_us / 1_000_000) as u32;
+        let ts_usec = (timestamp_us % 1_000_000) as u32;
+
+        // PCAP packet header (16 bytes)
+        let mut pkt_header = [0u8; 16];
+        pkt_header[0..4].copy_from_slice(&ts_sec.to_le_bytes());
+        pkt_header[4..8].copy_from_slice(&ts_usec.to_le_bytes());
+        pkt_header[8..12].copy_from_slice(&(data.len() as u32).to_le_bytes()); // incl_len
+        pkt_header[12..16].copy_from_slice(&(data.len() as u32).to_le_bytes()); // orig_len
+
+        self.file.write_all(&pkt_header).await?;
+        self.file.write_all(data).await?;
+        self.written_bytes += 16 + data.len() as u32;
+        self.packet_count += 1;
+        Ok(())
+    }
+
+    /// 关闭文件（flush）
+    pub async fn close(mut self) -> Result<()> {
+        self.file.flush().await?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1500,5 +1897,194 @@ mod tests {
             u32::from_le_bytes([page[14], page[15], page[16], page[17]]),
             12345
         );
+    }
+
+    // ─── IVF 录制器测试 ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_ivf_header_format() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        let rec = IvfRecorder::create(path, *b"VP80", 640, 480, 30)
+            .await
+            .unwrap();
+        rec.close().await.unwrap();
+
+        let data = tokio::fs::read(path).await.unwrap();
+        assert_eq!(data.len(), 32); // header only
+
+        // DKIF signature
+        assert_eq!(&data[0..4], b"DKIF");
+        // version = 0
+        assert_eq!(u16::from_le_bytes([data[4], data[5]]), 0);
+        // header length = 32
+        assert_eq!(u16::from_le_bytes([data[6], data[7]]), 32);
+        // fourcc = "VP80"
+        assert_eq!(&data[8..12], b"VP80");
+        // width = 640
+        assert_eq!(u16::from_le_bytes([data[12], data[13]]), 640);
+        // height = 480
+        assert_eq!(u16::from_le_bytes([data[14], data[15]]), 480);
+        // fps_num = 30
+        assert_eq!(
+            u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
+            30
+        );
+        // fps_den = 1
+        assert_eq!(
+            u32::from_le_bytes([data[20], data[21], data[22], data[23]]),
+            1
+        );
+        // frame_count = 0
+        assert_eq!(
+            u32::from_le_bytes([data[24], data[25], data[26], data[27]]),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ivf_write_frame() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        let mut rec = IvfRecorder::create(path, *b"VP90", 1280, 720, 60)
+            .await
+            .unwrap();
+
+        let frame_data = vec![0xAB; 100];
+        rec.write_frame(&frame_data, 0).await.unwrap();
+        rec.write_frame(&frame_data, 33).await.unwrap();
+        rec.close().await.unwrap();
+
+        let data = tokio::fs::read(path).await.unwrap();
+        // 32 (header) + 2 * (12 + 100) = 32 + 224 = 256
+        assert_eq!(data.len(), 256);
+
+        // frame_count should be 2 (at offset 24)
+        assert_eq!(
+            u32::from_le_bytes([data[24], data[25], data[26], data[27]]),
+            2
+        );
+
+        // First frame header at offset 32
+        let frame_size = u32::from_le_bytes([data[32], data[33], data[34], data[35]]);
+        assert_eq!(frame_size, 100);
+        let frame_ts = u64::from_le_bytes([
+            data[36], data[37], data[38], data[39], data[40], data[41], data[42], data[43],
+        ]);
+        assert_eq!(frame_ts, 0);
+
+        // Second frame header at offset 32 + 12 + 100 = 144
+        let frame2_size = u32::from_le_bytes([data[144], data[145], data[146], data[147]]);
+        assert_eq!(frame2_size, 100);
+        let frame2_ts = u64::from_le_bytes([
+            data[148], data[149], data[150], data[151], data[152], data[153], data[154], data[155],
+        ]);
+        assert_eq!(frame2_ts, 33);
+    }
+
+    // ─── WebM 录制器测试 ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_webm_ebml_header() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        let rec = WebmRecorder::create(path, false).await.unwrap();
+        rec.close().await.unwrap();
+
+        let data = tokio::fs::read(path).await.unwrap();
+        assert!(data.len() > 10);
+
+        // EBML header element ID = 0x1A45DFA3 (4 bytes big-endian)
+        assert_eq!(data[0], 0x1A);
+        assert_eq!(data[1], 0x45);
+        assert_eq!(data[2], 0xDF);
+        assert_eq!(data[3], 0xA3);
+
+        // Verify "webm" DocType string is present somewhere in the header
+        assert!(data.windows(4).any(|w| w == b"webm"));
+
+        // Verify Segment element ID = 0x18538067 is present
+        assert!(data.windows(4).any(|w| w == &[0x18, 0x53, 0x80, 0x67]));
+    }
+
+    #[tokio::test]
+    async fn test_webm_write_video_frame() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        let mut rec = WebmRecorder::create(path, true).await.unwrap();
+        rec.write_video_frame(&[0xAA; 50], 0, true).await.unwrap();
+        rec.write_audio_frame(&[0xBB; 20], 0).await.unwrap();
+        rec.close().await.unwrap();
+
+        let data = tokio::fs::read(path).await.unwrap();
+        // Should have EBML header + segment + tracks + cluster + frames
+        assert!(data.len() > 50);
+
+        // Verify Cluster element ID = 0x1F43B675 is present
+        assert!(data.windows(4).any(|w| w == &[0x1F, 0x43, 0xB6, 0x75]));
+    }
+
+    // ─── PCAP 扩展测试 ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_pcap_global_header() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        let rec = PcapRecorder::create(path).await.unwrap();
+        rec.close().await.unwrap();
+
+        let data = tokio::fs::read(path).await.unwrap();
+        assert_eq!(data.len(), 24); // global header only
+
+        // magic number = 0xA1B2C3D4 (little-endian)
+        assert_eq!(&data[0..4], &0xA1B2C3D4u32.to_le_bytes());
+        // version major = 2
+        assert_eq!(u16::from_le_bytes([data[4], data[5]]), 2);
+        // version minor = 4
+        assert_eq!(u16::from_le_bytes([data[6], data[7]]), 4);
+    }
+
+    #[tokio::test]
+    async fn test_pcap_packet() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        let mut rec = PcapRecorder::create(path).await.unwrap();
+        let payload = [0x80, 0x60, 0x00, 0x01, 0xAB, 0xCD];
+        rec.write_packet(&payload, 1_000_000).await.unwrap(); // ts = 1.0s
+        rec.close().await.unwrap();
+
+        let data = tokio::fs::read(path).await.unwrap();
+        // 24 (global header) + 16 (packet header) + 6 (payload) = 46
+        assert_eq!(data.len(), 46);
+
+        // Packet header starts at offset 24
+        // ts_sec = 1
+        assert_eq!(
+            u32::from_le_bytes([data[24], data[25], data[26], data[27]]),
+            1
+        );
+        // ts_usec = 0
+        assert_eq!(
+            u32::from_le_bytes([data[28], data[29], data[30], data[31]]),
+            0
+        );
+        // incl_len = 6
+        assert_eq!(
+            u32::from_le_bytes([data[32], data[33], data[34], data[35]]),
+            6
+        );
+        // orig_len = 6
+        assert_eq!(
+            u32::from_le_bytes([data[36], data[37], data[38], data[39]]),
+            6
+        );
+        // payload
+        assert_eq!(&data[40..46], &payload);
     }
 }

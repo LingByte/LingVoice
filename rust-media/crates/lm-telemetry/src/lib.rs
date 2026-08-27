@@ -10,7 +10,7 @@
 //! 热路径（push_rtp/pull_rtp）调用 `TrackCounter` 的原子操作，
 //! 非热路径（health_check/get_stats）调用 `StatsCollector::snapshot()` 聚合。
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -82,6 +82,13 @@ pub struct TrackCounter {
     recv_bitrate_kbps: AtomicU64,
     /// 计算出的发送码率 kbps
     send_bitrate_kbps: AtomicU64,
+    /// 来自 RTCP RR 的 jitter（RTP 时间戳单位，clock rate）
+    /// 转换为 ms 时需要除以 clock rate
+    jitter_rtp_units: AtomicU64,
+    /// 来自 RTCP RR 的 RTT（1/65536 秒单位，即 DLSR/LSR 计算）
+    rtt_65536_units: AtomicU64,
+    /// RTP clock rate，用于 jitter RTP 单位 → ms 转换
+    clock_rate: AtomicU32,
 }
 
 impl TrackCounter {
@@ -99,6 +106,9 @@ impl TrackCounter {
             last_bytes_sent: AtomicU64::new(0),
             recv_bitrate_kbps: AtomicU64::new(0),
             send_bitrate_kbps: AtomicU64::new(0),
+            jitter_rtp_units: AtomicU64::new(0),
+            rtt_65536_units: AtomicU64::new(0),
+            clock_rate: AtomicU32::new(8000),
         }
     }
 
@@ -117,6 +127,48 @@ impl TrackCounter {
     #[inline]
     pub fn record_lost(&self, count: u64) {
         self.packets_lost.fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// 更新来自 RTCP RR 的 jitter 值（RTP 时间戳单位）
+    /// jitter 单位为 RTP 时钟周期，转换为 ms 需要 clock_rate
+    #[inline]
+    pub fn record_jitter(&self, jitter_rtp_units: u32) {
+        self.jitter_rtp_units
+            .store(jitter_rtp_units as u64, Ordering::Relaxed);
+    }
+
+    /// 更新来自 RTCP RR 的 RTT 值（1/65536 秒单位）
+    /// 这是根据 LSR/DLSR 计算出的 round-trip time
+    #[inline]
+    pub fn record_rtt(&self, rtt_65536_units: u32) {
+        self.rtt_65536_units
+            .store(rtt_65536_units as u64, Ordering::Relaxed);
+    }
+
+    /// 设置 RTP clock rate，用于 jitter 单位转换
+    #[inline]
+    pub fn set_clock_rate(&self, clock_rate: u32) {
+        self.clock_rate.store(clock_rate, Ordering::Relaxed);
+    }
+
+    /// 获取 jitter（ms）
+    /// RTP 时间戳单位 → ms: jitter_ms = jitter_rtp_units * 1000 / clock_rate
+    #[inline]
+    pub fn jitter_ms(&self) -> u32 {
+        let jitter_rtp = self.jitter_rtp_units.load(Ordering::Relaxed);
+        let clock_rate = self.clock_rate.load(Ordering::Relaxed);
+        if clock_rate == 0 {
+            return 0;
+        }
+        ((jitter_rtp * 1000) / clock_rate as u64) as u32
+    }
+
+    /// 获取 RTT（ms）
+    /// 1/65536 秒单位 → ms: rtt_ms = rtt_65536 * 1000 / 65536
+    #[inline]
+    pub fn rtt_ms(&self) -> u32 {
+        let rtt = self.rtt_65536_units.load(Ordering::Relaxed);
+        ((rtt * 1000) / 65536) as u32
     }
 
     /// 计算瞬时码率（调用时计算，基于自上次调用以来的字节差）
@@ -174,8 +226,8 @@ impl TrackCounter {
             packets_lost,
             bytes_received,
             bytes_sent,
-            jitter_ms: 0,
-            rtt_ms: 0,
+            jitter_ms: self.jitter_ms(),
+            rtt_ms: self.rtt_ms(),
             loss_pct,
             bitrate_kbps: self.recv_bitrate_kbps.load(Ordering::Relaxed) as u32,
         }
@@ -630,6 +682,39 @@ mod tests {
             "bitrate should be > 0, got {}",
             stats.bitrate_kbps
         );
+    }
+
+    #[test]
+    fn test_track_counter_jitter_rtt() {
+        let counter = TrackCounter::new("track-1", "session-1");
+        // 默认 clock_rate = 8000 (audio)
+        // jitter = 400 RTP units → 400 * 1000 / 8000 = 50 ms
+        counter.record_jitter(400);
+        assert_eq!(counter.jitter_ms(), 50);
+
+        // RTT = 65536 * 100 = 6553600 (1/65536 秒) → 100000 ms? 不对
+        // RTT = 6553.6 (1/65536 秒) = 100 ms
+        // rtt_65536 = 6553 * 1000 / 65536 ≈ 100 ms
+        // 更精确: 6553600 / 65536 * 1000 = 100000 ms? 不对
+        // rtt_ms = rtt_65536 * 1000 / 65536
+        // 6553600 * 1000 / 65536 = 100000 ms — 这不对
+        // 实际 RTT 100ms = 100 * 65536 / 1000 = 6553.6 → 6554 units
+        counter.record_rtt(6554);
+        assert_eq!(counter.rtt_ms(), 100);
+
+        let stats = counter.snapshot();
+        assert_eq!(stats.jitter_ms, 50);
+        assert_eq!(stats.rtt_ms, 100);
+    }
+
+    #[test]
+    fn test_track_counter_jitter_video_clock() {
+        let counter = TrackCounter::new("track-1", "session-1");
+        // 视频时钟 90000 Hz
+        counter.set_clock_rate(90000);
+        // jitter = 900 RTP units → 900 * 1000 / 90000 = 10 ms
+        counter.record_jitter(900);
+        assert_eq!(counter.jitter_ms(), 10);
     }
 
     #[test]

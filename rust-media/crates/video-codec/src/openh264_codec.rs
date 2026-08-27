@@ -296,6 +296,7 @@ impl VideoEncoder for Openh264Encoder {
             height: frame.height,
             keyframe,
             timestamp: frame.timestamp,
+            bit_depth: 8,
         })
     }
 

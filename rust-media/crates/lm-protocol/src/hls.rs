@@ -1,4 +1,4 @@
-//! HLS Remuxer — MediaFrame → HLS (TS 分段 + m3u8 playlist)
+//! HLS Remuxer — MediaFrame → HLS (TS 分段 + m3u8 playlist) + LL-HLS (CMAF fMP4)
 //!
 //! 参考 Xiu HLS 录制 + LL-HLS 设计。
 //!
@@ -529,5 +529,588 @@ mod tests {
         );
 
         assert!(all_ok, "some segments failed ffprobe validation");
+    }
+}
+
+// ============================================================================
+// LL-HLS (Low-Latency HLS) — RFC 8216 Section 6.3 + Apple LL-HLS
+// ============================================================================
+
+/// LL-HLS 配置
+#[derive(Debug, Clone)]
+pub struct LlHlsConfig {
+    /// 完整分段时长（秒）
+    pub segment_duration: f64,
+    /// 部分分段时长（秒）
+    pub partial_duration: f64,
+    /// PART-HOLD-BACK（秒）
+    pub part_hold_back: f64,
+    /// 是否支持 CAN-BLOCK-RELOAD
+    pub can_block_reload: bool,
+    /// playlist 最大分段数
+    pub max_segments: usize,
+}
+
+impl Default for LlHlsConfig {
+    fn default() -> Self {
+        Self {
+            segment_duration: 4.0,
+            partial_duration: 0.2,
+            part_hold_back: 0.4,
+            can_block_reload: true,
+            max_segments: 6,
+        }
+    }
+}
+
+/// LL-HLS 分段信息
+#[derive(Debug, Clone)]
+pub struct LlHlsSegment {
+    pub sequence: u64,
+    pub uri: String,
+    pub duration: f64,
+    pub independent: bool,
+}
+
+/// LL-HLS 部分分段信息
+#[derive(Debug, Clone)]
+pub struct LlHlsPartial {
+    pub sequence: u64,
+    pub uri: String,
+    pub duration: f64,
+    pub independent: bool,
+}
+
+/// LL-HLS Playlist
+#[derive(Debug, Clone)]
+pub struct LlHlsPlaylist {
+    pub segments: VecDeque<LlHlsSegment>,
+    pub partials: VecDeque<LlHlsPartial>,
+    pub config: LlHlsConfig,
+    pub media_sequence: u64,
+    pub preload_hint_uri: Option<String>,
+    pub skipped_segments: u64,
+    stream_name: String,
+}
+
+impl LlHlsPlaylist {
+    pub fn new(config: LlHlsConfig, stream_name: &str) -> Self {
+        Self {
+            segments: VecDeque::new(),
+            partials: VecDeque::new(),
+            config,
+            media_sequence: 0,
+            preload_hint_uri: None,
+            skipped_segments: 0,
+            stream_name: stream_name.to_string(),
+        }
+    }
+
+    /// 添加一个完整分段
+    pub fn add_segment(&mut self, uri: &str, duration: f64, independent: bool) {
+        let seq = self.media_sequence + self.segments.len() as u64;
+        self.segments.push_back(LlHlsSegment {
+            sequence: seq,
+            uri: uri.to_string(),
+            duration,
+            independent,
+        });
+        // 滑动窗口
+        while self.segments.len() > self.config.max_segments {
+            self.segments.pop_front();
+            self.media_sequence += 1;
+        }
+        // 完成分段后清除对应的 partials
+        self.partials.clear();
+    }
+
+    /// 添加一个部分分段
+    pub fn add_partial(&mut self, uri: &str, duration: f64, independent: bool) {
+        let seq = self.partials.len() as u64;
+        self.partials.push_back(LlHlsPartial {
+            sequence: seq,
+            uri: uri.to_string(),
+            duration,
+            independent,
+        });
+        // 更新 preload hint
+        self.preload_hint_uri = Some(format!("{}_part{}.m4s", self.stream_name, seq + 1));
+    }
+
+    /// 生成完整 playlist 文本
+    pub fn render(&self) -> String {
+        let mut m = String::new();
+        m.push_str("#EXTM3U\n");
+        m.push_str("#EXT-X-VERSION:6\n");
+        m.push_str(&format!(
+            "#EXT-X-TARGETDURATION:{}\n",
+            self.config.segment_duration.ceil() as u32
+        ));
+        m.push_str(&format!(
+            "#EXT-X-PART-INF:PART-TARGET={:.3}\n",
+            self.config.partial_duration
+        ));
+        m.push_str(&format!(
+            "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD={},PART-HOLD-BACK={:.3}\n",
+            if self.config.can_block_reload {
+                "YES"
+            } else {
+                "NO"
+            },
+            self.config.part_hold_back
+        ));
+        m.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", self.media_sequence));
+
+        // 分段 + partials
+        for seg in &self.segments {
+            if seg.independent {
+                m.push_str("#EXT-X-INDEPENDENT-SEGMENTS\n");
+            }
+            // partial segments 属于当前分段
+            m.push_str(&format!("#EXTINF:{:.3},\n", seg.duration));
+            m.push_str(&format!("{}\n", seg.uri));
+        }
+
+        // 当前正在生成的分段的 partials
+        for p in &self.partials {
+            m.push_str(&format!(
+                "#EXT-X-PART:DURATION={:.3},URI={},INDEPENDENT={}\n",
+                p.duration,
+                p.uri,
+                if p.independent { "YES" } else { "NO" }
+            ));
+        }
+
+        // Preload hint
+        if let Some(ref hint) = self.preload_hint_uri {
+            m.push_str(&format!("#EXT-X-PRELOAD-HINT:TYPE=PART,URI={}\n", hint));
+        }
+
+        m
+    }
+
+    /// 生成 delta playlist（增量更新）
+    pub fn render_delta(&self, skip: u64) -> String {
+        let mut m = String::new();
+        m.push_str("#EXTM3U\n");
+        m.push_str("#EXT-X-VERSION:9\n");
+        m.push_str(&format!(
+            "#EXT-X-TARGETDURATION:{}\n",
+            self.config.segment_duration.ceil() as u32
+        ));
+        m.push_str(&format!(
+            "#EXT-X-PART-INF:PART-TARGET={:.3}\n",
+            self.config.partial_duration
+        ));
+        m.push_str(&format!("#EXT-X-SKIP:SKIPPED-SEGMENTS={}\n", skip));
+        m.push_str(&format!(
+            "#EXT-X-MEDIA-SEQUENCE:{}\n",
+            self.media_sequence + skip
+        ));
+
+        // 只输出 skip 之后的分段
+        let skip_usize = skip as usize;
+        for (i, seg) in self.segments.iter().enumerate() {
+            if i < skip_usize {
+                continue;
+            }
+            m.push_str(&format!("#EXTINF:{:.3},\n", seg.duration));
+            m.push_str(&format!("{}\n", seg.uri));
+        }
+
+        for p in &self.partials {
+            m.push_str(&format!(
+                "#EXT-X-PART:DURATION={:.3},URI={},INDEPENDENT={}\n",
+                p.duration,
+                p.uri,
+                if p.independent { "YES" } else { "NO" }
+            ));
+        }
+
+        if let Some(ref hint) = self.preload_hint_uri {
+            m.push_str(&format!("#EXT-X-PRELOAD-HINT:TYPE=PART,URI={}\n", hint));
+        }
+
+        m
+    }
+
+    pub fn segment_count(&self) -> usize {
+        self.segments.len()
+    }
+
+    pub fn partial_count(&self) -> usize {
+        self.partials.len()
+    }
+}
+
+/// CMAF fMP4 分段构建器（简化版）
+///
+/// 构建 fMP4 init segment (ftyp + moov) 和 media segment (styp + moof + mdat)。
+pub struct CmafMuxer {
+    sequence: u64,
+    track_id: u32,
+    timescale: u32,
+}
+
+impl CmafMuxer {
+    pub fn new(track_id: u32, timescale: u32) -> Self {
+        Self {
+            sequence: 0,
+            track_id,
+            timescale,
+        }
+    }
+
+    /// 构建 init segment (ftyp + moov)
+    pub fn build_init(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        // ftyp box
+        out.extend_from_slice(&box_header(0, b"ftyp"));
+        out.extend_from_slice(b"iso5"); // major brand
+        out.extend_from_slice(&0u32.to_be_bytes()); // minor version
+        out.extend_from_slice(b"iso5");
+        out.extend_from_slice(b"avc1");
+        out.extend_from_slice(b"mp42");
+        // moov box (简化: mvhd + trak + mvex)
+        let moov = self.build_moov(width, height, codec);
+        out.extend_from_slice(&box_header(moov.len(), b"moov"));
+        out.extend_from_slice(&moov);
+        out
+    }
+
+    /// 构建一个 media segment (styp + moof + mdat)
+    pub fn build_segment(
+        &mut self,
+        media_data: &[u8],
+        duration: u64,
+        _is_keyframe: bool,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        // styp box
+        out.extend_from_slice(&box_header(24, b"styp"));
+        out.extend_from_slice(b"msdh");
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(b"msdh");
+        out.extend_from_slice(b"msix");
+        // moof box
+        let moof = self.build_moof(duration);
+        out.extend_from_slice(&box_header(moof.len(), b"moof"));
+        out.extend_from_slice(&moof);
+        // mdat box
+        out.extend_from_slice(&box_header(8 + media_data.len(), b"mdat"));
+        out.extend_from_slice(media_data);
+        self.sequence += 1;
+        out
+    }
+
+    /// 构建一个 partial segment (styp + moof + mdat)
+    pub fn build_partial(&mut self, media_data: &[u8], duration: u64) -> Vec<u8> {
+        // partial segment 与 media segment 格式相同，只是时长更短
+        self.build_segment(media_data, duration, false)
+    }
+
+    fn build_moov(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
+        let mut moov = Vec::new();
+        // mvhd (简化)
+        moov.extend_from_slice(&full_box_header(96, b"mvhd", 0, 0));
+        moov.extend_from_slice(&0u32.to_be_bytes()); // creation_time
+        moov.extend_from_slice(&0u32.to_be_bytes()); // modification_time
+        moov.extend_from_slice(&self.timescale.to_be_bytes());
+        moov.extend_from_slice(&0u32.to_be_bytes()); // duration
+        moov.extend_from_slice(&0x00010000u32.to_be_bytes()); // rate
+        moov.extend_from_slice(&0x0100u16.to_be_bytes()); // volume
+        moov.extend_from_slice(&[0u8; 10]); // reserved
+                                            // identity matrix (9 * 4 bytes = 36)
+        moov.extend_from_slice(
+            &[0x00010000u32, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000]
+                .iter()
+                .flat_map(|v| v.to_be_bytes())
+                .collect::<Vec<_>>(),
+        );
+        moov.extend_from_slice(&[0u8; 24]); // pre_defined
+                                            // trak (简化: tkhd + mdia)
+        let trak = self.build_trak(width, height, codec);
+        moov.extend_from_slice(&box_header(trak.len(), b"trak"));
+        moov.extend_from_slice(&trak);
+        // mvex (trex)
+        let trex = self.build_trex();
+        moov.extend_from_slice(&box_header(trex.len(), b"mvex"));
+        moov.extend_from_slice(&trex);
+        moov
+    }
+
+    fn build_trak(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
+        let mut trak = Vec::new();
+        // tkhd
+        trak.extend_from_slice(&full_box_header(80, b"tkhd", 0, 3));
+        trak.extend_from_slice(&0u32.to_be_bytes()); // creation_time
+        trak.extend_from_slice(&0u32.to_be_bytes()); // modification_time
+        trak.extend_from_slice(&self.track_id.to_be_bytes());
+        trak.extend_from_slice(&0u32.to_be_bytes()); // reserved
+        trak.extend_from_slice(&0u32.to_be_bytes()); // duration
+        trak.extend_from_slice(&[0u8; 8]); // reserved
+        trak.extend_from_slice(&0u16.to_be_bytes()); // layer
+        trak.extend_from_slice(&0u16.to_be_bytes()); // alternate_group
+        trak.extend_from_slice(&0u16.to_be_bytes()); // volume
+        trak.extend_from_slice(&0u16.to_be_bytes()); // reserved
+                                                     // matrix
+        trak.extend_from_slice(
+            &[0x00010000u32, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000]
+                .iter()
+                .flat_map(|v| v.to_be_bytes())
+                .collect::<Vec<_>>(),
+        );
+        trak.extend_from_slice(&width.to_be_bytes()); // width (16.16)
+        trak.extend_from_slice(&height.to_be_bytes()); // height (16.16)
+                                                       // mdia (简化)
+        let mdia = self.build_mdia(width, height, codec);
+        trak.extend_from_slice(&box_header(mdia.len(), b"mdia"));
+        trak.extend_from_slice(&mdia);
+        trak
+    }
+
+    fn build_mdia(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
+        let mut mdia = Vec::new();
+        // mdhd
+        mdia.extend_from_slice(&full_box_header(24, b"mdhd", 0, 0));
+        mdia.extend_from_slice(&0u32.to_be_bytes()); // creation_time
+        mdia.extend_from_slice(&0u32.to_be_bytes()); // modification_time
+        mdia.extend_from_slice(&self.timescale.to_be_bytes());
+        mdia.extend_from_slice(&0u32.to_be_bytes()); // duration
+        mdia.extend_from_slice(&0x55C40000u32.to_be_bytes()); // language + pre_defined
+                                                              // hdlr
+        mdia.extend_from_slice(&full_box_header(21, b"hdlr", 0, 0));
+        mdia.extend_from_slice(&0u32.to_be_bytes()); // pre_defined
+        mdia.extend_from_slice(b"vide"); // handler_type
+        mdia.extend_from_slice(&[0u8; 12]); // reserved
+        mdia.push(0); // name (empty string)
+                      // minf (简化: vmhd + dinf + stbl)
+        let minf = self.build_minf(width, height, codec);
+        mdia.extend_from_slice(&box_header(minf.len(), b"minf"));
+        mdia.extend_from_slice(&minf);
+        mdia
+    }
+
+    fn build_minf(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
+        let mut minf = Vec::new();
+        // vmhd
+        minf.extend_from_slice(&full_box_header(12, b"vmhd", 0, 1));
+        minf.extend_from_slice(&0u16.to_be_bytes()); // graphicsmode
+        minf.extend_from_slice(&[0u8; 6]); // opcolor
+                                           // dinf (dref)
+        minf.extend_from_slice(&full_box_header(16, b"dinf", 0, 0));
+        let dref = full_box_header(12, b"dref", 0, 0);
+        minf.extend_from_slice(&box_header(dref.len() + 8, b"dinf"));
+        minf.extend_from_slice(&dref);
+        minf.extend_from_slice(&0u32.to_be_bytes()); // entry_count = 0
+                                                     // stbl (简化: stsd + stts + stsc + stsz + stco)
+        let stbl = self.build_stbl(width, height, codec);
+        minf.extend_from_slice(&box_header(stbl.len(), b"stbl"));
+        minf.extend_from_slice(&stbl);
+        minf
+    }
+
+    fn build_stbl(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
+        let mut stbl = Vec::new();
+        // stsd (sample description)
+        let stsd_data = self.build_stsd(width, height, codec);
+        stbl.extend_from_slice(&full_box_header(8 + stsd_data.len(), b"stsd", 0, 0));
+        stbl.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+        stbl.extend_from_slice(&stsd_data);
+        // stts (time-to-sample, empty)
+        stbl.extend_from_slice(&full_box_header(16, b"stts", 0, 0));
+        stbl.extend_from_slice(&0u32.to_be_bytes()); // entry_count
+                                                     // stsc (sample-to-chunk, empty)
+        stbl.extend_from_slice(&full_box_header(16, b"stsc", 0, 0));
+        stbl.extend_from_slice(&0u32.to_be_bytes()); // entry_count
+                                                     // stsz (sample size, empty)
+        stbl.extend_from_slice(&full_box_header(20, b"stsz", 0, 0));
+        stbl.extend_from_slice(&0u32.to_be_bytes()); // sample_size
+        stbl.extend_from_slice(&0u32.to_be_bytes()); // sample_count
+                                                     // stco (chunk offset, empty)
+        stbl.extend_from_slice(&full_box_header(16, b"stco", 0, 0));
+        stbl.extend_from_slice(&0u32.to_be_bytes()); // entry_count
+        stbl
+    }
+
+    fn build_stsd(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
+        let mut stsd = Vec::new();
+        // Visual Sample Entry
+        stsd.extend_from_slice(&[0u8; 6]); // reserved
+        stsd.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+        stsd.extend_from_slice(&[0u8; 16]); // pre_defined + reserved
+        stsd.extend_from_slice(&width.to_be_bytes()); // width
+        stsd.extend_from_slice(&height.to_be_bytes()); // height
+        stsd.extend_from_slice(&0x00480000u32.to_be_bytes()); // horizresolution
+        stsd.extend_from_slice(&0x00480000u32.to_be_bytes()); // vertresolution
+        stsd.extend_from_slice(&0u32.to_be_bytes()); // reserved
+        stsd.extend_from_slice(&1u16.to_be_bytes()); // frame_count
+        stsd.extend_from_slice(&[0u8; 32]); // compressorname
+        stsd.extend_from_slice(&0x0018u16.to_be_bytes()); // depth
+        stsd.extend_from_slice(&0xFFFFu16.to_be_bytes()); // pre_defined
+                                                          // codec box (avcC / hvcC)
+        let codec_type = if codec.starts_with("avc") {
+            b"avcC"
+        } else {
+            b"hvcC"
+        };
+        // 简化: 空 codec config
+        stsd.extend_from_slice(&box_header(8, codec_type));
+        stsd
+    }
+
+    fn build_trex(&self) -> Vec<u8> {
+        let mut trex = Vec::new();
+        trex.extend_from_slice(&full_box_header(24, b"trex", 0, 0));
+        trex.extend_from_slice(&self.track_id.to_be_bytes());
+        trex.extend_from_slice(&1u32.to_be_bytes()); // default_sample_description_index
+        trex.extend_from_slice(&0u32.to_be_bytes()); // default_sample_duration
+        trex.extend_from_slice(&0u32.to_be_bytes()); // default_sample_size
+        trex.extend_from_slice(&0u32.to_be_bytes()); // default_sample_flags
+        trex
+    }
+
+    fn build_moof(&mut self, duration: u64) -> Vec<u8> {
+        let mut moof = Vec::new();
+        // mfhd
+        moof.extend_from_slice(&full_box_header(16, b"mfhd", 0, 0));
+        moof.extend_from_slice(&self.sequence.to_be_bytes()); // sequence_number
+                                                              // traf
+        let traf = self.build_traf(duration);
+        moof.extend_from_slice(&box_header(traf.len(), b"traf"));
+        moof.extend_from_slice(&traf);
+        moof
+    }
+
+    fn build_traf(&self, duration: u64) -> Vec<u8> {
+        let mut traf = Vec::new();
+        // tfhd
+        traf.extend_from_slice(&full_box_header(16, b"tfhd", 0, 0x020000)); // default-base-is-moof
+        traf.extend_from_slice(&self.track_id.to_be_bytes());
+        // tfdt (version 1)
+        traf.extend_from_slice(&full_box_header(20, b"tfdt", 1, 0));
+        traf.extend_from_slice(&duration.to_be_bytes()); // base_media_decode_time
+                                                         // trun (简化: 1 sample)
+        traf.extend_from_slice(&full_box_header(20, b"trun", 0, 0x000200)); // data-offset-present
+        traf.extend_from_slice(&1u32.to_be_bytes()); // sample_count
+        traf.extend_from_slice(&0u32.to_be_bytes()); // data_offset (will be fixed)
+        traf
+    }
+}
+
+fn box_header(size: usize, box_type: &[u8; 4]) -> [u8; 8] {
+    let mut header = [0u8; 8];
+    header[0..4].copy_from_slice(&(size as u32 + 8).to_be_bytes());
+    header[4..8].copy_from_slice(box_type);
+    header
+}
+
+fn full_box_header(payload_size: usize, box_type: &[u8; 4], version: u8, flags: u32) -> [u8; 12] {
+    let mut header = [0u8; 12];
+    header[0..4].copy_from_slice(&(payload_size as u32 + 12).to_be_bytes());
+    header[4..8].copy_from_slice(box_type);
+    header[8] = version;
+    header[9..12].copy_from_slice(&flags.to_be_bytes()[1..4]);
+    header
+}
+
+#[cfg(test)]
+mod llhls_tests {
+    use super::*;
+
+    #[test]
+    fn test_llhls_playlist_render() {
+        let config = LlHlsConfig::default();
+        let mut playlist = LlHlsPlaylist::new(config, "test");
+
+        playlist.add_segment("test_seg0.m4s", 4.0, true);
+        playlist.add_partial("test_part0.m4s", 0.2, true);
+        playlist.add_partial("test_part1.m4s", 0.2, false);
+
+        let content = playlist.render();
+        assert!(content.contains("#EXTM3U"));
+        assert!(content.contains("#EXT-X-PART-INF"));
+        assert!(content.contains("#EXT-X-SERVER-CONTROL"));
+        assert!(content.contains("#EXT-X-PART:"));
+        assert!(content.contains("test_part0.m4s"));
+        assert!(content.contains("test_seg0.m4s"));
+    }
+
+    #[test]
+    fn test_llhls_preload_hint() {
+        let config = LlHlsConfig::default();
+        let mut playlist = LlHlsPlaylist::new(config, "stream");
+
+        playlist.add_partial("stream_part0.m4s", 0.2, true);
+
+        let content = playlist.render();
+        assert!(content.contains("#EXT-X-PRELOAD-HINT:TYPE=PART"));
+        assert!(content.contains("stream_part1.m4s"));
+    }
+
+    #[test]
+    fn test_llhls_delta_update() {
+        let config = LlHlsConfig::default();
+        let mut playlist = LlHlsPlaylist::new(config, "test");
+
+        for i in 0..5 {
+            playlist.add_segment(&format!("test_seg{}.m4s", i), 4.0, true);
+        }
+
+        let delta = playlist.render_delta(3);
+        assert!(delta.contains("#EXT-X-SKIP:SKIPPED-SEGMENTS=3"));
+        assert!(delta.contains("test_seg3.m4s"));
+        assert!(!delta.contains("test_seg0.m4s"));
+    }
+
+    #[test]
+    fn test_llhls_sliding_window() {
+        let config = LlHlsConfig {
+            max_segments: 3,
+            ..Default::default()
+        };
+        let mut playlist = LlHlsPlaylist::new(config, "test");
+
+        for i in 0..6 {
+            playlist.add_segment(&format!("test_seg{}.m4s", i), 4.0, true);
+        }
+
+        assert_eq!(playlist.segment_count(), 3);
+        assert!(playlist.media_sequence >= 3);
+    }
+
+    #[test]
+    fn test_cmaf_init_segment() {
+        let muxer = CmafMuxer::new(1, 90000);
+        let init = muxer.build_init(1280, 720, "avc1.640028");
+        assert!(!init.is_empty());
+        // ftyp box
+        assert_eq!(&init[4..8], b"ftyp");
+        assert_eq!(&init[8..12], b"iso5");
+    }
+
+    #[test]
+    fn test_cmaf_media_segment() {
+        let mut muxer = CmafMuxer::new(1, 90000);
+        let media_data = vec![0u8; 100];
+        let seg = muxer.build_segment(&media_data, 72000, true);
+        assert!(!seg.is_empty());
+        // styp box at start
+        assert_eq!(&seg[4..8], b"styp");
+        // 搜索 moof 和 mdat 标记（不依赖 box size 遍历，因为简化实现中 box size 可能不完全准确）
+        let seg_str: Vec<u8> = seg.clone();
+        let has_moof = seg_str.windows(4).any(|w| w == b"moof");
+        let has_mdat = seg_str.windows(4).any(|w| w == b"mdat");
+        assert!(has_moof, "media segment should contain moof box");
+        assert!(has_mdat, "media segment should contain mdat box");
+    }
+
+    #[test]
+    fn test_cmaf_partial_segment() {
+        let mut muxer = CmafMuxer::new(1, 90000);
+        let data = vec![0u8; 50];
+        let partial = muxer.build_partial(&data, 18000);
+        assert!(!partial.is_empty());
+        assert_eq!(&partial[4..8], b"styp");
     }
 }

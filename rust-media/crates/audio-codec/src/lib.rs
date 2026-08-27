@@ -7,6 +7,7 @@ extern crate alloc;
 
 pub use error::CodecError;
 
+pub mod aac;
 pub mod error;
 pub mod g722;
 pub mod g729;
@@ -36,6 +37,7 @@ pub enum CodecType {
     #[cfg(feature = "opus")]
     Opus,
     TelephoneEvent,
+    Aac,
 }
 
 /// Decoder trait: converts codec-specific bytes into PCM samples.
@@ -124,6 +126,9 @@ pub fn create_decoder(codec: CodecType) -> Box<dyn Decoder> {
         #[cfg(feature = "opus")]
         CodecType::Opus => Box::new(opus::OpusDecoder::new_default()),
         CodecType::TelephoneEvent => Box::new(telephone_event::TelephoneEventDecoder::new()),
+        CodecType::Aac => {
+            panic!("AAC ADTS does not implement the Decoder trait; use aac::AacAdtsDemuxer instead")
+        }
     }
 }
 
@@ -137,6 +142,9 @@ pub fn create_encoder(codec: CodecType) -> Box<dyn Encoder> {
         #[cfg(feature = "opus")]
         CodecType::Opus => Box::new(opus::OpusEncoder::new_default()),
         CodecType::TelephoneEvent => Box::new(telephone_event::TelephoneEventEncoder::new()),
+        CodecType::Aac => {
+            panic!("AAC ADTS does not implement the Encoder trait; use aac::AacAdtsMuxer instead")
+        }
     }
 }
 
@@ -168,6 +176,7 @@ impl CodecType {
             #[cfg(feature = "opus")]
             CodecType::Opus => "audio/opus",
             CodecType::TelephoneEvent => "audio/telephone-event",
+            CodecType::Aac => "audio/aac",
         }
     }
     pub fn rtpmap(&self) -> &str {
@@ -179,6 +188,7 @@ impl CodecType {
             #[cfg(feature = "opus")]
             CodecType::Opus => "opus/48000/2",
             CodecType::TelephoneEvent => "telephone-event/8000",
+            CodecType::Aac => "aac/48000",
         }
     }
     pub fn fmtp(&self) -> Option<&str> {
@@ -190,6 +200,7 @@ impl CodecType {
             #[cfg(feature = "opus")]
             CodecType::Opus => Some("minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1"),
             CodecType::TelephoneEvent => Some("0-16"),
+            CodecType::Aac => None,
         }
     }
 
@@ -202,6 +213,7 @@ impl CodecType {
             #[cfg(feature = "opus")]
             CodecType::Opus => 48000,
             CodecType::TelephoneEvent => 8000,
+            CodecType::Aac => 48000,
         }
     }
 
@@ -222,6 +234,7 @@ impl CodecType {
             #[cfg(feature = "opus")]
             CodecType::Opus => 111,
             CodecType::TelephoneEvent => 101,
+            CodecType::Aac => 96,
         }
     }
     pub fn samplerate(&self) -> u32 {
@@ -233,6 +246,7 @@ impl CodecType {
             #[cfg(feature = "opus")]
             CodecType::Opus => 48000,
             CodecType::TelephoneEvent => 8000,
+            CodecType::Aac => 48000,
         }
     }
     pub fn is_audio(&self) -> bool {
@@ -241,6 +255,7 @@ impl CodecType {
             CodecType::G729 => true,
             #[cfg(feature = "opus")]
             CodecType::Opus => true,
+            CodecType::Aac => true,
             _ => false,
         }
     }
@@ -250,6 +265,7 @@ impl CodecType {
             #[cfg(feature = "opus")]
             CodecType::Opus => true,
             CodecType::TelephoneEvent => true,
+            CodecType::Aac => true,
             _ => false,
         }
     }
@@ -266,6 +282,7 @@ impl TryFrom<u8> for CodecType {
             18 => Ok(CodecType::G729), // Static payload type
             // Dynamic payload type should get from the rtpmap in sdp offer, leave this for backward compatibility
             101 => Ok(CodecType::TelephoneEvent),
+            96 => Ok(CodecType::Aac),
             #[cfg(feature = "opus")]
             111 => Ok(CodecType::Opus), // Dynamic payload type
             _ => Err(CodecError::InvalidCodecType),
@@ -297,6 +314,8 @@ impl TryFrom<&str> for CodecType {
             }
         } else if b.eq_ignore_ascii_case(b"telephone-event") {
             Ok(CodecType::TelephoneEvent)
+        } else if b.eq_ignore_ascii_case(b"aac") {
+            Ok(CodecType::Aac)
         } else {
             Err(CodecError::InvalidCodecName)
         }

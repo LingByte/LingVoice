@@ -114,6 +114,8 @@ fn from_ac_codec(codec: AcCodecType) -> Option<CodecType> {
         AcCodecType::G729 => None,
         // TelephoneEvent 不在 CodecType 枚举里
         AcCodecType::TelephoneEvent => None,
+        // AAC 暂未在 lm-core CodecType 中定义
+        AcCodecType::Aac => None,
     }
 }
 

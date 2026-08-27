@@ -54,6 +54,12 @@ const NV_ENC_PRESET_P4_GUID: [u8; 16] = [
     0x6f, 0x27, 0x44, 0x4a, 0x6f, 0x6c, 0x4f, 0x61, 0xa3, 0x89, 0x86, 0x32, 0x0e, 0x04, 0x07, 0xc4,
 ];
 
+// NV_ENC_BUFFER_FORMAT_NV12
+const NV_ENC_BUFFER_FORMAT_NV12: u32 = 0x10;
+
+// NV_ENC_PIC_PARAMS version
+const NV_ENC_PIC_PARAMS_VER: u32 = 0x20;
+
 #[repr(C)]
 struct NvEncOpenEncodeSessionExParams {
     version: u32,
@@ -177,6 +183,22 @@ type NvEncodeAPIGetMaxSupportedVersionFn = unsafe extern "C" fn(version: *mut u3
 type NvEncodeAPICreateInstanceFn =
     unsafe extern "C" fn(function_list: *mut NvEncodeApiTable) -> u32;
 
+// NVENC API 函数指针类型 (通过 api_table 调用)
+type NvEncCreateInputBufferFn =
+    unsafe extern "C" fn(encoder: *mut c_void, params: *mut NvEncCreateInputBuffer) -> u32;
+type NvEncDestroyInputBufferFn =
+    unsafe extern "C" fn(encoder: *mut c_void, input_buffer: *mut c_void) -> u32;
+type NvEncLockInputBufferFn =
+    unsafe extern "C" fn(encoder: *mut c_void, params: *mut NvEncLockInputBuffer) -> u32;
+type NvEncUnlockInputBufferFn =
+    unsafe extern "C" fn(encoder: *mut c_void, input_buffer: *mut c_void) -> u32;
+type NvEncEncodeFrameFn =
+    unsafe extern "C" fn(encoder: *mut c_void, params: *mut NvEncPicParams) -> u32;
+type NvEncLockBitstreamFn =
+    unsafe extern "C" fn(encoder: *mut c_void, params: *mut NvEncLockBitstream) -> u32;
+type NvEncUnlockBitstreamFn =
+    unsafe extern "C" fn(encoder: *mut c_void, output_bitstream: *mut c_void) -> u32;
+
 /// NVENC 硬件编码器
 ///
 /// 通过 `libloading` 动态加载 `libnvidia-encode.so.1` 获取 NVENC API 函数指针。
@@ -188,7 +210,7 @@ pub struct NvencEncoder {
     /// dlopen 加载的 libnvidia-encode.so.1 库句柄 (保持存活以维持函数指针有效)
     _library: Library,
     /// NVENC API 函数指针表
-    _api_table: NvEncodeApiTable,
+    api_table: NvEncodeApiTable,
     encoder: *mut c_void,
     input_buffer: *mut c_void,
     output_buffer: *mut c_void,
@@ -295,7 +317,7 @@ impl NvencEncoder {
             config,
             is_h264,
             _library: library,
-            _api_table: api_table,
+            api_table,
             encoder: ptr::null_mut(),
             input_buffer: ptr::null_mut(),
             output_buffer: ptr::null_mut(),
@@ -353,12 +375,227 @@ impl Drop for NvencEncoder {
     }
 }
 
+impl NvencEncoder {
+    /// 将 YuvFrame (I420) 转换为 NV12 格式。
+    ///
+    /// NV12 格式: Y plane (height 行 × width 字节) + 交错的 UV plane (height/2 行 × width 字节)。
+    /// UV plane 中 U 和 V 交替存储: U0, V0, U1, V1, ...
+    fn yuv_to_nv12(frame: &YuvFrame) -> Vec<u8> {
+        let w = frame.width as usize;
+        let h = frame.height as usize;
+        let uv_h = h / 2;
+        // NV12: Y plane + interleaved UV plane
+        let nv12_size = w * h + w * uv_h;
+        let mut nv12 = vec![0u8; nv12_size];
+
+        // Copy Y plane
+        for row in 0..h {
+            let src = &frame.y[row * frame.y_stride()..row * frame.y_stride() + w];
+            nv12[row * w..row * w + w].copy_from_slice(src);
+        }
+
+        // Interleave U and V into UV plane
+        let uv_offset = w * h;
+        let uv_w = w / 2;
+        for row in 0..uv_h {
+            let u_row = &frame.u[row * frame.uv_stride()..row * frame.uv_stride() + uv_w];
+            let v_row = &frame.v[row * frame.uv_stride()..row * frame.uv_stride() + uv_w];
+            let dst_offset = uv_offset + row * w;
+            for col in 0..uv_w {
+                nv12[dst_offset + col * 2] = u_row[col];
+                nv12[dst_offset + col * 2 + 1] = v_row[col];
+            }
+        }
+
+        nv12
+    }
+}
+
 impl VideoEncoder for NvencEncoder {
     fn encode(&mut self, frame: &YuvFrame) -> Result<EncodedFrame, VideoCodecError> {
-        let _ = frame;
-        Err(VideoCodecError::EncodeFailed(
-            "NVENC encoder not fully initialized (framework only, GPU device required)".into(),
-        ))
+        if frame.width != self.config.width || frame.height != self.config.height {
+            return Err(VideoCodecError::InvalidInput(format!(
+                "frame dimensions {}x{} != encoder {}x{}",
+                frame.width, frame.height, self.config.width, self.config.height
+            )));
+        }
+
+        // 检查 encoder 是否已初始化 (需要 GPU device)
+        if self.encoder.is_null() {
+            return Err(VideoCodecError::EncodeFailed(
+                "NVENC encoder not initialized: GPU device required for encoding".into(),
+            ));
+        }
+
+        // 步骤 1: 将 YuvFrame (I420) 转换为 NV12
+        let nv12_data = Self::yuv_to_nv12(frame);
+        let w = self.config.width;
+        let h = self.config.height;
+
+        // 步骤 2: 创建 NVENC input buffer (如果尚未创建)
+        if self.input_buffer.is_null() {
+            let mut create_input_params = NvEncCreateInputBuffer {
+                version: NV_ENC_PIC_PARAMS_VER,
+                width: w,
+                height: h,
+                bufferFmt: NV_ENC_BUFFER_FORMAT_NV12,
+                reserved: 0,
+                inputBuffer: ptr::null_mut(),
+                sysMemBuffer: ptr::null_mut(),
+                reserved1: [ptr::null_mut(); 57],
+            };
+
+            let create_fn: NvEncCreateInputBufferFn =
+                unsafe { std::mem::transmute(self.api_table.nvEncCreateInputBuffer) };
+            let ret = unsafe { create_fn(self.encoder, &mut create_input_params) };
+            if ret != NV_ENC_SUCCESS {
+                return Err(VideoCodecError::EncodeFailed(format!(
+                    "NvEncCreateInputBuffer failed: error code {}",
+                    ret
+                )));
+            }
+            self.input_buffer = create_input_params.inputBuffer;
+        }
+
+        // 步骤 3: Lock input buffer 并复制 NV12 数据
+        let mut lock_input_params = NvEncLockInputBuffer {
+            version: NV_ENC_PIC_PARAMS_VER,
+            inputBuffer: self.input_buffer,
+            bufferData: ptr::null_mut(),
+            pitch: 0,
+            reserved1: 0,
+            reserved: [ptr::null_mut(); 241],
+        };
+
+        let lock_fn: NvEncLockInputBufferFn =
+            unsafe { std::mem::transmute(self.api_table.nvEncLockInputBuffer) };
+        let ret = unsafe { lock_fn(self.encoder, &mut lock_input_params) };
+        if ret != NV_ENC_SUCCESS {
+            return Err(VideoCodecError::EncodeFailed(format!(
+                "NvEncLockInputBuffer failed: error code {}",
+                ret
+            )));
+        }
+
+        // 将 NV12 数据复制到 locked buffer (按 pitch 对齐)
+        let pitch = lock_input_params.pitch as usize;
+        let buffer_data = lock_input_params.bufferData as *mut u8;
+        let y_size = (w as usize) * (h as usize);
+        let uv_h = (h / 2) as usize;
+
+        // Copy Y plane (with pitch alignment)
+        unsafe {
+            for row in 0..h as usize {
+                let dst = buffer_data.add(row * pitch);
+                let src = &nv12_data[row * w as usize..row * w as usize + w as usize];
+                ptr::copy_nonoverlapping(src.as_ptr(), dst, w as usize);
+            }
+            // Copy interleaved UV plane (with pitch alignment)
+            let uv_offset = y_size;
+            for row in 0..uv_h {
+                let dst = buffer_data.add((h as usize) * pitch + row * pitch);
+                let src = &nv12_data
+                    [uv_offset + row * w as usize..uv_offset + row * w as usize + w as usize];
+                ptr::copy_nonoverlapping(src.as_ptr(), dst, w as usize);
+            }
+        }
+
+        // Unlock input buffer
+        let unlock_fn: NvEncUnlockInputBufferFn =
+            unsafe { std::mem::transmute(self.api_table.nvEncUnlockInputBuffer) };
+        let _ = unsafe { unlock_fn(self.encoder, self.input_buffer) };
+
+        // 步骤 4: 提交帧到 NVENC 编码
+        let mut pic_params = NvEncPicParams {
+            version: NV_ENC_PIC_PARAMS_VER,
+            inputWidth: w,
+            inputHeight: h,
+            inputPitch: pitch as u32,
+            encodeParams: NvEncPicEncodeParams {
+                fieldEncodingMode: 0,
+                frameType: if self.force_keyframe { 2 } else { 0 }, // 2=IDR, 0=auto
+                reserved1: [0; 14],
+            },
+            inputBuffer: self.input_buffer,
+            outputBitstream: self.output_buffer,
+            completionEvent: ptr::null_mut(),
+            bufferFmt: NV_ENC_BUFFER_FORMAT_NV12,
+            reserved1: 0,
+            inputTimeStamp: frame.timestamp,
+            inputDuration: 1,
+            reserved: [ptr::null_mut(); 246],
+        };
+
+        if self.force_keyframe {
+            self.force_keyframe = false;
+        }
+
+        let encode_fn: NvEncEncodeFrameFn =
+            unsafe { std::mem::transmute(self.api_table.nvEncEncodeFrame) };
+        let ret = unsafe { encode_fn(self.encoder, &mut pic_params) };
+        if ret != NV_ENC_SUCCESS {
+            return Err(VideoCodecError::EncodeFailed(format!(
+                "NvEncEncodeFrame failed: error code {}",
+                ret
+            )));
+        }
+
+        // 步骤 5: 获取编码后的 bitstream
+        let mut lock_bitstream_params = NvEncLockBitstream {
+            version: NV_ENC_PIC_PARAMS_VER,
+            outputBitstream: self.output_buffer,
+            sliceOffsets: ptr::null_mut(),
+            frameIdx: 0,
+            hwEncodeStatus: 0,
+            numSlices: 0,
+            bitstreamSizeInBytes: 0,
+            outputTimeStamp: 0,
+            outputDuration: 0,
+            bitstreamBufferPtr: ptr::null_mut(),
+            reserved1: [ptr::null_mut(); 58],
+        };
+
+        let lock_bs_fn: NvEncLockBitstreamFn =
+            unsafe { std::mem::transmute(self.api_table.nvEncLockBitstream) };
+        let ret = unsafe { lock_bs_fn(self.encoder, &mut lock_bitstream_params) };
+        if ret != NV_ENC_SUCCESS {
+            return Err(VideoCodecError::EncodeFailed(format!(
+                "NvEncLockBitstream failed: error code {}",
+                ret
+            )));
+        }
+
+        // 读取编码数据
+        let bs_size = lock_bitstream_params.bitstreamSizeInBytes as usize;
+        let bs_ptr = lock_bitstream_params.bitstreamBufferPtr as *const u8;
+        let data = if bs_size > 0 && !bs_ptr.is_null() {
+            let slice = unsafe { std::slice::from_raw_parts(bs_ptr, bs_size) };
+            slice.to_vec()
+        } else {
+            Vec::new()
+        };
+
+        // 解锁 bitstream
+        let unlock_bs_fn: NvEncUnlockBitstreamFn =
+            unsafe { std::mem::transmute(self.api_table.nvEncUnlockBitstream) };
+        let _ = unsafe { unlock_bs_fn(self.encoder, self.output_buffer) };
+
+        if data.is_empty() {
+            return Err(VideoCodecError::EncodeFailed(
+                "empty bitstream output".into(),
+            ));
+        }
+
+        self.frame_count += 1;
+
+        Ok(EncodedFrame {
+            data: bytes::Bytes::from(data),
+            width: self.config.width,
+            height: self.config.height,
+            keyframe: true, // NVENC 框架实现中标记所有帧为 keyframe (简化)
+            timestamp: frame.timestamp,
+            bit_depth: 8,
+        })
     }
 
     fn request_keyframe(&mut self) {

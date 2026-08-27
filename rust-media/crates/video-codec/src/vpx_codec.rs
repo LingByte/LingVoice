@@ -736,6 +736,7 @@ impl VideoEncoder for VpxEncoder {
             height: self.config.height,
             keyframe: is_keyframe,
             timestamp: frame.timestamp,
+            bit_depth: 8,
         })
     }
 

@@ -16,6 +16,9 @@ const AOM_ENCODER_ABI_VERSION: c_int = 10 + AOM_CODEC_ABI_VERSION + 3;
 const AOM_USAGE_REALTIME: c_uint = 1;
 
 const AOM_IMG_FMT_I420: c_uint = 0x100 | 2;
+const AOM_IMG_FMT_I42016: c_uint = 0x100 | 258; // FMT_I42016 = 0x1 << 8 | 2 (highbitdepth flag)
+const AOM_BITS_8: c_uint = 8;
+const AOM_BITS_10: c_uint = 10;
 
 const AOM_EFLAG_FORCE_KF: c_int = 1 << 0;
 
@@ -290,8 +293,18 @@ impl AomEncoder {
         cfg.kf_max_dist = config.keyframe_interval;
         cfg.g_threads = config.threads;
         cfg.g_error_resilient = 1;
-        cfg.g_bit_depth = 8;
-        cfg.g_input_bit_depth = 8;
+
+        // 10-bit 色深配置
+        let is_10bit = config.bit_depth == 10;
+        if is_10bit {
+            cfg.g_bit_depth = AOM_BITS_10;
+            cfg.g_input_bit_depth = AOM_BITS_10;
+            cfg.g_profile = 2; // 10-bit 4:2:0 profile
+        } else {
+            cfg.g_bit_depth = AOM_BITS_8;
+            cfg.g_input_bit_depth = AOM_BITS_8;
+            cfg.g_profile = 0; // 8-bit 4:2:0 profile
+        }
 
         let mut ctx = AomCodecCtx {
             name: ptr::null(),
@@ -340,8 +353,12 @@ impl AomEncoder {
             fb_priv: ptr::null_mut(),
         };
 
-        let img_ptr =
-            unsafe { aom_img_alloc(&mut img, AOM_IMG_FMT_I420, config.width, config.height, 32) };
+        let img_fmt = if is_10bit {
+            AOM_IMG_FMT_I42016
+        } else {
+            AOM_IMG_FMT_I420
+        };
+        let img_ptr = unsafe { aom_img_alloc(&mut img, img_fmt, config.width, config.height, 32) };
         if img_ptr.is_null() {
             unsafe { aom_codec_destroy(&mut ctx) };
             return Err(VideoCodecError::EncodeFailed("aom_img_alloc failed".into()));
@@ -384,19 +401,46 @@ impl VideoEncoder for AomEncoder {
         let uv_w = (self.config.width / 2) as usize;
         let uv_h = (self.config.height / 2) as usize;
 
-        for row in 0..h {
-            let dst = unsafe { self.img.planes[0].add(row * y_stride) };
-            let src = &frame.y
-                [row * frame.y_stride()..row * frame.y_stride() + self.config.width as usize];
-            unsafe { ptr::copy_nonoverlapping(src.as_ptr(), dst, self.config.width as usize) };
-        }
-        for row in 0..uv_h {
-            let dst_u = unsafe { self.img.planes[1].add(row * u_stride) };
-            let src_u = &frame.u[row * frame.uv_stride()..row * frame.uv_stride() + uv_w];
-            unsafe { ptr::copy_nonoverlapping(src_u.as_ptr(), dst_u, uv_w) };
-            let dst_v = unsafe { self.img.planes[2].add(row * v_stride) };
-            let src_v = &frame.v[row * frame.uv_stride()..row * frame.uv_stride() + uv_w];
-            unsafe { ptr::copy_nonoverlapping(src_v.as_ptr(), dst_v, uv_w) };
+        let is_10bit = self.config.bit_depth == 10;
+
+        if is_10bit {
+            // 10-bit: 从 y16/u16/v16 填充图像数据 (u16 planes, little-endian)
+            let w = self.config.width as usize;
+            for row in 0..h {
+                let dst = unsafe { self.img.planes[0].add(row * y_stride) as *mut u16 };
+                let src = &frame.y16[row * frame.y_stride()..row * frame.y_stride() + w];
+                unsafe {
+                    ptr::copy_nonoverlapping(src.as_ptr(), dst, w);
+                }
+            }
+            for row in 0..uv_h {
+                let dst_u = unsafe { self.img.planes[1].add(row * u_stride) as *mut u16 };
+                let src_u = &frame.u16[row * frame.uv_stride()..row * frame.uv_stride() + uv_w];
+                unsafe {
+                    ptr::copy_nonoverlapping(src_u.as_ptr(), dst_u, uv_w);
+                }
+                let dst_v = unsafe { self.img.planes[2].add(row * v_stride) as *mut u16 };
+                let src_v = &frame.v16[row * frame.uv_stride()..row * frame.uv_stride() + uv_w];
+                unsafe {
+                    ptr::copy_nonoverlapping(src_v.as_ptr(), dst_v, uv_w);
+                }
+            }
+        } else {
+            // 8-bit: 从 y/u/v 填充图像数据
+            for row in 0..h {
+                let dst = unsafe { self.img.planes[0].add(row * y_stride) };
+                let src = &frame.y
+                    [row * frame.y_stride()..row * frame.y_stride() + self.config.width as usize];
+                unsafe { ptr::copy_nonoverlapping(src.as_ptr(), dst, self.config.width as usize) };
+            }
+            for row in 0..uv_h {
+                let dst_u = unsafe { self.img.planes[1].add(row * u_stride) };
+                let src_u = &frame.u[row * frame.uv_stride()..row * frame.uv_stride() + uv_w];
+                unsafe { ptr::copy_nonoverlapping(src_u.as_ptr(), dst_u, uv_w) };
+                let dst_v = unsafe { self.img.planes[2].add(row * v_stride) };
+                let src_v = &frame.v[row * frame.uv_stride()..row * frame.uv_stride() + uv_w];
+                unsafe { ptr::copy_nonoverlapping(src_v.as_ptr(), dst_v, uv_w) };
+            }
         }
 
         let flags = if self.force_keyframe {
@@ -453,6 +497,7 @@ impl VideoEncoder for AomEncoder {
             height: self.config.height,
             keyframe: is_keyframe,
             timestamp: frame.timestamp,
+            bit_depth: self.config.bit_depth,
         })
     }
 

@@ -10,3 +10,4 @@ lm-core = { path = "../lm-core" }
 tokio.workspace = true
 bytes.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true

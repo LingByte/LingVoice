@@ -5,6 +5,8 @@
 
 pub use lm_core::Transport;
 
+pub mod rtcp;
+
 use bytes::{BufMut, Bytes, BytesMut};
 
 // ============================================================================
