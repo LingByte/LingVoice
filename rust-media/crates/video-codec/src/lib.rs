@@ -114,12 +114,7 @@ impl YuvFrame {
         let y = std::mem::take(&mut self.y);
         let u = std::mem::take(&mut self.u);
         let v = std::mem::take(&mut self.v);
-        pool.return_buffers(
-            self.width,
-            self.height,
-            (y, u, v),
-            (y_size, uv_size),
-        );
+        pool.return_buffers(self.width, self.height, (y, u, v), (y_size, uv_size));
     }
 }
 
@@ -306,6 +301,24 @@ impl EncoderConfig {
 pub trait VideoDecoder: Send + Sync {
     fn decode(&mut self, data: &[u8], timestamp: u64) -> Result<YuvFrame, VideoCodecError>;
     fn codec(&self) -> lm_core::CodecType;
+
+    /// 使用缓冲池解码，减少堆分配。池提供预分配的 Vec 缓冲区。
+    /// 默认实现调用 decode() 然后复制到池帧中，解码器可覆盖以直接写入池缓冲区。
+    fn decode_with_pool(
+        &mut self,
+        data: &[u8],
+        timestamp: u64,
+        pool: &YuvFramePool,
+    ) -> Result<YuvFrame, VideoCodecError> {
+        let frame = self.decode(data, timestamp)?;
+        // 从池获取帧并复制数据
+        let mut pooled = pool.acquire(frame.width, frame.height, timestamp);
+        pooled.y.copy_from_slice(&frame.y);
+        pooled.u.copy_from_slice(&frame.u);
+        pooled.v.copy_from_slice(&frame.v);
+        pooled.keyframe = frame.keyframe;
+        Ok(pooled)
+    }
 }
 
 /// 视频编码器 trait

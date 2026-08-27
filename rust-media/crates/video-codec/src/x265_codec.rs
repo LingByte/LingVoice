@@ -228,7 +228,8 @@ impl VideoEncoder for X265Encoder {
                 if nal.size_bytes > 0 && !nal.payload.is_null() {
                     let slice = std::slice::from_raw_parts(nal.payload, nal.size_bytes as usize);
                     data.extend_from_slice(slice);
-                    if nal.nal_type <= 19 {
+                    // H.265 keyframe NAL types: 19=IDR_W_RADL, 20=IDR_N_LP, 21=CRA
+                    if nal.nal_type >= 19 && nal.nal_type <= 21 {
                         is_keyframe = true;
                     }
                 }

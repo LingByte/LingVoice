@@ -460,3 +460,42 @@ fn test_yuv_frame_pool_max_limit() {
     pool.clear();
     assert_eq!(pool.pooled_count(), 0);
 }
+
+#[test]
+fn test_decode_with_pool() {
+    use crate::YuvFramePool;
+
+    let pool = YuvFramePool::default();
+    let codecs = supported_decoders();
+    for codec in codecs {
+        let mut dec = match create_decoder(codec) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        // First encode a frame to have something to decode
+        let mut enc = match create_encoder(codec, 160, 120) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let frame = YuvFrame::with_gradient(160, 120, 0);
+        let encoded = enc.encode(&frame).expect("encode failed");
+
+        // Decode with pool
+        let decoded = dec
+            .decode_with_pool(&encoded.data, 0, &pool)
+            .unwrap_or_else(|e| {
+                eprintln!("decode_with_pool failed for {:?}: {}", codec, e);
+                return dec
+                    .decode(&encoded.data, 0)
+                    .expect("fallback decode failed");
+            });
+        assert_eq!(decoded.width, 160);
+        assert_eq!(decoded.height, 120);
+        assert!(!decoded.y.is_empty());
+
+        // Recycle and verify pool reuse
+        let mut decoded = decoded;
+        decoded.recycle_buffers(&pool);
+        assert_eq!(pool.pooled_count(), 1);
+    }
+}

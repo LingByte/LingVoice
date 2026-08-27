@@ -188,8 +188,8 @@ extern "C" {
     fn vpx_codec_encode(
         ctx: *mut VpxCodecCtx,
         img: *const VpxImage,
-        pts: c_int,
-        duration: c_int,
+        pts: i64,
+        duration: i64,
         flags: c_int,
         deadline: c_int,
     ) -> c_int;
@@ -242,20 +242,35 @@ fn copy_yuv_from_image(
     let mut v = vec![0u8; uv_size];
 
     let y_stride = img.stride[0] as usize;
-    for row in 0..height as usize {
-        let src = unsafe {
-            std::slice::from_raw_parts(img.planes[0].add(row * y_stride), width as usize)
-        };
-        y[row * width as usize..(row + 1) * width as usize].copy_from_slice(src);
+    let w = width as usize;
+    if y_stride == w {
+        // Bulk copy when stride matches width (common case)
+        let src = unsafe { std::slice::from_raw_parts(img.planes[0], y_size) };
+        y.copy_from_slice(src);
+    } else {
+        for row in 0..height as usize {
+            let src = unsafe { std::slice::from_raw_parts(img.planes[0].add(row * y_stride), w) };
+            y[row * w..(row + 1) * w].copy_from_slice(src);
+        }
     }
 
     let u_stride = img.stride[1] as usize;
     let v_stride = img.stride[2] as usize;
-    for row in 0..uv_h {
-        let src_u = unsafe { std::slice::from_raw_parts(img.planes[1].add(row * u_stride), uv_w) };
-        u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
-        let src_v = unsafe { std::slice::from_raw_parts(img.planes[2].add(row * v_stride), uv_w) };
-        v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+    if u_stride == uv_w && v_stride == uv_w {
+        // Bulk copy for both UV planes
+        let src_u = unsafe { std::slice::from_raw_parts(img.planes[1], uv_size) };
+        u.copy_from_slice(src_u);
+        let src_v = unsafe { std::slice::from_raw_parts(img.planes[2], uv_size) };
+        v.copy_from_slice(src_v);
+    } else {
+        for row in 0..uv_h {
+            let src_u =
+                unsafe { std::slice::from_raw_parts(img.planes[1].add(row * u_stride), uv_w) };
+            u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
+            let src_v =
+                unsafe { std::slice::from_raw_parts(img.planes[2].add(row * v_stride), uv_w) };
+            v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+        }
     }
 
     YuvFrame {
@@ -511,7 +526,8 @@ impl VideoEncoder for VpxEncoder {
             0
         };
 
-        let pts = frame.timestamp as c_int;
+        // vpx_codec_pts_t is int64_t; use timestamp directly
+        let pts = frame.timestamp as i64;
         let ret = unsafe {
             vpx_codec_encode(
                 &mut self.ctx,

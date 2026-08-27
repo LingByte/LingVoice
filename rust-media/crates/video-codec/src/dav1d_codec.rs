@@ -204,26 +204,42 @@ impl VideoDecoder for Dav1dDecoder {
 
             let y_stride = pic.stride[0] as usize;
             let uv_stride = pic.stride[1] as usize;
+            let w = width as usize;
+            let h = height as usize;
             let uv_w = (width / 2) as usize;
             let uv_h = (height / 2) as usize;
+            let y_size = w * h;
+            let uv_size = uv_w * uv_h;
 
-            let mut y = vec![0u8; (width * height) as usize];
-            let mut u = vec![0u8; uv_w * uv_h];
-            let mut v = vec![0u8; uv_w * uv_h];
+            let mut y = vec![0u8; y_size];
+            let mut u = vec![0u8; uv_size];
+            let mut v = vec![0u8; uv_size];
 
             let y_ptr = pic.data[0] as *const u8;
             let u_ptr = pic.data[1] as *const u8;
             let v_ptr = pic.data[2] as *const u8;
 
-            for row in 0..height as usize {
-                let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride), width as usize);
-                y[row * width as usize..(row + 1) * width as usize].copy_from_slice(src);
+            if y_stride == w {
+                let src = std::slice::from_raw_parts(y_ptr, y_size);
+                y.copy_from_slice(src);
+            } else {
+                for row in 0..h {
+                    let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride), w);
+                    y[row * w..(row + 1) * w].copy_from_slice(src);
+                }
             }
-            for row in 0..uv_h {
-                let src_u = std::slice::from_raw_parts(u_ptr.add(row * uv_stride), uv_w);
-                u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
-                let src_v = std::slice::from_raw_parts(v_ptr.add(row * uv_stride), uv_w);
-                v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+            if uv_stride == uv_w {
+                let src_u = std::slice::from_raw_parts(u_ptr, uv_size);
+                u.copy_from_slice(src_u);
+                let src_v = std::slice::from_raw_parts(v_ptr, uv_size);
+                v.copy_from_slice(src_v);
+            } else {
+                for row in 0..uv_h {
+                    let src_u = std::slice::from_raw_parts(u_ptr.add(row * uv_stride), uv_w);
+                    u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
+                    let src_v = std::slice::from_raw_parts(v_ptr.add(row * uv_stride), uv_w);
+                    v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+                }
             }
 
             let keyframe = pic.frame_hdr.is_null()

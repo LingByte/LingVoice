@@ -433,7 +433,8 @@ impl VideoEncoder for AomEncoder {
                         std::slice::from_raw_parts(frame_pkt.buf as *const u8, frame_pkt.sz)
                     };
                     data.extend_from_slice(slice);
-                    if frame_pkt.flags & 1 == 0 {
+                    // AOM_FRAME_IS_KEY = 0x1, so keyframe when flags & 1 != 0
+                    if frame_pkt.flags & 1 != 0 {
                         is_keyframe = true;
                     }
                 }

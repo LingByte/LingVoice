@@ -8,9 +8,9 @@
 use crate::{VideoCodecError, VideoDecoder, YuvFrame};
 use libde265_sys2::{
     de265_decode, de265_decoder_context, de265_flush_data, de265_free_decoder,
-    de265_get_chroma_format, de265_get_image_height, de265_get_image_plane, de265_get_image_width,
-    de265_get_next_picture, de265_image, de265_new_decoder, de265_push_data,
-    de265_release_next_picture,
+    de265_get_chroma_format, de265_get_image_NAL_header, de265_get_image_height,
+    de265_get_image_plane, de265_get_image_width, de265_get_next_picture, de265_image,
+    de265_new_decoder, de265_push_data, de265_release_next_picture,
 };
 use std::os::raw::c_int;
 use std::ptr;
@@ -140,21 +140,46 @@ unsafe fn extract_yuv(
     let v_stride = v_stride as usize;
     let w = width as usize;
     let h = height as usize;
+    let y_size = w * h;
+    let uv_size = uv_w * uv_h;
 
-    let mut y = vec![0u8; w * h];
-    let mut u = vec![0u8; uv_w * uv_h];
-    let mut v = vec![0u8; uv_w * uv_h];
+    let mut y = vec![0u8; y_size];
+    let mut u = vec![0u8; uv_size];
+    let mut v = vec![0u8; uv_size];
 
-    for row in 0..h {
-        let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride), w);
-        y[row * w..(row + 1) * w].copy_from_slice(src);
+    if y_stride == w {
+        let src = std::slice::from_raw_parts(y_ptr, y_size);
+        y.copy_from_slice(src);
+    } else {
+        for row in 0..h {
+            let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride), w);
+            y[row * w..(row + 1) * w].copy_from_slice(src);
+        }
     }
-    for row in 0..uv_h {
-        let src_u = std::slice::from_raw_parts(u_ptr.add(row * u_stride), uv_w);
-        u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
-        let src_v = std::slice::from_raw_parts(v_ptr.add(row * v_stride), uv_w);
-        v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+    if u_stride == uv_w && v_stride == uv_w {
+        let src_u = std::slice::from_raw_parts(u_ptr, uv_size);
+        u.copy_from_slice(src_u);
+        let src_v = std::slice::from_raw_parts(v_ptr, uv_size);
+        v.copy_from_slice(src_v);
+    } else {
+        for row in 0..uv_h {
+            let src_u = std::slice::from_raw_parts(u_ptr.add(row * u_stride), uv_w);
+            u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
+            let src_v = std::slice::from_raw_parts(v_ptr.add(row * v_stride), uv_w);
+            v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+        }
     }
+
+    // Detect keyframe from NAL unit type: 19=IDR_W_RADL, 20=IDR_N_LP, 21=CRA
+    let mut nal_type: c_int = 0;
+    de265_get_image_NAL_header(
+        img,
+        &mut nal_type,
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+    );
+    let is_keyframe = (19..=21).contains(&nal_type);
 
     Ok(YuvFrame {
         y,
@@ -163,6 +188,6 @@ unsafe fn extract_yuv(
         width,
         height,
         timestamp,
-        keyframe: true,
+        keyframe: is_keyframe,
     })
 }

@@ -211,6 +211,7 @@ struct EncodedOutput {
 
 struct CallbackContext {
     outputs: Mutex<Vec<EncodedOutput>>,
+    cond: std::sync::Condvar,
 }
 
 unsafe extern "C" fn compression_output_callback(
@@ -372,6 +373,7 @@ unsafe extern "C" fn compression_output_callback(
             data,
             keyframe: is_keyframe,
         });
+        ctx.cond.notify_one();
     }
 }
 
@@ -407,6 +409,7 @@ impl VideoToolboxEncoder {
 
         let callback_ctx = Arc::new(CallbackContext {
             outputs: Mutex::new(Vec::new()),
+            cond: std::sync::Condvar::new(),
         });
 
         // The callback context needs to live as long as the session.
@@ -713,46 +716,45 @@ impl VideoEncoder for VideoToolboxEncoder {
             )));
         }
 
-        // Wait for the callback to fire (VideoToolbox may call synchronously for realtime)
-        // Complete frames to flush output. Use kCMTimeInvalid (default) to complete ALL frames.
+        // Wait for the callback to fire. VideoToolbox may call synchronously
+        // for realtime mode, or asynchronously. Use Condvar to wait efficiently.
         let flush_time = CMTime::default();
         let _ = unsafe { VTCompressionSessionCompleteFrames(self.session, flush_time) };
 
-        // If no output yet, retry a few times (forced keyframe may need extra flush)
-        let mut retries = 0;
-        while {
-            let empty = self
-                .callback_ctx
-                .outputs
-                .lock()
-                .map(|o| o.is_empty())
-                .unwrap_or(true);
-            empty && retries < 50
-        } {
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        // If callback already fired synchronously, outputs is non-empty.
+        // Otherwise wait on condvar with timeout (forced keyframe may delay).
+        let timeout = std::time::Duration::from_secs(1);
+        let mut guard = self.callback_ctx.outputs.lock().unwrap();
+        if guard.is_empty() {
+            let result = self.callback_ctx.cond.wait_timeout(guard, timeout).unwrap();
+            guard = result.0;
+        }
+        // If still empty after timeout, try one more flush
+        if guard.is_empty() {
+            drop(guard);
             let _ = unsafe { VTCompressionSessionCompleteFrames(self.session, flush_time) };
-            retries += 1;
+            guard = self.callback_ctx.outputs.lock().unwrap();
+            if guard.is_empty() {
+                let result = self.callback_ctx.cond.wait_timeout(guard, timeout).unwrap();
+                guard = result.0;
+            }
         }
 
-        // Extract output
-        let output = if let Ok(mut outputs) = self.callback_ctx.outputs.lock() {
-            if outputs.is_empty() {
-                None
-            } else {
-                // Combine all outputs (should be just one frame)
-                let mut data = Vec::new();
-                let mut is_keyframe = false;
-                for out in outputs.drain(..) {
-                    if out.keyframe {
-                        is_keyframe = true;
-                    }
-                    data.extend_from_slice(&out.data);
-                }
-                Some((data, is_keyframe))
-            }
-        } else {
+        // Extract output from the guard we already hold
+        let output = if guard.is_empty() {
             None
+        } else {
+            let mut data = Vec::new();
+            let mut is_keyframe = false;
+            for out in guard.drain(..) {
+                if out.keyframe {
+                    is_keyframe = true;
+                }
+                data.extend_from_slice(&out.data);
+            }
+            Some((data, is_keyframe))
         };
+        drop(guard);
 
         match output {
             Some((data, keyframe)) => {
@@ -780,7 +782,11 @@ impl VideoEncoder for VideoToolboxEncoder {
     }
 
     fn codec(&self) -> lm_core::CodecType {
-        self.codec()
+        if self.codec_type == KCM_VIDEO_CODEC_TYPE_HEVC {
+            lm_core::CodecType::H265
+        } else {
+            lm_core::CodecType::H264
+        }
     }
 
     fn set_bitrate(&mut self, bps: u32) {

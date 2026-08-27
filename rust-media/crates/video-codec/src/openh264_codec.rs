@@ -76,23 +76,33 @@ impl VideoDecoder for Openh264Decoder {
         let uv_w = width / 2;
         let uv_h = height / 2;
         let uv_size = uv_w * uv_h;
+        let y_size = width * height;
 
-        let mut y = vec![0u8; width * height];
+        let mut y = vec![0u8; y_size];
         let mut u = vec![0u8; uv_size];
         let mut v = vec![0u8; uv_size];
 
-        for row in 0..height {
-            let src_start = row * y_stride;
-            y[row * width..(row + 1) * width]
-                .copy_from_slice(&yuv.y()[src_start..src_start + width]);
+        if y_stride == width {
+            y.copy_from_slice(&yuv.y()[..y_size]);
+        } else {
+            for row in 0..height {
+                let src_start = row * y_stride;
+                y[row * width..(row + 1) * width]
+                    .copy_from_slice(&yuv.y()[src_start..src_start + width]);
+            }
         }
-        for row in 0..uv_h {
-            let src_u_start = row * u_stride;
-            u[row * uv_w..(row + 1) * uv_w]
-                .copy_from_slice(&yuv.u()[src_u_start..src_u_start + uv_w]);
-            let src_v_start = row * v_stride;
-            v[row * uv_w..(row + 1) * uv_w]
-                .copy_from_slice(&yuv.v()[src_v_start..src_v_start + uv_w]);
+        if u_stride == uv_w && v_stride == uv_w {
+            u.copy_from_slice(&yuv.u()[..uv_size]);
+            v.copy_from_slice(&yuv.v()[..uv_size]);
+        } else {
+            for row in 0..uv_h {
+                let src_u_start = row * u_stride;
+                u[row * uv_w..(row + 1) * uv_w]
+                    .copy_from_slice(&yuv.u()[src_u_start..src_u_start + uv_w]);
+                let src_v_start = row * v_stride;
+                v[row * uv_w..(row + 1) * uv_w]
+                    .copy_from_slice(&yuv.v()[src_v_start..src_v_start + uv_w]);
+            }
         }
 
         Ok(YuvFrame {
