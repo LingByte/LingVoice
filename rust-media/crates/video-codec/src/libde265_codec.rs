@@ -7,17 +7,20 @@
 
 use crate::{VideoCodecError, VideoDecoder, YuvFrame};
 use libde265_sys2::{
-    de265_chroma_format, de265_decode, de265_error, de265_flush_data, de265_free_decoder,
+    de265_decode, de265_decoder_context, de265_flush_data, de265_free_decoder,
     de265_get_chroma_format, de265_get_image_height, de265_get_image_plane, de265_get_image_width,
-    de265_get_next_picture, de265_new_decoder, de265_push_data, de265_release_next_picture,
+    de265_get_next_picture, de265_image, de265_new_decoder, de265_push_data,
+    de265_release_next_picture,
 };
 use std::os::raw::c_int;
 use std::ptr;
 
 const DE265_CHROMA_420: c_int = 1;
+const DE265_OK: u32 = 0;
+const DE265_ERROR_WAITING_FOR_INPUT_DATA: u32 = 13;
 
 pub struct Libde265Decoder {
-    ctx: *mut libde265_sys2::de265_decoder_context,
+    ctx: *mut de265_decoder_context,
 }
 
 unsafe impl Send for Libde265Decoder {}
@@ -58,18 +61,18 @@ impl VideoDecoder for Libde265Decoder {
                 0,
                 ptr::null_mut(),
             );
-            if !is_de265_ok(ret) {
+            if ret != DE265_OK {
                 return Err(VideoCodecError::DecodeFailed(format!(
-                    "de265_push_data failed: {:?}",
+                    "de265_push_data failed: {}",
                     ret
                 )));
             }
 
             let mut more: c_int = 0;
             let ret = de265_decode(self.ctx, &mut more);
-            if !is_de265_ok(ret) && ret != de265_error::DE265_ERROR_WAITING_FOR_INPUT_DATA {
+            if ret != DE265_OK && ret != DE265_ERROR_WAITING_FOR_INPUT_DATA {
                 return Err(VideoCodecError::DecodeFailed(format!(
-                    "de265_decode failed: {:?}",
+                    "de265_decode failed: {}",
                     ret
                 )));
             }
@@ -83,7 +86,9 @@ impl VideoDecoder for Libde265Decoder {
                 if img.is_null() {
                     return Err(VideoCodecError::DecodeFailed("no output frame yet".into()));
                 }
-                return extract_yuv(img, timestamp);
+                let result = extract_yuv(img, timestamp);
+                de265_release_next_picture(self.ctx);
+                return result;
             }
 
             let result = extract_yuv(img, timestamp);
@@ -98,7 +103,7 @@ impl VideoDecoder for Libde265Decoder {
 }
 
 unsafe fn extract_yuv(
-    img: *mut libde265_sys2::de265_image,
+    img: *const de265_image,
     timestamp: u64,
 ) -> Result<YuvFrame, VideoCodecError> {
     let width = de265_get_image_width(img, 0) as u32;
@@ -110,8 +115,8 @@ unsafe fn extract_yuv(
     let chroma = de265_get_chroma_format(img);
     if chroma as c_int != DE265_CHROMA_420 {
         return Err(VideoCodecError::DecodeFailed(format!(
-            "unsupported chroma format: {:?} (only 4:2:0 supported)",
-            chroma
+            "unsupported chroma format: {} (only 4:2:0 supported)",
+            chroma as c_int
         )));
     }
 
@@ -160,8 +165,4 @@ unsafe fn extract_yuv(
         timestamp,
         keyframe: true,
     })
-}
-
-fn is_de265_ok(err: de265_error) -> bool {
-    matches!(err, de265_error::DE265_OK)
 }
