@@ -659,6 +659,11 @@ impl LlHlsPlaylist {
             },
             self.config.part_hold_back
         ));
+        // EXT-X-MAP: 指向 init segment (CMAF fMP4)
+        m.push_str(&format!(
+            "#EXT-X-MAP:URI=\"{}_init.mp4\"\n",
+            self.stream_name
+        ));
         m.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", self.media_sequence));
 
         // 分段 + partials
@@ -764,14 +769,11 @@ impl CmafMuxer {
     /// 构建 init segment (ftyp + moov)
     pub fn build_init(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
         let mut out = Vec::new();
-        // ftyp box
-        out.extend_from_slice(&box_header(0, b"ftyp"));
-        out.extend_from_slice(b"iso5"); // major brand
-        out.extend_from_slice(&0u32.to_be_bytes()); // minor version
-        out.extend_from_slice(b"iso5");
-        out.extend_from_slice(b"avc1");
-        out.extend_from_slice(b"mp42");
-        // moov box (简化: mvhd + trak + mvex)
+        // ftyp box: size = 8 (header) + 4 (brand) + 4 (version) + 4*4 (compatible brands)
+        let ftyp_payload: &[u8] = b"iso5\x00\x00\x00\x00iso5avc1mp42";
+        out.extend_from_slice(&box_header(ftyp_payload.len(), b"ftyp"));
+        out.extend_from_slice(ftyp_payload);
+        // moov box (mvhd + trak + mvex)
         let moov = self.build_moov(width, height, codec);
         out.extend_from_slice(&box_header(moov.len(), b"moov"));
         out.extend_from_slice(&moov);
@@ -783,22 +785,49 @@ impl CmafMuxer {
         &mut self,
         media_data: &[u8],
         duration: u64,
-        _is_keyframe: bool,
+        is_keyframe: bool,
     ) -> Vec<u8> {
         let mut out = Vec::new();
-        // styp box
-        out.extend_from_slice(&box_header(24, b"styp"));
+        // styp box: 8 (header) + 4 (brand) + 4 (version) + 4*2 (compatible brands) = 24
+        out.extend_from_slice(&box_header(16, b"styp"));
         out.extend_from_slice(b"msdh");
         out.extend_from_slice(&0u32.to_be_bytes());
         out.extend_from_slice(b"msdh");
         out.extend_from_slice(b"msix");
-        // moof box
-        let moof = self.build_moof(duration);
+        // moof box — 需要知道 moof size 来计算 data_offset
+        let moof = self.build_moof(duration, media_data.len(), is_keyframe);
+        let moof_size = moof.len() + 8; // +8 for moof box header
+                                        // mdat box
+        let mdat_size = 8 + media_data.len();
+
         out.extend_from_slice(&box_header(moof.len(), b"moof"));
         out.extend_from_slice(&moof);
-        // mdat box
-        out.extend_from_slice(&box_header(8 + media_data.len(), b"mdat"));
+        out.extend_from_slice(&box_header(media_data.len(), b"mdat"));
         out.extend_from_slice(media_data);
+
+        // 修正 trun 中的 data_offset: 指向 mdat payload 开始
+        // data_offset = styp + moof + mdat_header (从 segment 开始到 mdat payload)
+        let styp_size = 24u32; // styp box total size
+        let mdat_header_size = 8u32; // mdat box header
+        let data_offset = styp_size + moof_size as u32 + mdat_header_size;
+        let _ = mdat_size;
+
+        // 在 out 中搜索 "trun" 标记 (4 bytes), 然后修正其后的 data_offset
+        for i in 0..out.len().saturating_sub(20) {
+            if &out[i..i + 4] == b"trun" {
+                // i 指向 type 字段
+                // trun full box: [size(4)][type(4)][version(1)][flags(3)][sample_count(4)][data_offset(4)]...
+                // data_offset 在 type 后 12 bytes: version(1)+flags(3)+count(4)+offset(4) = 12
+                // 但 i 指向 type, 所以 data_offset 在 i + 4(ver+flags) + 4(count) + 4(offset) = i + 12
+                // 不对: i 是 type 位置, i+4 = version+flags, i+8 = sample_count, i+12 = data_offset
+                let offset_pos = i + 12;
+                if offset_pos + 4 <= out.len() {
+                    out[offset_pos..offset_pos + 4].copy_from_slice(&data_offset.to_be_bytes());
+                }
+                break;
+            }
+        }
+
         self.sequence += 1;
         out
     }
@@ -970,32 +999,66 @@ impl CmafMuxer {
         trex
     }
 
-    fn build_moof(&mut self, duration: u64) -> Vec<u8> {
+    fn build_moof(&mut self, duration: u64, media_data_len: usize, is_keyframe: bool) -> Vec<u8> {
         let mut moof = Vec::new();
-        // mfhd
-        moof.extend_from_slice(&full_box_header(16, b"mfhd", 0, 0));
+        // mfhd: payload = 4 bytes (sequence_number), total = 4 + 12 = 16
+        moof.extend_from_slice(&full_box_header(4, b"mfhd", 0, 0));
         moof.extend_from_slice(&self.sequence.to_be_bytes()); // sequence_number
                                                               // traf
-        let traf = self.build_traf(duration);
+        let traf = self.build_traf(duration, media_data_len, is_keyframe);
         moof.extend_from_slice(&box_header(traf.len(), b"traf"));
         moof.extend_from_slice(&traf);
         moof
     }
 
-    fn build_traf(&self, duration: u64) -> Vec<u8> {
+    fn build_traf(&self, duration: u64, media_data_len: usize, is_keyframe: bool) -> Vec<u8> {
         let mut traf = Vec::new();
-        // tfhd
-        traf.extend_from_slice(&full_box_header(16, b"tfhd", 0, 0x020000)); // default-base-is-moof
+        // tfhd: payload = 4 bytes (track_id), total = 4 + 12 = 16
+        // flags = 0x020000 (default-base-is-moof, no optional fields)
+        traf.extend_from_slice(&full_box_header(4, b"tfhd", 0, 0x020000));
         traf.extend_from_slice(&self.track_id.to_be_bytes());
-        // tfdt (version 1)
-        traf.extend_from_slice(&full_box_header(20, b"tfdt", 1, 0));
-        traf.extend_from_slice(&duration.to_be_bytes()); // base_media_decode_time
-                                                         // trun (简化: 1 sample)
-        traf.extend_from_slice(&full_box_header(20, b"trun", 0, 0x000200)); // data-offset-present
-        traf.extend_from_slice(&1u32.to_be_bytes()); // sample_count
-        traf.extend_from_slice(&0u32.to_be_bytes()); // data_offset (will be fixed)
+        // tfdt (version 1): payload = 8 bytes (64-bit baseMediaDecodeTime), total = 8 + 12 = 20
+        traf.extend_from_slice(&full_box_header(8, b"tfdt", 1, 0));
+        traf.extend_from_slice(&duration.to_be_bytes());
+        // trun: flags = 0x000200 (data-offset) | 0x000100 (duration) | 0x000400 (size) | 0x000800 (flags)
+        let trun_flags: u32 = 0x000F00;
+        let sample_count = 1u32;
+        // trun payload: sample_count(4) + data_offset(4) + 1 * (duration(4) + size(4) + flags(4)) = 20
+        let trun_payload_size = 4 + 4 + (sample_count as usize) * 12;
+        traf.extend_from_slice(&full_box_header(trun_payload_size, b"trun", 0, trun_flags));
+        traf.extend_from_slice(&sample_count.to_be_bytes()); // sample_count
+        traf.extend_from_slice(&0u32.to_be_bytes()); // data_offset (will be fixed by caller)
+                                                     // per-sample: duration(u32), size(u32), flags(u32)
+        traf.extend_from_slice(&(duration as u32).to_be_bytes()); // sample_duration
+        traf.extend_from_slice(&(media_data_len as u32).to_be_bytes()); // sample_size
+                                                                        // sample_flags: sample_depends_on=2 (not dependent) in bits 24-25
+                                                                        // is_non_sync_sample in bit 16: 0 for keyframe, 1 for non-keyframe
+        let sample_flags: u32 = if is_keyframe {
+            0x02000000 // sample_depends_on=2, is_non_sync=0
+        } else {
+            0x02010000 // sample_depends_on=2, is_non_sync=1
+        };
+        traf.extend_from_slice(&sample_flags.to_be_bytes());
         traf
     }
+}
+
+/// 在 buffer 中搜索指定 box type 的起始位置
+fn find_box_in_buf(buf: &[u8], box_type: &[u8; 4]) -> Option<usize> {
+    let mut pos = 0;
+    while pos + 8 <= buf.len() {
+        let size =
+            u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
+        if &buf[pos + 4..pos + 8] == box_type {
+            return Some(pos);
+        }
+        if size < 8 {
+            pos += 4; // 防止无限循环
+        } else {
+            pos += size;
+        }
+    }
+    None
 }
 
 fn box_header(size: usize, box_type: &[u8; 4]) -> [u8; 8] {
@@ -1112,5 +1175,204 @@ mod llhls_tests {
         let partial = muxer.build_partial(&data, 18000);
         assert!(!partial.is_empty());
         assert_eq!(&partial[4..8], b"styp");
+    }
+
+    #[test]
+    fn test_cmaf_ftyp_box_size() {
+        // ftyp box 的 size 应正确反映实际大小
+        let muxer = CmafMuxer::new(1, 90000);
+        let init = muxer.build_init(1280, 720, "avc1.640028");
+        // ftyp size 在前 4 bytes
+        let ftyp_size = u32::from_be_bytes([init[0], init[1], init[2], init[3]]);
+        // ftyp = 8 (header) + 4 (brand) + 4 (version) + 4*4 (compatible brands) = 28
+        assert_eq!(
+            ftyp_size, 28,
+            "ftyp box size should be 28, got {}",
+            ftyp_size
+        );
+    }
+
+    #[test]
+    fn test_cmaf_moof_structure() {
+        // moof 应包含 mfhd + traf, traf 应包含 tfhd + tfdt + trun
+        let mut muxer = CmafMuxer::new(1, 90000);
+        let media_data = vec![0u8; 100];
+        let seg = muxer.build_segment(&media_data, 72000, true);
+
+        // 验证 moof box 存在且 size 正确
+        let moof_pos = find_box_in_buf(&seg, b"moof").expect("moof box not found");
+        let moof_size = u32::from_be_bytes([
+            seg[moof_pos],
+            seg[moof_pos + 1],
+            seg[moof_pos + 2],
+            seg[moof_pos + 3],
+        ]) as usize;
+        assert!(moof_size > 8, "moof box should have content");
+
+        // moof 内的子 box 从 moof_pos + 8 开始 (跳过 moof header)
+        let moof_inner = &seg[moof_pos + 8..moof_pos + moof_size];
+        // 验证 moof 内有 mfhd
+        assert!(
+            find_box_in_buf(moof_inner, b"mfhd").is_some(),
+            "mfhd not found in moof"
+        );
+        // 验证 moof 内有 traf
+        assert!(
+            find_box_in_buf(moof_inner, b"traf").is_some(),
+            "traf not found in moof"
+        );
+    }
+
+    #[test]
+    fn test_cmaf_trun_sample_table() {
+        // trun 应包含 sample_count, data_offset, 和 per-sample 的 duration/size/flags
+        let mut muxer = CmafMuxer::new(1, 90000);
+        let media_data = vec![0xAA; 200];
+        let seg = muxer.build_segment(&media_data, 72000, true);
+
+        // 在 seg 中搜索 "trun" 字节标记
+        let trun_type_pos = seg
+            .windows(4)
+            .position(|w| w == b"trun")
+            .expect("trun not found");
+        // trun_type_pos 指向 type 字段, 前 4 bytes 是 size
+        let trun_size = u32::from_be_bytes([
+            seg[trun_type_pos - 4],
+            seg[trun_type_pos - 3],
+            seg[trun_type_pos - 2],
+            seg[trun_type_pos - 1],
+        ]);
+        // trun: size(4) + type(4) + version(1) + flags(3) + sample_count(4) + data_offset(4) + 1*(dur+size+flags)(12) = 32
+        assert_eq!(
+            trun_size, 32,
+            "trun box size should be 32, got {}",
+            trun_size
+        );
+
+        // sample_count at trun_type_pos + 8
+        let sample_count = u32::from_be_bytes([
+            seg[trun_type_pos + 8],
+            seg[trun_type_pos + 9],
+            seg[trun_type_pos + 10],
+            seg[trun_type_pos + 11],
+        ]);
+        assert_eq!(sample_count, 1, "sample_count should be 1");
+
+        // data_offset at trun_type_pos + 12
+        let data_offset = u32::from_be_bytes([
+            seg[trun_type_pos + 12],
+            seg[trun_type_pos + 13],
+            seg[trun_type_pos + 14],
+            seg[trun_type_pos + 15],
+        ]);
+        assert!(data_offset > 0, "data_offset should be non-zero after fix");
+
+        // sample_duration at trun_type_pos + 16
+        let sample_duration = u32::from_be_bytes([
+            seg[trun_type_pos + 16],
+            seg[trun_type_pos + 17],
+            seg[trun_type_pos + 18],
+            seg[trun_type_pos + 19],
+        ]);
+        assert_eq!(
+            sample_duration, 72000,
+            "sample_duration should be 72000, got {}",
+            sample_duration
+        );
+
+        // sample_size at trun_type_pos + 20
+        let sample_size = u32::from_be_bytes([
+            seg[trun_type_pos + 20],
+            seg[trun_type_pos + 21],
+            seg[trun_type_pos + 22],
+            seg[trun_type_pos + 23],
+        ]);
+        assert_eq!(
+            sample_size, 200,
+            "sample_size should be 200, got {}",
+            sample_size
+        );
+
+        // sample_flags at trun_type_pos + 24
+        let sample_flags = u32::from_be_bytes([
+            seg[trun_type_pos + 24],
+            seg[trun_type_pos + 25],
+            seg[trun_type_pos + 26],
+            seg[trun_type_pos + 27],
+        ]);
+        assert!(
+            sample_flags & 0x00010000 == 0,
+            "keyframe sample should have is_non_sync_sample = 0, got {:08x}",
+            sample_flags
+        );
+    }
+
+    #[test]
+    fn test_cmaf_non_keyframe_flags() {
+        let mut muxer = CmafMuxer::new(1, 90000);
+        let media_data = vec![0xBB; 50];
+        let seg = muxer.build_segment(&media_data, 36000, false);
+
+        let trun_type_pos = seg
+            .windows(4)
+            .position(|w| w == b"trun")
+            .expect("trun not found");
+        let sample_flags = u32::from_be_bytes([
+            seg[trun_type_pos + 24],
+            seg[trun_type_pos + 25],
+            seg[trun_type_pos + 26],
+            seg[trun_type_pos + 27],
+        ]);
+        assert!(
+            sample_flags & 0x00010000 != 0,
+            "non-keyframe sample should have is_non_sync_sample = 1, got {:08x}",
+            sample_flags
+        );
+    }
+
+    #[test]
+    fn test_cmaf_mdat_data_offset() {
+        // data_offset 应指向 mdat payload 的起始位置 (相对于 segment 开始)
+        let mut muxer = CmafMuxer::new(1, 90000);
+        let media_data = vec![0xCC; 100];
+        let seg = muxer.build_segment(&media_data, 72000, true);
+
+        let trun_type_pos = seg
+            .windows(4)
+            .position(|w| w == b"trun")
+            .expect("trun not found");
+        let data_offset = u32::from_be_bytes([
+            seg[trun_type_pos + 12],
+            seg[trun_type_pos + 13],
+            seg[trun_type_pos + 14],
+            seg[trun_type_pos + 15],
+        ]) as usize;
+
+        assert!(
+            data_offset < seg.len(),
+            "data_offset {} out of bounds (seg len {})",
+            data_offset,
+            seg.len()
+        );
+        assert_eq!(
+            seg[data_offset], 0xCC,
+            "data_offset should point to mdat payload start, got 0x{:02x}",
+            seg[data_offset]
+        );
+    }
+
+    #[test]
+    fn test_cmaf_ll_playlist_ext_x_map() {
+        // LL-HLS playlist 应包含 EXT-X-MAP 指向 init segment
+        let config = LlHlsConfig::default();
+        let mut playlist = LlHlsPlaylist::new(config, "stream");
+        playlist.add_segment("stream_seg0.m4s", 4.0, true);
+
+        let content = playlist.render();
+        // 应包含 EXT-X-MAP
+        assert!(
+            content.contains("#EXT-X-MAP"),
+            "LL-HLS playlist should contain EXT-X-MAP"
+        );
     }
 }

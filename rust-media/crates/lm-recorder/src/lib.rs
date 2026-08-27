@@ -228,17 +228,49 @@ impl OpusRecorder {
         // 更新 granule position
         self.granule += samples_in_packet as i64;
 
-        // 构造 OGG page（单帧一页，简化）
-        let page = build_ogg_page(
-            self.serial,
-            self.page_seq,
-            self.granule,
-            0, // continuation
-            &[payload],
-        );
+        // 如果帧过大，使用跨 page 方式；否则单页
+        let page = if payload.len() > 65025 {
+            // 255 segments * 255 bytes = 65025 max per page
+            build_ogg_pages_for_frame(self.serial, self.page_seq, self.granule, 0, payload, 65025)
+        } else {
+            build_ogg_page_multi(self.serial, self.page_seq, self.granule, 0, &[payload])
+        };
         self.file.write_all(&page).await?;
         self.written_bytes += page.len() as u32;
         self.page_seq += 1;
+        Ok(())
+    }
+
+    /// 写入多个 Opus 编码帧到同一个 OGG page（多帧合并）
+    ///
+    /// 多个帧合并到一个 page 可以减少 page header 开销。
+    /// 每个帧的 samples 用于更新 granule position。
+    pub async fn write_opus_packets(&mut self, packets: &[(&[u8], u32)]) -> Result<()> {
+        if packets.is_empty() {
+            return Ok(());
+        }
+
+        // 更新 granule position
+        let total_samples: u32 = packets.iter().map(|(_, s)| *s).sum();
+        self.granule += total_samples as i64;
+
+        // 构造 segments
+        let seg_refs: Vec<&[u8]> = packets.iter().map(|(p, _)| *p).collect();
+
+        // 检查总大小是否超过单 page 限制
+        let total_size: usize = seg_refs.iter().map(|s| s.len()).sum();
+        if total_size > 65025 {
+            // 逐帧写入
+            for (payload, samples) in packets {
+                self.granule -= total_samples as i64; // 回退
+                self.write_opus_packet(payload, *samples).await?;
+            }
+        } else {
+            let page = build_ogg_page_multi(self.serial, self.page_seq, self.granule, 0, &seg_refs);
+            self.file.write_all(&page).await?;
+            self.written_bytes += page.len() as u32;
+            self.page_seq += 1;
+        }
         Ok(())
     }
 
@@ -255,7 +287,7 @@ impl OpusRecorder {
     /// 完成录制（写 EOS page）
     pub async fn finalize(mut self) -> Result<RecordingResult> {
         // 写 EOS page（空数据，header_type |= 0x04）
-        let eos_page = build_ogg_page(self.serial, self.page_seq, self.granule, 0x04, &[]);
+        let eos_page = build_ogg_page_multi(self.serial, self.page_seq, self.granule, 0x04, &[]);
         self.file.write_all(&eos_page).await?;
         self.file.flush().await?;
 
@@ -280,7 +312,7 @@ impl OpusRecorder {
         head.extend_from_slice(&0i16.to_le_bytes()); // output gain
         head.push(0); // channel mapping family (0 = mono/stereo)
 
-        let page = build_ogg_page(self.serial, self.page_seq, 0, 0x02, &[&head]); // BOS
+        let page = build_ogg_page_multi(self.serial, self.page_seq, 0, 0x02, &[&head]); // BOS
         self.file.write_all(&page).await?;
         self.written_bytes += page.len() as u32;
         self.page_seq += 1;
@@ -335,32 +367,218 @@ fn build_ogg_page(
     page
 }
 
-/// OGG CRC32 (polynomial 0x04C11DB7)
-fn ogg_crc32(data: &[u8]) -> u32 {
-    static mut TABLE: [u32; 256] = [0; 256];
-    static INITIALIZED: std::sync::Once = std::sync::Once::new();
-
-    unsafe {
-        INITIALIZED.call_once(|| {
-            for i in 0..256u32 {
-                let mut r = i << 24;
-                for _ in 0..8 {
-                    if r & 0x80000000 != 0 {
-                        r = (r << 1) ^ 0x04C11DB7;
-                    } else {
-                        r <<= 1;
-                    }
+/// OGG CRC32 lookup table (polynomial 0x04C11DB7, RFC 3533)
+fn ogg_crc32_table() -> &'static [u32; 256] {
+    static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [0u32; 256];
+        for i in 0..256u32 {
+            let mut r = i << 24;
+            for _ in 0..8 {
+                if r & 0x80000000 != 0 {
+                    r = (r << 1) ^ 0x04C11DB7;
+                } else {
+                    r <<= 1;
                 }
-                TABLE[i as usize] = r;
             }
-        });
-
-        let mut crc: u32 = 0;
-        for &byte in data {
-            crc = (crc << 8) ^ TABLE[((crc >> 24) ^ byte as u32) as usize & 0xFF];
+            table[i as usize] = r;
         }
-        crc
+        table
+    })
+}
+
+/// OGG CRC32 (polynomial 0x04C11DB7, RFC 3533)
+///
+/// 校验和字段在计算时设为 0, 计算后填入。
+fn ogg_crc32(data: &[u8]) -> u32 {
+    let table = ogg_crc32_table();
+    let mut crc: u32 = 0;
+    for &byte in data {
+        crc = (crc << 8) ^ table[((crc >> 24) ^ byte as u32) as usize & 0xFF];
     }
+    crc
+}
+
+/// 构建 OGG segment table（每个帧的 segment sizes）
+///
+/// OGG segment table 规则:
+/// - 每个 255 字节为一个 0xFF 段
+/// - 最后一段为剩余长度 (0-254)
+/// - 0 表示帧大小是 255 的整数倍
+fn build_segment_table(segments: &[&[u8]]) -> Vec<u8> {
+    let mut seg_table = Vec::new();
+    for seg in segments {
+        let mut remaining = seg.len();
+        while remaining >= 255 {
+            seg_table.push(255);
+            remaining -= 255;
+        }
+        seg_table.push(remaining as u8);
+    }
+    seg_table
+}
+
+/// 构建多帧合并的 OGG page（多个帧在一个 page 中）
+///
+/// 一个 page 可以包含多个帧，segment table 描述每个帧的大小。
+fn build_ogg_page_multi(
+    serial: u32,
+    page_seq: u32,
+    granule: i64,
+    header_type: u8,
+    segments: &[&[u8]],
+) -> Vec<u8> {
+    let total_size: usize = segments.iter().map(|s| s.len()).sum();
+    let seg_table = build_segment_table(segments);
+
+    let header_size = 27 + seg_table.len();
+    let mut page = Vec::with_capacity(header_size + total_size);
+
+    // OGG page header (RFC 3533)
+    page.extend_from_slice(b"OggS"); // capture pattern
+    page.push(0); // version
+    page.push(header_type); // header type
+    page.extend_from_slice(&granule.to_le_bytes()); // granule position
+    page.extend_from_slice(&serial.to_le_bytes()); // serial number
+    page.extend_from_slice(&page_seq.to_le_bytes()); // page sequence number
+    page.extend_from_slice(&0u32.to_le_bytes()); // checksum (placeholder, CRC32)
+    page.push(seg_table.len() as u8); // segment count
+    page.extend_from_slice(&seg_table); // segment table
+
+    // segment data
+    for seg in segments {
+        page.extend_from_slice(seg);
+    }
+
+    // 计算 CRC32 并回写 (checksum 字段在计算时为 0)
+    let crc = ogg_crc32(&page);
+    page[22..26].copy_from_slice(&crc.to_le_bytes());
+
+    page
+}
+
+/// 构建大帧跨 page 的 OGG pages（continued page 支持）
+///
+/// 当帧数据过大（超过单 page 最大 segment 数 255 * 255 = 65025 字节）时，
+/// 需要将帧拆分到多个 page，后续 page 使用 header_type |= 0x01 (continued)。
+///
+/// 即使帧不超大，也可以按 `max_page_size` 分页。
+///
+/// 返回多个 page 的拼接结果。
+fn build_ogg_pages_for_frame(
+    serial: u32,
+    page_seq_start: u32,
+    granule: i64,
+    header_type: u8,
+    frame: &[u8],
+    max_page_size: usize,
+) -> Vec<u8> {
+    let mut pages = Vec::new();
+    let mut page_seq = page_seq_start;
+    let mut offset = 0;
+    let mut first_page = true;
+
+    while offset < frame.len() {
+        let remaining = frame.len() - offset;
+        let chunk_size = remaining.min(max_page_size);
+
+        // 每个 chunk 的 segment table
+        let chunk = &frame[offset..offset + chunk_size];
+        let mut seg_sizes = Vec::new();
+        let mut s = chunk_size;
+        while s >= 255 {
+            seg_sizes.push(255u8);
+            s -= 255;
+        }
+        seg_sizes.push(s as u8);
+
+        // segment table 不能超过 255 个条目
+        let max_seg_count = 255;
+        if seg_sizes.len() > max_seg_count {
+            // 需要进一步限制 chunk_size
+            let new_chunk_size = (max_seg_count - 1) * 255;
+            let chunk_size = new_chunk_size.min(remaining);
+            let chunk = &frame[offset..offset + chunk_size];
+            seg_sizes.clear();
+            let mut s = chunk_size;
+            while s >= 255 {
+                seg_sizes.push(255u8);
+                s -= 255;
+            }
+            seg_sizes.push(s as u8);
+
+            let header_size = 27 + seg_sizes.len();
+            let mut page = Vec::with_capacity(header_size + chunk_size);
+            page.extend_from_slice(b"OggS");
+            page.push(0); // version
+            let mut ht = if first_page { header_type } else { 0 };
+            if !first_page {
+                ht |= 0x01; // continued page
+            }
+            page.push(ht);
+            // granule: 只有最后一页有正确的 granule
+            let g = if offset + chunk_size >= frame.len() {
+                granule
+            } else {
+                -1 // -1 表示中间页
+            };
+            page.extend_from_slice(&g.to_le_bytes());
+            page.extend_from_slice(&serial.to_le_bytes());
+            page.extend_from_slice(&page_seq.to_le_bytes());
+            page.extend_from_slice(&0u32.to_le_bytes()); // checksum placeholder
+            page.push(seg_sizes.len() as u8);
+            page.extend_from_slice(&seg_sizes);
+            page.extend_from_slice(chunk);
+
+            let crc = ogg_crc32(&page);
+            page[22..26].copy_from_slice(&crc.to_le_bytes());
+            pages.extend_from_slice(&page);
+
+            offset += chunk_size;
+            page_seq += 1;
+            first_page = false;
+            continue;
+        }
+
+        let header_size = 27 + seg_sizes.len();
+        let mut page = Vec::with_capacity(header_size + chunk_size);
+        page.extend_from_slice(b"OggS");
+        page.push(0); // version
+        let mut ht = if first_page { header_type } else { 0 };
+        if !first_page {
+            ht |= 0x01; // continued page
+        }
+        page.push(ht);
+        // granule: 只有最后一页有正确的 granule
+        let g = if offset + chunk_size >= frame.len() {
+            granule
+        } else {
+            -1 // -1 表示中间页
+        };
+        page.extend_from_slice(&g.to_le_bytes());
+        page.extend_from_slice(&serial.to_le_bytes());
+        page.extend_from_slice(&page_seq.to_le_bytes());
+        page.extend_from_slice(&0u32.to_le_bytes()); // checksum placeholder
+        page.push(seg_sizes.len() as u8);
+        page.extend_from_slice(&seg_sizes);
+        page.extend_from_slice(chunk);
+
+        let crc = ogg_crc32(&page);
+        page[22..26].copy_from_slice(&crc.to_le_bytes());
+        pages.extend_from_slice(&page);
+
+        offset += chunk_size;
+        page_seq += 1;
+        first_page = false;
+    }
+
+    // 如果 frame 为空，至少生成一个空 page
+    if pages.is_empty() {
+        let page = build_ogg_page_multi(serial, page_seq_start, granule, header_type, &[]);
+        pages = page;
+    }
+
+    pages
 }
 
 fn rand_serial() -> u32 {
@@ -1254,6 +1472,7 @@ const EBML_ID_CODEC_ID: u32 = 0x86;
 const EBML_ID_CLUSTER: u32 = 0x1F43B675;
 const EBML_ID_TIMECODE: u32 = 0xE7;
 const EBML_ID_SIMPLE_BLOCK: u32 = 0xA3;
+const EBML_ID_BLOCK: u32 = 0xA1;
 
 /// 将 EBML 元素 ID 编码为 1-4 字节的 VINT
 fn encode_ebml_id(id: u32) -> Vec<u8> {
@@ -1274,20 +1493,34 @@ fn encode_ebml_id(id: u32) -> Vec<u8> {
 }
 
 /// 将数据大小编码为 EBML VINT (variable-size integer)
+///
+/// VINT encoding (Matroska/EBML):
+/// - 1 byte: 0x80-0xFE (values 0-126), 0xFF = unknown
+/// - 2 bytes: 0x40 0x00-0x7F 0xFE (values 127-16382), 0x7F 0xFF = unknown
+/// - 3 bytes: 0x20 0x00 0x00-0x3F 0xFF 0xFE (values 16383-2097150)
+/// - 4 bytes: 0x10 0x00 0x00 0x00-0x1F 0xFF 0xFF 0xFE
+/// - 8 bytes: 0x01 0x00...-0x00 0xFE
+///
+/// 注意: all-1s 值保留为 "unknown size"，所以实际可用范围是
+/// (2^(7*n) - 2) 而非 (2^(7*n) - 1)。
 fn encode_ebml_size(size: u64) -> Vec<u8> {
     if size < (1 << 7) - 1 {
-        vec![size as u8]
+        // 1-byte: 0-126
+        vec![0x80 | size as u8]
     } else if size < (1 << 14) - 1 {
-        vec![(0x80 | (size >> 8) as u8), (size & 0xFF) as u8]
+        // 2-byte: 127-16382
+        vec![0x40 | (size >> 8) as u8, (size & 0xFF) as u8]
     } else if size < (1 << 21) - 1 {
+        // 3-byte: 16383-2097150
         vec![
-            (0xC0 | (size >> 16) as u8),
+            0x20 | (size >> 16) as u8,
             ((size >> 8) & 0xFF) as u8,
             (size & 0xFF) as u8,
         ]
     } else if size < (1 << 28) - 1 {
+        // 4-byte: 2097151-268435454
         vec![
-            (0xE0 | (size >> 24) as u8),
+            0x10 | (size >> 24) as u8,
             ((size >> 16) & 0xFF) as u8,
             ((size >> 8) & 0xFF) as u8,
             (size & 0xFF) as u8,
@@ -1467,7 +1700,11 @@ impl WebmRecorder {
 
     /// 写入 SimpleBlock
     ///
-    /// SimpleBlock format: track_number (VINT) + timecode (i16, relative to cluster) + flags (1 byte) + data
+    /// SimpleBlock format (Matroska spec):
+    /// - TrackNumber (VINT, 1-8 bytes)
+    /// - Timecode (2 bytes, signed i16, big-endian, relative to Cluster)
+    /// - Flags (1 byte): keyframe(0x80), invisible(0x08), lacing(0x06)
+    /// - Frame data
     async fn write_simple_block(
         &mut self,
         track: u8,
@@ -1485,18 +1722,20 @@ impl WebmRecorder {
             self.file
                 .write_all(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
                 .await?;
-            // Timecode (absolute, in ms)
+            // Timecode (absolute, in ms — TimecodeScale = 1ms)
             let tc = encode_ebml_uint(EBML_ID_TIMECODE, timestamp);
             self.file.write_all(&tc).await?;
         }
 
+        // Compute relative timecode (i16, relative to Cluster timecode)
+        let rel_tc: i64 = timestamp as i64 - self.cluster_timestamp as i64;
+        let rel_tc_i16: i16 = rel_tc.clamp(-32768, 32767) as i16;
+
         // SimpleBlock body: track_number (1 byte VINT) + timecode (2 bytes, i16 BE, relative) + flags + data
         let mut block = Vec::with_capacity(4 + data.len());
-        block.push(track & 0x7F); // track number as 1-byte VINT
-                                  // Relative timecode (i16, big-endian) — 0 relative to cluster
-        block.push(0x00);
-        block.push(0x00);
-        // Flags: bit 7 = keyframe (0x80), bit 0-2 = lace mode
+        block.push(0x80 | (track & 0x7F)); // track number as 1-byte VINT (with marker bit)
+        block.extend_from_slice(&rel_tc_i16.to_be_bytes()); // relative timecode (i16, big-endian)
+                                                            // Flags: bit 7 = keyframe (0x80), bit 3 = invisible (0x08), bit 1-2 = lacing (0x06)
         block.push(if is_keyframe { 0x80 } else { 0x00 });
         block.extend_from_slice(data);
 

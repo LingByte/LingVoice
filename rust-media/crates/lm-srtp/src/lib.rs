@@ -33,6 +33,8 @@ pub enum SrtpError {
     AuthenticationFailed,
     #[error("重放攻击检测: seq={0}")]
     ReplayDetected(u16),
+    #[error("SRTCP 重放攻击检测: index={0}")]
+    ReplayDetectedSrtcp(u32),
     #[error("SSRC 不匹配: 期望 {expected}, 实际 {actual}")]
     SsrcMismatch { expected: u32, actual: u32 },
 }
@@ -136,8 +138,20 @@ pub struct SrtpSession {
     auth_key: Vec<u8>,
     /// Salt 密钥 (14 bytes)
     salt_key: Vec<u8>,
-    /// 重放保护窗口 (bitmap)
-    replay_window: u64,
+    /// 重放保护窗口 bitmap (RTP)
+    replay_bitmap: Vec<u64>,
+    /// 已收到的最大 RTP packet index
+    last_index: u64,
+    /// RTP 重放保护是否已初始化 (是否收到过包)
+    replay_initialized: bool,
+    /// SRTCP 重放保护窗口 bitmap
+    srtcp_replay_bitmap: Vec<u64>,
+    /// 已收到的最大 SRTCP index
+    srtcp_last_index: u32,
+    /// SRTCP 重放保护是否已初始化
+    srtcp_replay_initialized: bool,
+    /// SRTCP 发送索引 (递增计数器)
+    srtcp_index: u32,
     /// Rollover Counter
     roc: u32,
     /// 最后收到的 seq
@@ -170,13 +184,24 @@ impl SrtpSession {
         );
         let salt_key = derive_salt(&config.master_key, &config.master_salt, ssrc);
 
+        // 重放保护 bitmap: ceil(window_size / 64) 个 u64 word
+        let bitmap_words = ((config.replay_window_size as usize) + 63) / 64;
+        let replay_bitmap = vec![0u64; bitmap_words];
+        let srtcp_replay_bitmap = vec![0u64; bitmap_words];
+
         Ok(Self {
             config,
             ssrc,
             encryption_key,
             auth_key,
             salt_key,
-            replay_window: 0,
+            replay_bitmap,
+            last_index: 0,
+            replay_initialized: false,
+            srtcp_replay_bitmap,
+            srtcp_last_index: 0,
+            srtcp_replay_initialized: false,
+            srtcp_index: 0,
             roc: 0,
             last_seq: 0,
         })
@@ -247,15 +272,83 @@ impl SrtpSession {
         self.last_seq = seq;
     }
 
-    /// 检查重放
+    /// 检查重放 (RTP) — RFC 3711 Section 3.3.2 滑动窗口
     fn check_replay(&self, index: u64) -> bool {
-        if index == 0 {
+        if !self.replay_initialized {
             return true;
         }
-        // 简化: 使用 bitmap 检查
-        // 如果 index 在窗口内, 检查对应 bit
-        // 如果 index > last_index, 接受
-        true // 简化实现, 实际应检查 bitmap
+        if index > self.last_index {
+            // 新包，在窗口右侧，接受
+            return true;
+        }
+        let diff = self.last_index - index;
+        if diff >= self.config.replay_window_size as u64 {
+            // 包太旧，在窗口左侧，拒绝
+            return false;
+        }
+        // 包在窗口内，检查 bitmap
+        let offset = diff as usize;
+        if bitmap_get(&self.replay_bitmap, offset) {
+            return false; // 已收过，重放
+        }
+        true // 未收过，接受
+    }
+
+    /// 更新重放保护状态 (RTP)
+    fn update_replay(&mut self, index: u64) {
+        if !self.replay_initialized {
+            self.replay_initialized = true;
+            self.last_index = index;
+            bitmap_set(&mut self.replay_bitmap, 0);
+            return;
+        }
+        if index > self.last_index {
+            let shift = (index - self.last_index) as usize;
+            bitmap_shift_left(&mut self.replay_bitmap, shift);
+            bitmap_set(&mut self.replay_bitmap, 0);
+            self.last_index = index;
+        } else {
+            let offset = (self.last_index - index) as usize;
+            bitmap_set(&mut self.replay_bitmap, offset);
+        }
+    }
+
+    /// 检查重放 (SRTCP)
+    fn check_replay_srtcp(&self, index: u32) -> bool {
+        if !self.srtcp_replay_initialized {
+            return true;
+        }
+        if index > self.srtcp_last_index {
+            return true;
+        }
+        let diff = self.srtcp_last_index - index;
+        if diff >= self.config.replay_window_size {
+            return false;
+        }
+        let offset = diff as usize;
+        if bitmap_get(&self.srtcp_replay_bitmap, offset) {
+            return false;
+        }
+        true
+    }
+
+    /// 更新重放保护状态 (SRTCP)
+    fn update_replay_srtcp(&mut self, index: u32) {
+        if !self.srtcp_replay_initialized {
+            self.srtcp_replay_initialized = true;
+            self.srtcp_last_index = index;
+            bitmap_set(&mut self.srtcp_replay_bitmap, 0);
+            return;
+        }
+        if index > self.srtcp_last_index {
+            let shift = (index - self.srtcp_last_index) as usize;
+            bitmap_shift_left(&mut self.srtcp_replay_bitmap, shift);
+            bitmap_set(&mut self.srtcp_replay_bitmap, 0);
+            self.srtcp_last_index = index;
+        } else {
+            let offset = (self.srtcp_last_index - index) as usize;
+            bitmap_set(&mut self.srtcp_replay_bitmap, offset);
+        }
     }
 
     /// 加密 RTP 包 (发送方)
@@ -372,6 +465,9 @@ impl SrtpSession {
         self.roc = estimated_roc;
         self.update_index(seq);
 
+        // 更新重放保护 bitmap
+        self.update_replay(index);
+
         Ok(rtp_packet)
     }
 
@@ -385,8 +481,9 @@ impl SrtpSession {
         let payload = &rtcp_packet[header_len..];
 
         // SRTCP index: 31-bit index + 1-bit E (encrypted flag)
-        // 简化: 使用递增计数器
-        let srtcp_index: u32 = 1; // 简化
+        // 使用递增计数器 (31-bit, 回绕)
+        let srtcp_index: u32 = self.srtcp_index;
+        self.srtcp_index = (self.srtcp_index + 1) & 0x7FFFFFFF;
         let e_flag: u32 = 1 << 31;
         let srtcp_index_with_e = srtcp_index | e_flag;
 
@@ -483,6 +580,57 @@ impl SrtpSession {
         rtcp_packet.extend_from_slice(&decrypted_payload);
 
         Ok(rtcp_packet)
+    }
+}
+
+/// 获取 bitmap 中指定位置的 bit
+fn bitmap_get(bitmap: &[u64], pos: usize) -> bool {
+    let word = pos / 64;
+    let bit = pos % 64;
+    if word >= bitmap.len() {
+        return false;
+    }
+    (bitmap[word] >> bit) & 1 == 1
+}
+
+/// 设置 bitmap 中指定位置的 bit
+fn bitmap_set(bitmap: &mut [u64], pos: usize) {
+    let word = pos / 64;
+    let bit = pos % 64;
+    if word < bitmap.len() {
+        bitmap[word] |= 1u64 << bit;
+    }
+}
+
+/// 将整个 bitmap 左移 `shift` 位 (超出窗口的 bit 被丢弃)
+fn bitmap_shift_left(bitmap: &mut [u64], shift: usize) {
+    if shift == 0 || bitmap.is_empty() {
+        return;
+    }
+    let n_words = bitmap.len();
+    let word_shift = shift / 64;
+    let bit_shift = shift % 64;
+
+    if word_shift >= n_words {
+        for w in bitmap.iter_mut() {
+            *w = 0;
+        }
+        return;
+    }
+
+    // 从高位到低位处理，避免覆盖尚未读取的值
+    for i in (0..n_words).rev() {
+        let lo = if i >= word_shift {
+            bitmap[i - word_shift] << bit_shift
+        } else {
+            0
+        };
+        let hi = if bit_shift > 0 && i >= word_shift + 1 {
+            bitmap[i - word_shift - 1] >> (64 - bit_shift)
+        } else {
+            0
+        };
+        bitmap[i] = lo | hi;
     }
 }
 

@@ -1045,6 +1045,286 @@ impl Default for NoiseSuppressor {
 }
 
 // ============================================================================
+// AEC 回声消除 (Acoustic Echo Cancellation)
+// ============================================================================
+
+/// AEC 配置
+#[derive(Debug, Clone)]
+pub struct AecConfig {
+    /// 滤波器长度 (taps), 通常 256-1024
+    /// 16kHz 采样率下 512 taps ≈ 32ms 回声路径
+    pub filter_length: usize,
+    /// 步长因子 (learning rate), 0.0-1.0, 通常 0.1-0.5
+    pub step_size: f32,
+    /// 正则化参数, 防止除零, 通常 1e-6
+    pub regularization: f32,
+    /// 采样率
+    pub sample_rate: u32,
+    /// 双端通话检测阈值
+    pub double_talk_threshold: f32,
+    /// 是否启用非线性回声抑制
+    pub nonlinear_suppression: bool,
+    /// 非线性抑制强度 (0.0-1.0)
+    pub suppression_strength: f32,
+}
+
+impl Default for AecConfig {
+    fn default() -> Self {
+        Self {
+            filter_length: 512,
+            step_size: 0.1,
+            regularization: 1e-6,
+            sample_rate: 16000,
+            double_talk_threshold: 0.5,
+            nonlinear_suppression: true,
+            suppression_strength: 0.5,
+        }
+    }
+}
+
+/// AEC 回声消除器 (NLMS 自适应滤波器)
+///
+/// 使用方法:
+/// 1. 创建 Aec::new(config)
+/// 2. 每帧调用 process(mic_frame, ref_frame):
+///    - mic_frame: 麦克风采集的音频 (含回声)
+///    - ref_frame: 远端播放的音频 (回声参考)
+///    - 返回: 消除回声后的音频
+/// 3. 双端通话时自动降低步长, 避免滤波器发散
+pub struct Aec {
+    config: AecConfig,
+    /// NLMS 滤波器系数
+    weights: Vec<f32>,
+    /// 远端参考信号环形缓冲区
+    ref_buffer: Vec<f32>,
+    /// 缓冲区写入位置
+    ref_buffer_pos: usize,
+    /// 上次误差能量 (用于双端通话检测)
+    last_error_energy: f32,
+    /// 上次远端信号能量
+    last_ref_energy: f32,
+    /// 是否检测到双端通话
+    double_talk: bool,
+    /// 处理的帧数
+    frame_count: u64,
+}
+
+/// AEC 处理结果
+#[derive(Debug, Clone)]
+pub struct AecResult {
+    /// 消除回声后的音频帧
+    pub output: AudioFrame,
+    /// 估计的回声路径延迟 (samples)
+    pub echo_delay_samples: usize,
+    /// 回声抑制比 (dB)
+    pub erl_db: f32,
+    /// 是否检测到双端通话
+    pub double_talk: bool,
+}
+
+impl Aec {
+    /// 创建 AEC 回声消除器
+    pub fn new(config: AecConfig) -> Self {
+        let n = config.filter_length;
+        Self {
+            config,
+            weights: vec![0.0; n],
+            ref_buffer: vec![0.0; n],
+            ref_buffer_pos: 0,
+            last_error_energy: 0.0,
+            last_ref_energy: 0.0,
+            double_talk: false,
+            frame_count: 0,
+        }
+    }
+
+    /// 重置滤波器状态
+    pub fn reset(&mut self) {
+        self.weights.fill(0.0);
+        self.ref_buffer.fill(0.0);
+        self.ref_buffer_pos = 0;
+        self.last_error_energy = 0.0;
+        self.last_ref_energy = 0.0;
+        self.double_talk = false;
+        self.frame_count = 0;
+    }
+
+    /// 处理一帧音频
+    ///
+    /// - `mic_frame`: 麦克风采集的音频 (包含回声 + 本地语音)
+    /// - `ref_frame`: 远端参考音频 (扬声器播放的信号)
+    /// - 返回: 消除回声后的结果
+    pub fn process(&mut self, mic_frame: &AudioFrame, ref_frame: &AudioFrame) -> AecResult {
+        let len = mic_frame.samples.len().min(ref_frame.samples.len());
+        let mut output_samples = Vec::with_capacity(mic_frame.samples.len());
+
+        let mut error_energy = 0.0f32;
+        let mut ref_energy = 0.0f32;
+
+        for i in 0..len {
+            let mic_sample = mic_frame.samples[i] as f32 / 32768.0;
+            let ref_sample = ref_frame.samples[i] as f32 / 32768.0;
+            let out = self.nlms_process(mic_sample, ref_sample);
+            error_energy += out * out;
+            ref_energy += ref_sample * ref_sample;
+            output_samples.push((out * 32768.0).clamp(-32768.0, 32767.0) as i16);
+        }
+
+        // 填充 mic_frame 多出的样本 (无对应参考信号, 直接透传)
+        if mic_frame.samples.len() > len {
+            for s in &mic_frame.samples[len..] {
+                output_samples.push(*s);
+            }
+        }
+
+        let error_energy_avg = if len > 0 {
+            error_energy / len as f32
+        } else {
+            0.0
+        };
+        let ref_energy_avg = if len > 0 {
+            ref_energy / len as f32
+        } else {
+            0.0
+        };
+
+        // 双端通话检测
+        self.double_talk = self.detect_double_talk(error_energy_avg, ref_energy_avg);
+        self.last_error_energy = error_energy_avg;
+        self.last_ref_energy = ref_energy_avg;
+
+        let erl_db = self.compute_erl(ref_energy_avg, error_energy_avg);
+
+        self.frame_count += 1;
+
+        AecResult {
+            output: AudioFrame {
+                samples: output_samples,
+                sample_rate: mic_frame.sample_rate,
+                timestamp: mic_frame.timestamp,
+            },
+            echo_delay_samples: 0,
+            erl_db,
+            double_talk: self.double_talk,
+        }
+    }
+
+    /// NLMS 滤波器处理单个样本
+    fn nlms_process(&mut self, mic_sample: f32, ref_sample: f32) -> f32 {
+        let n = self.config.filter_length;
+
+        // 1. 将远端样本写入环形缓冲区
+        self.ref_buffer[self.ref_buffer_pos] = ref_sample;
+
+        // 2. 用滤波器估计回声
+        let mut echo_estimate = 0.0f32;
+        let mut ref_energy = 0.0f32;
+        for i in 0..n {
+            let idx = (self.ref_buffer_pos + self.ref_buffer.len() - i) % self.ref_buffer.len();
+            echo_estimate += self.weights[i] * self.ref_buffer[idx];
+            ref_energy += self.ref_buffer[idx] * self.ref_buffer[idx];
+        }
+
+        // 3. 计算误差 (消除回声后的信号)
+        let error = mic_sample - echo_estimate;
+
+        // 4. 计算步长 (双端通话时降低)
+        let mu = if self.double_talk {
+            self.config.step_size * 0.01 // 双端通话时几乎不更新
+        } else {
+            self.config.step_size
+        };
+
+        // 5. NLMS 更新
+        let normalization = ref_energy + self.config.regularization;
+        for i in 0..n {
+            let idx = (self.ref_buffer_pos + self.ref_buffer.len() - i) % self.ref_buffer.len();
+            self.weights[i] += mu * error * self.ref_buffer[idx] / normalization;
+        }
+
+        // 6. 推进缓冲区
+        self.ref_buffer_pos = (self.ref_buffer_pos + 1) % self.ref_buffer.len();
+
+        // 7. 非线性抑制
+        if self.config.nonlinear_suppression {
+            self.nonlinear_suppress(error, echo_estimate)
+        } else {
+            error
+        }
+    }
+
+    /// 更新滤波器系数 (内联在 nlms_process 中, 此函数用于外部调试/扩展)
+    #[allow(dead_code)]
+    fn update_weights(&mut self, error: f32) {
+        let n = self.config.filter_length;
+        let mut ref_energy = 0.0f32;
+        for i in 0..n {
+            let idx = (self.ref_buffer_pos + self.ref_buffer.len() - i) % self.ref_buffer.len();
+            ref_energy += self.ref_buffer[idx] * self.ref_buffer[idx];
+        }
+        let normalization = ref_energy + self.config.regularization;
+        let mu = if self.double_talk {
+            self.config.step_size * 0.01
+        } else {
+            self.config.step_size
+        };
+        for i in 0..n {
+            let idx = (self.ref_buffer_pos + self.ref_buffer.len() - i) % self.ref_buffer.len();
+            self.weights[i] += mu * error * self.ref_buffer[idx] / normalization;
+        }
+    }
+
+    /// 双端通话检测
+    ///
+    /// 当远端信号能量远大于误差能量时, 说明只有回声 (无本地语音)
+    /// 当误差能量接近远端信号能量时, 说明有本地语音 (双端通话)
+    fn detect_double_talk(&mut self, error_energy: f32, ref_energy: f32) -> bool {
+        if ref_energy < 1e-8 {
+            // 远端静音, 不可能是双端通话
+            return false;
+        }
+        let ratio = error_energy / ref_energy;
+        ratio > self.config.double_talk_threshold
+    }
+
+    /// 非线性回声抑制 (NLP)
+    ///
+    /// 在线性 AEC 之后, 对残余回声进行非线性抑制
+    fn nonlinear_suppress(&self, error: f32, echo_estimate: f32) -> f32 {
+        // 如果误差与估计回声相似, 说明是纯回声, 强力抑制
+        let echo_ratio = if echo_estimate.abs() > 1e-6 {
+            (error.abs() / echo_estimate.abs()).min(1.0)
+        } else {
+            1.0
+        };
+
+        // echo_ratio 接近 0: 纯回声, 抑制
+        // echo_ratio 接近 1: 本地语音, 保留
+        let suppression = self.config.suppression_strength * (1.0 - echo_ratio);
+        error * (1.0 - suppression)
+    }
+
+    /// 计算回声抑制比 (ERL)
+    fn compute_erl(&self, ref_energy: f32, error_energy: f32) -> f32 {
+        if error_energy < 1e-12 || ref_energy < 1e-12 {
+            return 0.0;
+        }
+        // ERL = 10 * log10(ref_energy / error_energy)
+        10.0 * (ref_energy / error_energy).log10()
+    }
+
+    /// 是否处于双端通话状态
+    pub fn is_double_talk(&self) -> bool {
+        self.double_talk
+    }
+
+    /// 获取当前滤波器系数 (用于调试)
+    pub fn weights(&self) -> &[f32] {
+        &self.weights
+    }
+}
+
+// ============================================================================
 // 测试
 // ============================================================================
 
@@ -1853,5 +2133,396 @@ mod tests {
         assert!(detected, "should detect speech with sine wave");
         #[cfg(feature = "silero")]
         let _ = detected; // 神经网络行为不保证
+    }
+
+    // ========================================================================
+    // AEC 测试
+    // ========================================================================
+
+    #[test]
+    fn test_aec_creation() {
+        let config = AecConfig {
+            filter_length: 256,
+            step_size: 0.2,
+            sample_rate: 16000,
+            ..Default::default()
+        };
+        let aec = Aec::new(config);
+        assert_eq!(aec.weights().len(), 256);
+        // 初始权重应为 0
+        for w in aec.weights() {
+            assert_eq!(*w, 0.0);
+        }
+        assert!(!aec.is_double_talk());
+    }
+
+    #[test]
+    fn test_aec_default_config() {
+        let config = AecConfig::default();
+        assert_eq!(config.filter_length, 512);
+        assert!((config.step_size - 0.1).abs() < 1e-6);
+        assert!((config.regularization - 1e-6).abs() < 1e-12);
+        assert_eq!(config.sample_rate, 16000);
+        assert!((config.double_talk_threshold - 0.5).abs() < 1e-6);
+        assert!(config.nonlinear_suppression);
+        assert!((config.suppression_strength - 0.5).abs() < 1e-6);
+
+        let aec = Aec::new(AecConfig::default());
+        assert_eq!(aec.weights().len(), 512);
+    }
+
+    #[test]
+    fn test_aec_cancel_pure_echo() {
+        let mut aec = Aec::new(AecConfig {
+            filter_length: 256,
+            step_size: 0.5, // 快速收敛
+            sample_rate: 16000,
+            ..Default::default()
+        });
+
+        // 生成远端信号 (正弦波模拟回声参考)
+        let ref_samples: Vec<i16> = (0..16000)
+            .map(|i| ((i as f32 * 0.1).sin() * 16000.0) as i16)
+            .collect();
+
+        // 麦克风信号 = 远端信号延迟 100 samples (模拟回声路径)
+        let mic_samples: Vec<i16> = (0..16000)
+            .map(|i| if i < 100 { 0 } else { ref_samples[i - 100] })
+            .collect();
+
+        let ref_frame = AudioFrame {
+            samples: ref_samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        let mic_frame = AudioFrame {
+            samples: mic_samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+
+        // 处理多帧让滤波器收敛
+        let mut last_energy = f32::MAX;
+        for _ in 0..10 {
+            let result = aec.process(&mic_frame, &ref_frame);
+            let energy: f32 = result
+                .output
+                .samples
+                .iter()
+                .map(|&s| (s as f32 / 32768.0).powi(2))
+                .sum::<f32>()
+                / result.output.samples.len() as f32;
+            // 能量应逐渐下降 (回声被消除)
+            last_energy = energy;
+        }
+
+        // 最终能量应远小于输入能量
+        let input_energy: f32 = mic_frame
+            .samples
+            .iter()
+            .map(|&s| (s as f32 / 32768.0).powi(2))
+            .sum::<f32>()
+            / mic_frame.samples.len() as f32;
+
+        assert!(
+            last_energy < input_energy * 0.3,
+            "回声应被消除: input={}, output={}",
+            input_energy,
+            last_energy
+        );
+    }
+
+    #[test]
+    fn test_aec_preserve_local_speech() {
+        // 当麦克风只有本地语音 (无回声) 时, 输出应接近输入
+        let mut aec = Aec::new(AecConfig {
+            filter_length: 128,
+            step_size: 0.1,
+            sample_rate: 16000,
+            nonlinear_suppression: false, // 关闭 NLP 以测试线性部分
+            ..Default::default()
+        });
+
+        // 远端静音 (无回声参考)
+        let ref_samples = vec![0i16; 1600];
+
+        // 麦克风有本地语音 (正弦波)
+        let mic_samples = generate_sine_wave(1600, 440.0, 16000, 0.5);
+
+        let ref_frame = AudioFrame {
+            samples: ref_samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        let mic_frame = AudioFrame {
+            samples: mic_samples.clone(),
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+
+        let result = aec.process(&mic_frame, &ref_frame);
+
+        // 输出能量应接近输入能量 (本地语音被保留)
+        let input_energy: f32 = mic_samples
+            .iter()
+            .map(|&s| (s as f32 / 32768.0).powi(2))
+            .sum::<f32>()
+            / mic_samples.len() as f32;
+        let output_energy: f32 = result
+            .output
+            .samples
+            .iter()
+            .map(|&s| (s as f32 / 32768.0).powi(2))
+            .sum::<f32>()
+            / result.output.samples.len() as f32;
+
+        assert!(
+            output_energy > input_energy * 0.8,
+            "本地语音应被保留: input={}, output={}",
+            input_energy,
+            output_energy
+        );
+    }
+
+    #[test]
+    fn test_aec_double_talk_detection() {
+        let mut aec = Aec::new(AecConfig {
+            filter_length: 128,
+            step_size: 0.2,
+            sample_rate: 16000,
+            double_talk_threshold: 0.5,
+            nonlinear_suppression: false,
+            ..Default::default()
+        });
+
+        // 场景1: 纯回声 (远端有信号, 麦克风=远端延迟) -> 无双端通话
+        let ref_samples = generate_sine_wave(1600, 440.0, 16000, 0.5);
+        let mic_samples: Vec<i16> = (0..1600)
+            .map(|i| if i < 50 { 0 } else { ref_samples[i - 50] })
+            .collect();
+        let ref_frame = AudioFrame {
+            samples: ref_samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        let mic_frame = AudioFrame {
+            samples: mic_samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+
+        // 先让滤波器学习回声路径
+        for _ in 0..5 {
+            aec.process(&mic_frame, &ref_frame);
+        }
+        // 纯回声场景下不应检测到双端通话
+        assert!(!aec.is_double_talk(), "纯回声不应触发双端通话检测");
+
+        // 场景2: 双端通话 (远端有信号 + 麦克风有独立本地语音)
+        let local_speech = generate_sine_wave(1600, 880.0, 16000, 0.8);
+        let mic_with_local: Vec<i16> = (0..1600)
+            .map(|i| {
+                let echo = if i < 50 { 0 } else { ref_frame.samples[i - 50] } as f32;
+                let local = local_speech[i] as f32;
+                (echo + local).clamp(-32768.0, 32767.0) as i16
+            })
+            .collect();
+        let mic_dt_frame = AudioFrame {
+            samples: mic_with_local,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+
+        aec.process(&mic_dt_frame, &ref_frame);
+        // 双端通话场景下应检测到双端通话
+        assert!(
+            aec.is_double_talk(),
+            "双端通话应被检测到 (远端+本地语音同时存在)"
+        );
+    }
+
+    #[test]
+    fn test_aec_reset() {
+        let mut aec = Aec::new(AecConfig {
+            filter_length: 64,
+            step_size: 0.5,
+            sample_rate: 16000,
+            ..Default::default()
+        });
+
+        // 处理一些数据让权重非零
+        let ref_samples = generate_sine_wave(640, 440.0, 16000, 0.5);
+        let mic_samples: Vec<i16> = (0..640)
+            .map(|i| if i < 20 { 0 } else { ref_samples[i - 20] })
+            .collect();
+        let ref_frame = AudioFrame {
+            samples: ref_samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        let mic_frame = AudioFrame {
+            samples: mic_samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        aec.process(&mic_frame, &ref_frame);
+
+        // 确认权重已更新 (至少有一个非零)
+        let has_nonzero = aec.weights().iter().any(|&w| w != 0.0);
+        assert!(has_nonzero, "处理后权重应有非零值");
+
+        // 重置
+        aec.reset();
+        for w in aec.weights() {
+            assert_eq!(*w, 0.0, "重置后权重应为 0");
+        }
+        assert!(!aec.is_double_talk(), "重置后不应处于双端通话状态");
+    }
+
+    #[test]
+    fn test_aec_filter_convergence() {
+        // 测试滤波器收敛: 多帧处理后, 误差应逐渐减小
+        // 使用伪随机宽带噪声 (而非窄带正弦波) 以确保 NLMS 稳定收敛
+        let mut aec = Aec::new(AecConfig {
+            filter_length: 256,
+            step_size: 0.1,
+            sample_rate: 16000,
+            nonlinear_suppression: false, // 关闭 NLP 以观察纯线性收敛
+            ..Default::default()
+        });
+
+        // 生成伪随机宽带噪声 (简单 LCG)
+        let mut rng_state: u32 = 12345;
+        let ref_samples: Vec<i16> = (0..3200)
+            .map(|_| {
+                rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+                ((rng_state >> 16) as i16) >> 1 // 15-bit 幅度
+            })
+            .collect();
+
+        // 麦克风信号 = 远端信号延迟 80 samples (模拟回声路径)
+        let mic_samples: Vec<i16> = (0..3200)
+            .map(|i| if i < 80 { 0 } else { ref_samples[i - 80] })
+            .collect();
+        let ref_frame = AudioFrame {
+            samples: ref_samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        let mic_frame = AudioFrame {
+            samples: mic_samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+
+        let mut energies = Vec::new();
+        for _ in 0..20 {
+            let result = aec.process(&mic_frame, &ref_frame);
+            let energy: f32 = result
+                .output
+                .samples
+                .iter()
+                .map(|&s| (s as f32 / 32768.0).powi(2))
+                .sum::<f32>()
+                / result.output.samples.len() as f32;
+            energies.push(energy);
+        }
+
+        // 后期能量应小于前期能量 (收敛)
+        let early_energy = energies[0];
+        let late_energy = energies[energies.len() - 1];
+        assert!(
+            late_energy < early_energy,
+            "滤波器应收敛: early={}, late={}",
+            early_energy,
+            late_energy
+        );
+    }
+
+    #[test]
+    fn test_aec_nonlinear_suppression() {
+        // 测试非线性抑制: 纯回声场景下 NLP 应进一步降低输出
+        let config_with_nlp = AecConfig {
+            filter_length: 128,
+            step_size: 0.3,
+            sample_rate: 16000,
+            nonlinear_suppression: true,
+            suppression_strength: 0.8,
+            ..Default::default()
+        };
+        let config_without_nlp = AecConfig {
+            filter_length: 128,
+            step_size: 0.3,
+            sample_rate: 16000,
+            nonlinear_suppression: false,
+            suppression_strength: 0.8,
+            ..Default::default()
+        };
+
+        let ref_samples = generate_sine_wave(3200, 440.0, 16000, 0.5);
+        let mic_samples: Vec<i16> = (0..3200)
+            .map(|i| if i < 50 { 0 } else { ref_samples[i - 50] })
+            .collect();
+        let ref_frame = AudioFrame {
+            samples: ref_samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+        let mic_frame = AudioFrame {
+            samples: mic_samples,
+            sample_rate: 16000,
+            timestamp: 0,
+        };
+
+        let mut aec_nlp = Aec::new(config_with_nlp);
+        let mut aec_no_nlp = Aec::new(config_without_nlp);
+
+        let mut energy_nlp = 0.0f32;
+        let mut energy_no_nlp = 0.0f32;
+        for _ in 0..10 {
+            let r_nlp = aec_nlp.process(&mic_frame, &ref_frame);
+            let r_no = aec_no_nlp.process(&mic_frame, &ref_frame);
+            energy_nlp = r_nlp
+                .output
+                .samples
+                .iter()
+                .map(|&s| (s as f32 / 32768.0).powi(2))
+                .sum::<f32>()
+                / r_nlp.output.samples.len() as f32;
+            energy_no_nlp = r_no
+                .output
+                .samples
+                .iter()
+                .map(|&s| (s as f32 / 32768.0).powi(2))
+                .sum::<f32>()
+                / r_no.output.samples.len() as f32;
+        }
+
+        // NLP 启用时, 残余回声应被进一步抑制
+        assert!(
+            energy_nlp <= energy_no_nlp + 1e-6,
+            "NLP 应进一步抑制残余回声: nlp={}, no_nlp={}",
+            energy_nlp,
+            energy_no_nlp
+        );
+    }
+
+    #[test]
+    fn test_aec_erl_computation() {
+        let aec = Aec::new(AecConfig::default());
+
+        // 远端能量大于误差能量 -> ERL 为正
+        let erl = aec.compute_erl(1.0, 0.1);
+        assert!(erl > 0.0, "ERL 应为正: {}", erl);
+        // 10 * log10(1.0/0.1) = 10 * log10(10) = 10 dB
+        assert!((erl - 10.0).abs() < 0.1, "ERL 应约为 10dB: {}", erl);
+
+        // 远端能量等于误差能量 -> ERL 为 0
+        let erl_eq = aec.compute_erl(1.0, 1.0);
+        assert!(erl_eq.abs() < 0.1, "ERL 应为 0dB: {}", erl_eq);
+
+        // 远端静音 -> ERL 为 0
+        let erl_silent = aec.compute_erl(0.0, 1.0);
+        assert_eq!(erl_silent, 0.0, "远端静音时 ERL 应为 0");
     }
 }

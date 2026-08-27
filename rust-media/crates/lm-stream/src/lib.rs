@@ -367,10 +367,7 @@ impl StreamRegistry {
         self.streams.insert(id.clone(), stream);
 
         if let Some(room) = &room_id {
-            let mut entry = self
-                .room_streams
-                .entry(room.clone())
-                .or_insert_with(Vec::new);
+            let mut entry = self.room_streams.entry(room.clone()).or_default();
             entry.push(id);
         }
     }
@@ -808,6 +805,11 @@ impl SimulcastStreamV1 {
     ///
     /// 参考 atm0s-media-server select_layer 算法：
     /// 基于目标码率选择满足条件的最高质量层。
+    ///
+    /// 自适应策略 (Adaptive):
+    /// - 带宽未知 (0) 时选最高可用层
+    /// - 从高到低尝试，选择带宽能覆盖的第一个层
+    /// - 无层元数据成本信息时也选最高可用层
     fn select_layer_for_policy(
         &self,
         policy: &LayerSelectionPolicy,
@@ -828,72 +830,96 @@ impl SimulcastStreamV1 {
             LayerSelectionPolicy::Lowest => SimulcastTier::Low,
             LayerSelectionPolicy::Adaptive => {
                 let metas = self.layer_metas.read();
-                let layers = self.layers.read();
 
-                // 各层的目标码率（如果元数据中有）
-                let low_bitrate = metas
-                    .get(&SimulcastTier::Low)
-                    .map(|m| m.target_bitrate_kbps)
-                    .unwrap_or(150);
-                let mid_bitrate = metas
-                    .get(&SimulcastTier::Mid)
-                    .map(|m| m.target_bitrate_kbps)
-                    .unwrap_or(500);
-                let high_bitrate = metas
-                    .get(&SimulcastTier::High)
-                    .map(|m| m.target_bitrate_kbps)
-                    .unwrap_or(1500);
-
-                if bandwidth_kbps == 0 {
-                    // 无带宽估计时，默认选 mid
-                    if layers.contains_key(&SimulcastTier::Mid) {
-                        SimulcastTier::Mid
-                    } else {
-                        SimulcastTier::Low
+                // 从高到低尝试，选择带宽能覆盖的最高层
+                for &tier in &[SimulcastTier::High, SimulcastTier::Mid, SimulcastTier::Low] {
+                    if let Some(meta) = metas.get(&tier) {
+                        if bandwidth_kbps == 0 || meta.target_bitrate_kbps == 0 {
+                            // 带宽未知或无成本信息时选最高可用层
+                            return tier;
+                        }
+                        if bandwidth_kbps >= meta.target_bitrate_kbps {
+                            return tier;
+                        }
                     }
-                } else if bandwidth_kbps >= high_bitrate
-                    && layers.contains_key(&SimulcastTier::High)
-                {
-                    SimulcastTier::High
-                } else if bandwidth_kbps >= mid_bitrate && layers.contains_key(&SimulcastTier::Mid)
-                {
-                    SimulcastTier::Mid
-                } else {
-                    SimulcastTier::Low
                 }
+                SimulcastTier::Low
             }
         }
     }
 
-    /// Dynacast：根据订阅者需求启用/禁用 publisher 层
+    /// Dynacast 自适应层切换算法
+    ///
+    /// 根据所有订阅者的总带宽需求, 决定 publisher 应该发送哪些层:
+    /// - 如果所有订阅者只需要 Low 层, 禁用 Mid/High 层 (省带宽)
+    /// - 如果有订阅者需要 High 层, 启用 High 层
+    /// - 层切换时请求关键帧
+    ///
+    /// 算法:
+    /// 1. 计算每个层的总需求带宽 = sum(订阅者估计带宽 for 订阅了此层的订阅者)
+    /// 2. 计算每个层的编码成本 (从 layer_metas 获取 target_bitrate_kbps)
+    /// 3. 启用层条件: 至少有一个订阅者需要此层 且 (总需求带宽 > 编码成本 * 0.5 或 带宽未知)
+    /// 4. 禁用层条件: 没有订阅者需要此层, 或总需求带宽 < 编码成本 * 0.5 (且带宽已知)
+    /// 5. 层状态变化时请求关键帧
     fn update_dynacast(&self) {
-        let subs = self.subscribers.read();
-        let mut needed_layers = std::collections::HashSet::new();
+        let subscribers = self.subscribers.read();
+        let metas = self.layer_metas.read();
 
-        for entry in subs.iter() {
-            let bw = entry.estimated_bandwidth_kbps.load(Ordering::Relaxed);
-            let layer = self.select_layer_for_policy(&entry.policy, bw);
-            needed_layers.insert(layer);
+        // 计算每层的总需求带宽和订阅者数量
+        let mut demand: std::collections::HashMap<SimulcastTier, u64> =
+            std::collections::HashMap::new();
+        let mut count: std::collections::HashMap<SimulcastTier, usize> =
+            std::collections::HashMap::new();
+        for sub in subscribers.iter() {
+            let bw = sub.estimated_bandwidth_kbps.load(Ordering::Relaxed);
+            let layer = self.select_layer_for_policy(&sub.policy, bw);
+            *demand.entry(layer).or_insert(0) += bw;
+            *count.entry(layer).or_insert(0) += 1;
         }
 
+        // 决定每层是否启用
+        let mut changed = false;
         let mut enabled = self.layer_enabled.write();
-        for layer in [SimulcastTier::Low, SimulcastTier::Mid, SimulcastTier::High] {
-            let is_needed = needed_layers.contains(&layer);
-            let was_enabled = *enabled.get(&layer).unwrap_or(&true);
-            *enabled.entry(layer).or_insert(true) = is_needed;
+        for &tier in &[SimulcastTier::Low, SimulcastTier::Mid, SimulcastTier::High] {
+            let demand_bw = demand.get(&tier).copied().unwrap_or(0);
+            let subscriber_count = count.get(&tier).copied().unwrap_or(0);
+            let cost_bw = metas.get(&tier).map(|m| m.target_bitrate_kbps).unwrap_or(0);
+            let was_enabled = *enabled.get(&tier).unwrap_or(&true);
 
-            if was_enabled && !is_needed {
-                info!(
-                    stream = ?self.id,
-                    layer = layer.to_rid(),
-                    "dynacast: disabling unused layer"
-                );
-            } else if !was_enabled && is_needed {
-                info!(
-                    stream = ?self.id,
-                    layer = layer.to_rid(),
-                    "dynacast: enabling needed layer"
-                );
+            let should_enable = if subscriber_count == 0 {
+                false // 没人需要
+            } else if demand_bw == 0 || cost_bw == 0 {
+                // 带宽未知或无成本信息, 启用
+                true
+            } else {
+                demand_bw > cost_bw / 2 // 需求 > 成本的一半
+            };
+
+            if was_enabled != should_enable {
+                changed = true;
+                enabled.insert(tier, should_enable);
+                if should_enable {
+                    info!(
+                        stream = ?self.id,
+                        layer = tier.to_rid(),
+                        "dynacast: enabling needed layer"
+                    );
+                } else {
+                    info!(
+                        stream = ?self.id,
+                        layer = tier.to_rid(),
+                        "dynacast: disabling unused layer"
+                    );
+                }
+            }
+        }
+
+        // 层状态变化时请求关键帧
+        if changed {
+            for (&tier, &is_enabled) in enabled.iter() {
+                if is_enabled {
+                    self.send_pli(tier);
+                }
             }
         }
     }
@@ -961,6 +987,504 @@ impl SimulcastStreamV1 {
     /// 检查层是否启用
     pub fn is_layer_enabled(&self, layer: SimulcastTier) -> bool {
         *self.layer_enabled.read().get(&layer).unwrap_or(&true)
+    }
+}
+
+// ============================================================================
+// Phase 5: SVC (Scalable Video Coding) — 单流多层
+// ============================================================================
+
+/// SVC 空间层 (分辨率)
+///
+/// 与 Simulcast 不同, SVC 在单个流中通过编码器分层实现多分辨率:
+/// - Base: 基础层 (最低分辨率, e.g. 180p), SL=0
+/// - Middle: 中间层 (e.g. 360p), SL=1
+/// - High: 增强层 (最高分辨率, e.g. 720p), SL=2
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SvcSpatialLayer {
+    /// 基础层 (最低分辨率, e.g. 180p), SL=0
+    Base,
+    /// 中间层 (e.g. 360p), SL=1
+    Middle,
+    /// 增强层 (最高分辨率, e.g. 720p), SL=2
+    High,
+}
+
+impl SvcSpatialLayer {
+    /// 从索引值创建 (0=Base, 1=Middle, 2=High)
+    pub fn from_idx(idx: u8) -> Self {
+        match idx {
+            0 => SvcSpatialLayer::Base,
+            1 => SvcSpatialLayer::Middle,
+            _ => SvcSpatialLayer::High,
+        }
+    }
+
+    /// 获取索引值
+    pub fn idx(&self) -> u8 {
+        match self {
+            SvcSpatialLayer::Base => 0,
+            SvcSpatialLayer::Middle => 1,
+            SvcSpatialLayer::High => 2,
+        }
+    }
+}
+
+/// SVC 时间层 (帧率)
+///
+/// 通过 temporal ID 区分不同帧率的层:
+/// - Base: 基础帧率 (e.g. 7.5fps), TL=0
+/// - Middle: 中间帧率 (e.g. 15fps), TL=1
+/// - Full: 全帧率 (e.g. 30fps), TL=2
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SvcTemporalLayer {
+    /// 基础帧率 (e.g. 7.5fps), TL=0
+    Base,
+    /// 中间帧率 (e.g. 15fps), TL=1
+    Middle,
+    /// 全帧率 (e.g. 30fps), TL=2
+    Full,
+}
+
+impl SvcTemporalLayer {
+    /// 从索引值创建 (0=Base, 1=Middle, 2=Full)
+    pub fn from_idx(idx: u8) -> Self {
+        match idx {
+            0 => SvcTemporalLayer::Base,
+            1 => SvcTemporalLayer::Middle,
+            _ => SvcTemporalLayer::Full,
+        }
+    }
+
+    /// 获取索引值
+    pub fn idx(&self) -> u8 {
+        match self {
+            SvcTemporalLayer::Base => 0,
+            SvcTemporalLayer::Middle => 1,
+            SvcTemporalLayer::Full => 2,
+        }
+    }
+}
+
+/// SVC 层标识 (空间 + 时间)
+///
+/// 唯一标识 SVC 流中的一个层组合。
+/// 例如 SvcLayerId { spatial: Middle, temporal: Full } 表示中间分辨率 + 全帧率。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SvcLayerId {
+    /// 空间层 (分辨率)
+    pub spatial: SvcSpatialLayer,
+    /// 时间层 (帧率)
+    pub temporal: SvcTemporalLayer,
+}
+
+impl SvcLayerId {
+    /// 从空间和时间索引创建
+    pub fn from_spatial_temporal(s: u8, t: u8) -> Self {
+        Self {
+            spatial: SvcSpatialLayer::from_idx(s),
+            temporal: SvcTemporalLayer::from_idx(t),
+        }
+    }
+
+    /// 获取空间层索引
+    pub fn spatial_idx(&self) -> u8 {
+        self.spatial.idx()
+    }
+
+    /// 获取时间层索引
+    pub fn temporal_idx(&self) -> u8 {
+        self.temporal.idx()
+    }
+}
+
+/// SVC 订阅者条目
+struct SvcSubscriberEntry {
+    sink: Arc<dyn StreamSink>,
+    /// 目标空间层
+    target_spatial: SvcSpatialLayer,
+    /// 目标时间层
+    target_temporal: SvcTemporalLayer,
+    /// 估计带宽 (kbps)
+    estimated_bandwidth_kbps: AtomicU64,
+}
+
+/// SVC 可扩展视频流
+///
+/// 与 SimulcastStreamV1 不同:
+/// - SVC 使用单个 SSRC, 通过 RTP header extension 或 codec 特定标识区分层
+/// - 空间层: 不同分辨率, 通过 scalability mode (L1T3, L3T3, S2T1 等) 配置
+/// - 时间层: 不同帧率, 通过 temporal ID 区分
+/// - 订阅者可以只订阅需要的空间+时间层组合
+///
+/// 职责:
+/// 1. 从 RTP 包中提取 SVC 层标识 (VP8/VP9/H.264 SVC/AV1)
+/// 2. 缓存各层的帧
+/// 3. 为每个订阅者按目标层过滤分发
+/// 4. 支持动态层切换 (update_subscriber_layer)
+pub struct SvcStream {
+    /// 流标识
+    pub id: StreamId,
+    pub room_id: Option<String>,
+    pub codec: CodecType,
+
+    /// SVC 层配置 (e.g. L3T3 = 3空间层 x 3时间层)
+    spatial_layers: u8,
+    temporal_layers: u8,
+
+    /// 当前 SSRC (SVC 单 SSRC)
+    ssrc: u32,
+
+    /// 各层的帧缓冲
+    layer_frames: RwLock<std::collections::HashMap<SvcLayerId, Vec<MediaFrame>>>,
+
+    /// 订阅者 → SVC 层选择
+    subscribers: RwLock<Vec<SvcSubscriberEntry>>,
+
+    /// 关键帧请求器
+    keyframe_requester: RwLock<Option<Arc<dyn KeyframeRequester>>>,
+}
+
+impl SvcStream {
+    /// 创建 SVC 流
+    ///
+    /// - `spatial_layers`: 空间层数量 (1-3)
+    /// - `temporal_layers`: 时间层数量 (1-3)
+    pub fn new(
+        id: StreamId,
+        room_id: Option<String>,
+        codec: CodecType,
+        ssrc: u32,
+        spatial_layers: u8,
+        temporal_layers: u8,
+    ) -> Self {
+        Self {
+            id,
+            room_id,
+            codec,
+            spatial_layers,
+            temporal_layers,
+            ssrc,
+            layer_frames: RwLock::new(std::collections::HashMap::new()),
+            subscribers: RwLock::new(Vec::new()),
+            keyframe_requester: RwLock::new(None),
+        }
+    }
+
+    /// 设置关键帧请求器
+    pub fn set_keyframe_requester(&self, requester: Arc<dyn KeyframeRequester>) {
+        *self.keyframe_requester.write() = Some(requester);
+    }
+
+    /// 请求关键帧
+    fn send_pli(&self) {
+        if let Some(req) = self.keyframe_requester.read().as_ref() {
+            req.request_keyframe(self.ssrc);
+            info!(
+                stream = ?self.id,
+                ssrc = self.ssrc,
+                "SVC PLI sent via keyframe requester"
+            );
+        } else {
+            debug!(
+                stream = ?self.id,
+                ssrc = self.ssrc,
+                "SVC keyframe requested but no requester set"
+            );
+        }
+    }
+
+    /// 从 RTP 包中提取 SVC 层标识
+    ///
+    /// 不同编解码器的层标识提取方式:
+    /// - VP8: payload header 中的 temporal_idx (PictureID 后的 TL0PICIDX)
+    /// - VP9: payload header 中的 spatial_idx + temporal_idx (flexible mode / structure header)
+    /// - H.264/SVC: NALU header 中的 dependency_id + quality_id
+    /// - AV1: OBU header 中的 spatial_id + temporal_id
+    ///
+    /// 空间层在 SVC 单 SSRC 模式下通常为 0 (L1T3) 或由编解码器头部指定。
+    fn extract_layer_id(&self, pkt: &RtpPacket) -> SvcLayerId {
+        let payload = &pkt.payload;
+
+        let (spatial_idx, temporal_idx) = match self.codec {
+            CodecType::Vp8 => {
+                // VP8 RTP payload descriptor (RFC 7741):
+                // Byte 0: X R N S PartID
+                // 如果 X=1, 下一个字节是扩展标志
+                // 如果 T=1, 后面有 TL0PICIDX (1 byte) = temporal layer index
+                let mut temporal = 0u8;
+                if !payload.is_empty() {
+                    let first = payload[0];
+                    let x_bit = (first >> 7) & 0x01;
+                    let mut offset = 1;
+                    if x_bit == 1 && offset < payload.len() {
+                        let ext = payload[offset];
+                        let t_bit = (ext >> 5) & 0x01; // T bit
+                        offset += 1;
+                        // 跳过 M, L, K bits 对应的字节
+                        if (ext >> 4) & 0x01 == 1 && offset < payload.len() {
+                            // M bit (PictureID)
+                            let pic_id = payload[offset];
+                            offset += 1;
+                            if pic_id & 0x80 != 0 && offset < payload.len() {
+                                // 16-bit PictureID
+                                offset += 1;
+                            }
+                        }
+                        if t_bit == 1 && offset < payload.len() {
+                            temporal = payload[offset];
+                        }
+                    }
+                }
+                // VP8 simulcast/SVC: 空间层由 SSRC 区分, 单 SSRC SVC 时 spatial=0
+                (0u8, temporal.min(self.temporal_layers.saturating_sub(1)))
+            }
+            CodecType::Vp9 => {
+                // VP9 RTP payload descriptor (RFC 7741/draft):
+                // Byte 0: I P L F B E V U R
+                // 如果 I=1, 后面有 PictureID (1 or 2 bytes)
+                // 如果 L=1, 后面有 TL0PICIDX
+                // 空间层通过 SSRC 或 S bit 标识
+                let mut temporal = 0u8;
+                let mut spatial = 0u8;
+                if !payload.is_empty() {
+                    let first = payload[0];
+                    let i_bit = (first >> 7) & 0x01;
+                    let l_bit = (first >> 5) & 0x01;
+                    let mut offset = 1;
+                    if i_bit == 1 && offset < payload.len() {
+                        let pic_id = payload[offset];
+                        offset += 1;
+                        if pic_id & 0x80 != 0 && offset < payload.len() {
+                            offset += 1; // 16-bit PictureID
+                        }
+                    }
+                    if l_bit == 1 && offset < payload.len() {
+                        temporal = payload[offset];
+                        offset += 1;
+                    }
+                    // P bit = 0 时可能有 spatial info
+                    let p_bit = (first >> 6) & 0x01;
+                    if p_bit == 0 && offset < payload.len() {
+                        // 简化: 假设 spatial 在后续字节
+                        spatial = 0;
+                    }
+                }
+                (
+                    spatial.min(self.spatial_layers.saturating_sub(1)),
+                    temporal.min(self.temporal_layers.saturating_sub(1)),
+                )
+            }
+            CodecType::Av1 => {
+                // AV1 RTP payload (draft-ietf-payload-av1):
+                // Byte 0: Z Y W N R T X
+                // T bit (bit 2) = temporal_id present
+                // X bit (bit 0) = spatial_id present (in extension)
+                let mut temporal = 0u8;
+                let mut spatial = 0u8;
+                if !payload.is_empty() {
+                    let first = payload[0];
+                    let t_bit = (first >> 2) & 0x01;
+                    let x_bit = first & 0x01;
+                    let mut offset = 1;
+                    if t_bit == 1 && offset < payload.len() {
+                        temporal = payload[offset] & 0x07; // 3 bits temporal
+                        offset += 1;
+                    }
+                    if x_bit == 1 && offset < payload.len() {
+                        // extension byte contains spatial_id
+                        spatial = (payload[offset] >> 5) & 0x03; // 2 bits spatial
+                    }
+                }
+                (
+                    spatial.min(self.spatial_layers.saturating_sub(1)),
+                    temporal.min(self.temporal_layers.saturating_sub(1)),
+                )
+            }
+            _ => {
+                // H.264 SVC 或其他: 简化处理, 默认 base 层
+                (0u8, 0u8)
+            }
+        };
+
+        SvcLayerId::from_spatial_temporal(spatial_idx, temporal_idx)
+    }
+
+    /// 推送 RTP 包
+    ///
+    /// 从包中提取 SVC 层标识, 组装帧, 并分发给订阅了对应层的订阅者。
+    /// 返回 true 如果帧组装完成。
+    pub fn push_packet(&self, pkt: &RtpPacket) -> bool {
+        let layer_id = self.extract_layer_id(pkt);
+
+        // 简化: 单个 RTP 包 = 一帧 (实际需要 depacketizer 组装)
+        // 这里用 marker bit 判断帧边界
+        if !pkt.marker {
+            return false;
+        }
+
+        let frame = MediaFrame {
+            kind: TrackKind::Video,
+            codec: self.codec,
+            timestamp: pkt.timestamp,
+            keyframe: false, // 简化: 实际从 payload 判断
+            spatial_layer: layer_id.spatial_idx(),
+            temporal_layer: layer_id.temporal_idx(),
+            data: pkt.payload.clone(),
+            ssrc: pkt.ssrc,
+            rid: String::new(),
+        };
+
+        // 缓存帧
+        {
+            let mut frames = self.layer_frames.write();
+            let vec = frames.entry(layer_id).or_default();
+            vec.push(frame.clone());
+            // 限制每层缓冲大小
+            if vec.len() > 300 {
+                vec.remove(0);
+            }
+        }
+
+        // 分发给订阅了对应层的订阅者
+        self.dispatch_to_subscribers(layer_id, &frame);
+
+        true
+    }
+
+    /// 添加订阅者 (指定目标层)
+    ///
+    /// 订阅者将只收到 <= target_spatial 且 <= target_temporal 的帧。
+    pub fn add_subscriber(
+        &self,
+        sink: Arc<dyn StreamSink>,
+        target_spatial: SvcSpatialLayer,
+        target_temporal: SvcTemporalLayer,
+    ) {
+        let mut subs = self.subscribers.write();
+        subs.push(SvcSubscriberEntry {
+            sink,
+            target_spatial,
+            target_temporal,
+            estimated_bandwidth_kbps: AtomicU64::new(0),
+        });
+
+        info!(
+            stream = ?self.id,
+            spatial = target_spatial.idx(),
+            temporal = target_temporal.idx(),
+            subscriber_count = subs.len(),
+            "SVC subscriber added"
+        );
+
+        // 新订阅者加入时请求关键帧
+        drop(subs);
+        self.send_pli();
+    }
+
+    /// 更新订阅者目标层 (动态切换)
+    ///
+    /// 切换时请求关键帧, 确保新层可正确解码。
+    pub fn update_subscriber_layer(
+        &self,
+        sink: &Arc<dyn StreamSink>,
+        spatial: SvcSpatialLayer,
+        temporal: SvcTemporalLayer,
+    ) {
+        let mut subs = self.subscribers.write();
+        let mut found = false;
+        for entry in subs.iter_mut() {
+            if Arc::ptr_eq(&entry.sink, sink) {
+                entry.target_spatial = spatial;
+                entry.target_temporal = temporal;
+                found = true;
+                break;
+            }
+        }
+
+        if found {
+            info!(
+                stream = ?self.id,
+                spatial = spatial.idx(),
+                temporal = temporal.idx(),
+                "SVC subscriber layer updated"
+            );
+            drop(subs);
+            self.send_pli();
+        }
+    }
+
+    /// 移除订阅者
+    pub fn remove_subscriber(&self, sink: &Arc<dyn StreamSink>) {
+        let mut subs = self.subscribers.write();
+        subs.retain(|e| !Arc::ptr_eq(&e.sink, sink));
+        info!(
+            stream = ?self.id,
+            subscriber_count = subs.len(),
+            "SVC subscriber removed"
+        );
+    }
+
+    /// 分发帧给订阅了对应层的订阅者
+    ///
+    /// 订阅者收到帧的条件:
+    /// - 帧的空间层 <= 订阅者的目标空间层
+    /// - 帧的时间层 <= 订阅者的目标时间层
+    ///
+    /// 这是因为 SVC 的层间依赖: 高层依赖低层,
+    /// 要解码高层必须先收到低层, 所以低层帧也要发给高层订阅者。
+    fn dispatch_to_subscribers(&self, layer_id: SvcLayerId, frame: &MediaFrame) {
+        let subs = self.subscribers.read();
+        for entry in subs.iter() {
+            // 订阅者收到所有 <= 其目标层的帧
+            if layer_id.spatial <= entry.target_spatial
+                && layer_id.temporal <= entry.target_temporal
+            {
+                entry.sink.on_frame(frame);
+            }
+        }
+    }
+
+    /// 更新订阅者估计带宽 (由 RTCP RR 或 TWCC 驱动)
+    pub fn update_subscriber_bandwidth(&self, sink: &Arc<dyn StreamSink>, bandwidth_kbps: u64) {
+        let subs = self.subscribers.read();
+        for entry in subs.iter() {
+            if Arc::ptr_eq(&entry.sink, sink) {
+                entry
+                    .estimated_bandwidth_kbps
+                    .store(bandwidth_kbps, Ordering::Relaxed);
+                break;
+            }
+        }
+    }
+
+    /// 获取订阅者数量
+    pub fn subscriber_count(&self) -> usize {
+        self.subscribers.read().len()
+    }
+
+    /// 获取空间层数量
+    pub fn spatial_layers(&self) -> u8 {
+        self.spatial_layers
+    }
+
+    /// 获取时间层数量
+    pub fn temporal_layers(&self) -> u8 {
+        self.temporal_layers
+    }
+
+    /// 获取 SSRC
+    pub fn ssrc(&self) -> u32 {
+        self.ssrc
+    }
+
+    /// 获取指定层的缓冲帧数
+    pub fn layer_frame_count(&self, layer: SvcLayerId) -> usize {
+        self.layer_frames
+            .read()
+            .get(&layer)
+            .map(|v| v.len())
+            .unwrap_or(0)
     }
 }
 
@@ -1377,5 +1901,349 @@ mod tests {
 
         // 切换后 high 层应该启用
         assert!(sim.is_layer_enabled(SimulcastTier::High));
+    }
+
+    // ========================================================================
+    // SVC 测试
+    // ========================================================================
+
+    #[test]
+    fn test_svc_layer_id_from_indices() {
+        let layer = SvcLayerId::from_spatial_temporal(0, 0);
+        assert_eq!(layer.spatial, SvcSpatialLayer::Base);
+        assert_eq!(layer.temporal, SvcTemporalLayer::Base);
+        assert_eq!(layer.spatial_idx(), 0);
+        assert_eq!(layer.temporal_idx(), 0);
+
+        let layer = SvcLayerId::from_spatial_temporal(1, 2);
+        assert_eq!(layer.spatial, SvcSpatialLayer::Middle);
+        assert_eq!(layer.temporal, SvcTemporalLayer::Full);
+        assert_eq!(layer.spatial_idx(), 1);
+        assert_eq!(layer.temporal_idx(), 2);
+
+        let layer = SvcLayerId::from_spatial_temporal(2, 1);
+        assert_eq!(layer.spatial, SvcSpatialLayer::High);
+        assert_eq!(layer.temporal, SvcTemporalLayer::Middle);
+        assert_eq!(layer.spatial_idx(), 2);
+        assert_eq!(layer.temporal_idx(), 1);
+
+        // 超出范围的索引应 clamp 到最高层
+        let layer = SvcLayerId::from_spatial_temporal(255, 255);
+        assert_eq!(layer.spatial, SvcSpatialLayer::High);
+        assert_eq!(layer.temporal, SvcTemporalLayer::Full);
+    }
+
+    #[test]
+    fn test_svc_stream_creation() {
+        let stream = SvcStream::new(
+            StreamId::new("session1", "video"),
+            Some("room1".into()),
+            CodecType::Vp9,
+            12345,
+            3,
+            3,
+        );
+
+        assert_eq!(stream.ssrc(), 12345);
+        assert_eq!(stream.spatial_layers(), 3);
+        assert_eq!(stream.temporal_layers(), 3);
+        assert_eq!(stream.subscriber_count(), 0);
+    }
+
+    #[test]
+    fn test_svc_extract_layer_id() {
+        let stream = SvcStream::new(
+            StreamId::new("session1", "video"),
+            Some("room1".into()),
+            CodecType::Vp8,
+            12345,
+            1,
+            3,
+        );
+
+        // VP8 payload without temporal info → Base/Base
+        let pkt = RtpPacket {
+            ssrc: 12345,
+            payload_type: 96,
+            sequence_number: 1,
+            timestamp: 30000,
+            marker: true,
+            payload: bytes::Bytes::from(vec![0x00]), // no X bit
+            rid: String::new(),
+        };
+        let layer = stream.extract_layer_id(&pkt);
+        assert_eq!(layer.spatial, SvcSpatialLayer::Base);
+        assert_eq!(layer.temporal, SvcTemporalLayer::Base);
+
+        // VP8 payload with X=1, T=1, TL0PICIDX=2 → temporal=2 (Full)
+        // Byte 0: X=1 (0x80), R=0, N=0, S=0, PartID=0 → 0x80
+        // Byte 1 (ext): T=1 (0x20), M=0, L=0, K=0 → 0x20
+        // Byte 2: TL0PICIDX = 2
+        let pkt = RtpPacket {
+            ssrc: 12345,
+            payload_type: 96,
+            sequence_number: 2,
+            timestamp: 31000,
+            marker: true,
+            payload: bytes::Bytes::from(vec![0x80, 0x20, 0x02]),
+            rid: String::new(),
+        };
+        let layer = stream.extract_layer_id(&pkt);
+        assert_eq!(layer.temporal, SvcTemporalLayer::Full);
+    }
+
+    #[test]
+    fn test_svc_add_subscriber() {
+        let stream = SvcStream::new(
+            StreamId::new("session1", "video"),
+            Some("room1".into()),
+            CodecType::Vp9,
+            12345,
+            3,
+            3,
+        );
+
+        let collector: Arc<dyn StreamSink> = Arc::new(FrameCollector::new());
+        stream.add_subscriber(collector, SvcSpatialLayer::High, SvcTemporalLayer::Full);
+
+        assert_eq!(stream.subscriber_count(), 1);
+    }
+
+    #[test]
+    fn test_svc_update_subscriber_layer() {
+        let stream = SvcStream::new(
+            StreamId::new("session1", "video"),
+            Some("room1".into()),
+            CodecType::Vp9,
+            12345,
+            3,
+            3,
+        );
+
+        let collector: Arc<dyn StreamSink> = Arc::new(FrameCollector::new());
+        stream.add_subscriber(
+            collector.clone(),
+            SvcSpatialLayer::Base,
+            SvcTemporalLayer::Base,
+        );
+
+        // 更新到更高层
+        stream.update_subscriber_layer(&collector, SvcSpatialLayer::High, SvcTemporalLayer::Full);
+
+        assert_eq!(stream.subscriber_count(), 1);
+    }
+
+    #[test]
+    fn test_svc_dispatch_to_subscribers() {
+        let stream = SvcStream::new(
+            StreamId::new("session1", "video"),
+            Some("room1".into()),
+            CodecType::Vp9,
+            12345,
+            3,
+            3,
+        );
+
+        // 订阅者 A: 只订阅 Base/Base
+        let collector_a = Arc::new(FrameCollector::new());
+        stream.add_subscriber(
+            collector_a.clone() as Arc<dyn StreamSink>,
+            SvcSpatialLayer::Base,
+            SvcTemporalLayer::Base,
+        );
+
+        // 订阅者 B: 订阅 High/Full (应收到所有层)
+        let collector_b = Arc::new(FrameCollector::new());
+        stream.add_subscriber(
+            collector_b.clone() as Arc<dyn StreamSink>,
+            SvcSpatialLayer::High,
+            SvcTemporalLayer::Full,
+        );
+
+        // 推送 Base/Base 层帧 (VP8 简化 payload, marker=true)
+        let pkt_base = RtpPacket {
+            ssrc: 12345,
+            payload_type: 96,
+            sequence_number: 1,
+            timestamp: 30000,
+            marker: true,
+            payload: bytes::Bytes::from(vec![0x00]), // no temporal info → Base/Base
+            rid: String::new(),
+        };
+        stream.push_packet(&pkt_base);
+
+        // 两个订阅者都应收到 Base/Base 帧
+        let frames_a = collector_a.frames();
+        let frames_b = collector_b.frames();
+        assert_eq!(frames_a.len(), 1, "subscriber A should receive base frame");
+        assert_eq!(frames_b.len(), 1, "subscriber B should receive base frame");
+    }
+
+    // ========================================================================
+    // Dynacast 测试
+    // ========================================================================
+
+    /// 辅助: 创建带 Low + High 层的 SimulcastStreamV1
+    fn create_simulcast_with_layers() -> SimulcastStreamV1 {
+        let sim = SimulcastStreamV1::new(
+            StreamId::new("session1", "video"),
+            Some("room1".into()),
+            CodecType::Vp8,
+            90000,
+        );
+        sim.add_layer(
+            SimulcastTier::Low,
+            LayerMeta {
+                layer: SimulcastTier::Low,
+                ssrc: 111,
+                rid: "low".into(),
+                bitrate: 150_000,
+                target_bitrate_kbps: 150,
+                width: 320,
+                height: 180,
+                fps: 15,
+            },
+            90000,
+        );
+        sim.add_layer(
+            SimulcastTier::High,
+            LayerMeta {
+                layer: SimulcastTier::High,
+                ssrc: 333,
+                rid: "high".into(),
+                bitrate: 1_500_000,
+                target_bitrate_kbps: 1500,
+                width: 1280,
+                height: 720,
+                fps: 30,
+            },
+            90000,
+        );
+        sim
+    }
+
+    #[test]
+    fn test_dynacast_disable_unused_layer() {
+        let sim = create_simulcast_with_layers();
+
+        // 初始状态: 所有层启用
+        assert!(sim.is_layer_enabled(SimulcastTier::Low));
+        assert!(sim.is_layer_enabled(SimulcastTier::High));
+
+        // 添加一个只订阅 low 层的订阅者
+        let collector: Arc<dyn StreamSink> = Arc::new(FrameCollector::new());
+        sim.add_subscriber(collector, LayerSelectionPolicy::Fixed(SimulcastTier::Low));
+
+        // high 层应该被禁用 (Dynacast), low 层保持启用
+        assert!(sim.is_layer_enabled(SimulcastTier::Low));
+        assert!(!sim.is_layer_enabled(SimulcastTier::High));
+    }
+
+    #[test]
+    fn test_dynacast_enable_on_demand() {
+        let sim = create_simulcast_with_layers();
+
+        // 先只订阅 low → high 被禁用
+        let collector_low: Arc<dyn StreamSink> = Arc::new(FrameCollector::new());
+        sim.add_subscriber(
+            collector_low,
+            LayerSelectionPolicy::Fixed(SimulcastTier::Low),
+        );
+        assert!(!sim.is_layer_enabled(SimulcastTier::High));
+
+        // 再添加一个订阅 high 层的订阅者 → high 重新启用
+        let collector_high: Arc<dyn StreamSink> = Arc::new(FrameCollector::new());
+        sim.add_subscriber(
+            collector_high,
+            LayerSelectionPolicy::Fixed(SimulcastTier::High),
+        );
+
+        assert!(sim.is_layer_enabled(SimulcastTier::High));
+        assert!(sim.is_layer_enabled(SimulcastTier::Low));
+    }
+
+    /// 测试用关键帧请求计数器
+    struct CountingKeyframeRequester {
+        count: AtomicU64,
+    }
+
+    impl CountingKeyframeRequester {
+        fn new() -> Self {
+            Self {
+                count: AtomicU64::new(0),
+            }
+        }
+
+        fn count(&self) -> u64 {
+            self.count.load(Ordering::Relaxed)
+        }
+    }
+
+    impl KeyframeRequester for CountingKeyframeRequester {
+        fn request_keyframe(&self, _ssrc: u32) {
+            self.count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn test_dynacast_keyframe_on_change() {
+        let sim = create_simulcast_with_layers();
+
+        let requester = Arc::new(CountingKeyframeRequester::new());
+        sim.set_keyframe_requester(requester.clone());
+
+        let initial_count = requester.count();
+
+        // 添加订阅者触发 dynacast 变化 (high 被禁用)
+        let collector: Arc<dyn StreamSink> = Arc::new(FrameCollector::new());
+        sim.add_subscriber(collector, LayerSelectionPolicy::Fixed(SimulcastTier::Low));
+
+        // 层状态变化时应请求关键帧 (至少 Low 层保持启用会请求)
+        let after_add = requester.count();
+        assert!(
+            after_add > initial_count,
+            "keyframe should be requested on layer state change"
+        );
+
+        // 切换到 high 层 → high 重新启用, 应再次请求关键帧
+        let collector2: Arc<dyn StreamSink> = Arc::new(FrameCollector::new());
+        sim.add_subscriber(collector2, LayerSelectionPolicy::Fixed(SimulcastTier::High));
+
+        let after_switch = requester.count();
+        assert!(
+            after_switch > after_add,
+            "keyframe should be requested when high layer re-enabled"
+        );
+    }
+
+    // ========================================================================
+    // 自适应层选择测试
+    // ========================================================================
+
+    #[test]
+    fn test_adaptive_layer_selection_high_bandwidth() {
+        let sim = create_simulcast_with_layers();
+
+        // 带宽 2000 kbps >= high (1500) → 应选 High
+        let layer = sim.select_layer_for_policy(&LayerSelectionPolicy::Adaptive, 2000);
+        assert_eq!(layer, SimulcastTier::High);
+    }
+
+    #[test]
+    fn test_adaptive_layer_selection_low_bandwidth() {
+        let sim = create_simulcast_with_layers();
+
+        // 带宽 100 kbps < low (150) → 应选 Low
+        let layer = sim.select_layer_for_policy(&LayerSelectionPolicy::Adaptive, 100);
+        assert_eq!(layer, SimulcastTier::Low);
+    }
+
+    #[test]
+    fn test_adaptive_layer_selection_unknown_bandwidth() {
+        let sim = create_simulcast_with_layers();
+
+        // 带宽未知 (0) → 应选最高可用层 (High)
+        let layer = sim.select_layer_for_policy(&LayerSelectionPolicy::Adaptive, 0);
+        assert_eq!(layer, SimulcastTier::High);
     }
 }
