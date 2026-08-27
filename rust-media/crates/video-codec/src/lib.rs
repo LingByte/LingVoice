@@ -36,6 +36,9 @@ pub enum VideoCodecError {
 }
 
 /// YUV420p 原始帧（I420 平面格式）
+///
+/// 支持 8-bit 和 10-bit 色深。8-bit 时数据存储在 y/u/v (Vec<u8>)，
+/// 10-bit 时数据存储在 y16/u16/v16 (Vec<u16>)，bit_depth 字段标识当前色深。
 #[derive(Debug, Clone)]
 pub struct YuvFrame {
     pub y: Vec<u8>,
@@ -45,6 +48,14 @@ pub struct YuvFrame {
     pub height: u32,
     pub timestamp: u64,
     pub keyframe: bool,
+    /// 色深位数 (8 或 10)。8-bit 时使用 y/u/v，10-bit 时使用 y16/u16/v16。
+    pub bit_depth: u8,
+    /// 10-bit Y plane (little-endian u16). 仅 bit_depth > 8 时有效。
+    pub y16: Vec<u16>,
+    /// 10-bit U plane. 仅 bit_depth > 8 时有效。
+    pub u16: Vec<u16>,
+    /// 10-bit V plane. 仅 bit_depth > 8 时有效。
+    pub v16: Vec<u16>,
 }
 
 impl YuvFrame {
@@ -63,6 +74,10 @@ impl YuvFrame {
             height,
             timestamp,
             keyframe: true,
+            bit_depth: 8,
+            y16: Vec::new(),
+            u16: Vec::new(),
+            v16: Vec::new(),
         }
     }
 
@@ -104,6 +119,33 @@ impl YuvFrame {
     #[inline]
     pub fn uv_size(&self) -> usize {
         ((self.width / 2) * (self.height / 2)) as usize
+    }
+
+    /// 创建 10-bit YUV420p 帧（全黑）。
+    /// 10-bit 数据存储在 y16/u16/v16 (Vec<u16>)，y/u/v 为空。
+    pub fn black_10bit(width: u32, height: u32, timestamp: u64) -> Self {
+        debug_assert!(width > 0 && height > 0);
+        let y_size = (width * height) as usize;
+        let uv_size = ((width / 2) * (height / 2)) as usize;
+        Self {
+            y: Vec::new(),
+            u: Vec::new(),
+            v: Vec::new(),
+            width,
+            height,
+            timestamp,
+            keyframe: true,
+            bit_depth: 10,
+            y16: vec![0u16; y_size],
+            u16: vec![512u16; uv_size],
+            v16: vec![512u16; uv_size],
+        }
+    }
+
+    /// 返回当前帧是否为 10-bit (或更高) 色深。
+    #[inline]
+    pub fn is_high_bit_depth(&self) -> bool {
+        self.bit_depth > 8
     }
 
     /// 将帧的缓冲区归还到池中以便复用，避免重复分配。
@@ -187,6 +229,10 @@ impl YuvFramePool {
                         height,
                         timestamp,
                         keyframe: true,
+                        bit_depth: 8,
+                        y16: Vec::new(),
+                        u16: Vec::new(),
+                        v16: Vec::new(),
                     };
                 }
             }
@@ -205,6 +251,10 @@ impl YuvFramePool {
             height,
             timestamp,
             keyframe: true,
+            bit_depth: 8,
+            y16: Vec::new(),
+            u16: Vec::new(),
+            v16: Vec::new(),
         }
     }
 
@@ -459,6 +509,108 @@ pub fn supported_encoders() -> Vec<lm_core::CodecType> {
     codecs
 }
 
+/// 编码器后端类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderBackend {
+    /// 纯软件编码
+    Software,
+    /// macOS VideoToolbox 硬件编码
+    VideoToolbox,
+    /// Linux NVENC 硬件编码
+    Nvenc,
+}
+
+/// 检测指定 codec 是否有硬件加速编码器可用。
+///
+/// 返回硬件后端类型，如果只有软件编码器则返回 None。
+/// 这是运行时检测，会实际尝试创建硬件编码器实例。
+pub fn hardware_encoder_available(codec: lm_core::CodecType) -> Option<EncoderBackend> {
+    match codec {
+        lm_core::CodecType::H264 => {
+            #[cfg(all(feature = "videotoolbox", target_os = "macos"))]
+            {
+                let config = EncoderConfig::new(64, 64);
+                if crate::videotoolbox_codec::VideoToolboxEncoder::new_h264(config).is_ok() {
+                    return Some(EncoderBackend::VideoToolbox);
+                }
+            }
+            #[cfg(all(feature = "nvenc", target_os = "linux"))]
+            {
+                let config = EncoderConfig::new(64, 64);
+                if crate::nvenc_codec::NvencEncoder::new_h264(config).is_ok() {
+                    return Some(EncoderBackend::Nvenc);
+                }
+            }
+            None
+        }
+        lm_core::CodecType::H265 => {
+            #[cfg(all(feature = "videotoolbox", target_os = "macos"))]
+            {
+                let config = EncoderConfig::new(64, 64);
+                if crate::videotoolbox_codec::VideoToolboxEncoder::new_h265(config).is_ok() {
+                    return Some(EncoderBackend::VideoToolbox);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// 创建编码器，优先使用硬件加速，失败时自动回退到软件编码。
+///
+/// `prefer_hardware`: true 时优先尝试硬件编码器，false 时直接使用软件编码器。
+pub fn create_encoder_auto(
+    codec: lm_core::CodecType,
+    width: u32,
+    height: u32,
+    prefer_hardware: bool,
+) -> Result<Box<dyn VideoEncoder>, VideoCodecError> {
+    if prefer_hardware {
+        if let Some(backend) = hardware_encoder_available(codec) {
+            let config = EncoderConfig::new(width, height);
+            match backend {
+                EncoderBackend::VideoToolbox => {
+                    #[cfg(all(feature = "videotoolbox", target_os = "macos"))]
+                    {
+                        match codec {
+                            lm_core::CodecType::H264 => {
+                                if let Ok(enc) =
+                                    crate::videotoolbox_codec::VideoToolboxEncoder::new_h264(config)
+                                {
+                                    return Ok(Box::new(enc));
+                                }
+                            }
+                            lm_core::CodecType::H265 => {
+                                if let Ok(enc) =
+                                    crate::videotoolbox_codec::VideoToolboxEncoder::new_h265(config)
+                                {
+                                    return Ok(Box::new(enc));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                EncoderBackend::Nvenc => {
+                    #[cfg(all(feature = "nvenc", target_os = "linux"))]
+                    {
+                        if let Ok(enc) = crate::nvenc_codec::NvencEncoder::new_h264(config) {
+                            return Ok(Box::new(enc));
+                        }
+                    }
+                }
+                EncoderBackend::Software => {
+                    // No hardware backend, fall through to software
+                }
+            }
+            // Hardware failed, fall through to software
+        }
+    }
+    // Fallback to default (which already has hardware-first logic for H264)
+    create_encoder(codec, width, height)
+}
+
 #[cfg(feature = "vpx")]
 pub mod vpx_codec;
 
@@ -479,6 +631,9 @@ pub mod aom_codec;
 
 #[cfg(all(feature = "videotoolbox", target_os = "macos"))]
 pub mod videotoolbox_codec;
+
+#[cfg(all(feature = "nvenc", target_os = "linux"))]
+pub mod nvenc_codec;
 
 #[cfg(test)]
 mod tests;

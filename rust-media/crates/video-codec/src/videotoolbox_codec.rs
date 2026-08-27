@@ -317,7 +317,9 @@ unsafe extern "C" fn compression_output_callback(
     }
 
     // Prepend start codes and concatenate
-    let mut data = Vec::new();
+    // Pre-allocate: each NAL has 4-byte start code + payload, total ~frame_data.len + NALs*4
+    let total_nal_bytes: usize = nal_units.iter().map(|(d, _)| d.len()).sum();
+    let mut data = Vec::with_capacity(total_nal_bytes + nal_units.len() * 4);
     let mut is_keyframe = false;
 
     // First, emit parameter set NALs (SPS/PPS/VPS) if present

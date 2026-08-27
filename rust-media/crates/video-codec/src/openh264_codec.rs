@@ -113,11 +113,71 @@ impl VideoDecoder for Openh264Decoder {
             height: height as u32,
             timestamp,
             keyframe,
+            bit_depth: 8,
+            y16: Vec::new(),
+            u16: Vec::new(),
+            v16: Vec::new(),
         })
     }
 
     fn codec(&self) -> lm_core::CodecType {
         lm_core::CodecType::H264
+    }
+
+    fn decode_with_pool(
+        &mut self,
+        data: &[u8],
+        timestamp: u64,
+        pool: &crate::YuvFramePool,
+    ) -> Result<YuvFrame, VideoCodecError> {
+        if data.is_empty() {
+            return Err(VideoCodecError::InvalidInput("empty input data".into()));
+        }
+
+        let keyframe = detect_h264_keyframe(data);
+
+        let yuv = self
+            .decoder
+            .decode(data)
+            .map_err(|e| VideoCodecError::DecodeFailed(e.to_string()))?;
+        let yuv = yuv.ok_or_else(|| VideoCodecError::DecodeFailed("no output frame yet".into()))?;
+
+        let (width, height) = yuv.dimensions();
+        if width == 0 || height == 0 {
+            return Err(VideoCodecError::DecodeFailed("zero dimensions".into()));
+        }
+
+        let (y_stride, u_stride, v_stride) = yuv.strides();
+        let uv_w = width / 2;
+        let uv_h = height / 2;
+
+        let mut frame = pool.acquire(width as u32, height as u32, timestamp);
+
+        if y_stride == width {
+            frame.y.copy_from_slice(&yuv.y()[..width * height]);
+        } else {
+            for row in 0..height {
+                let src_start = row * y_stride;
+                frame.y[row * width..(row + 1) * width]
+                    .copy_from_slice(&yuv.y()[src_start..src_start + width]);
+            }
+        }
+        if u_stride == uv_w && v_stride == uv_w {
+            frame.u.copy_from_slice(&yuv.u()[..uv_w * uv_h]);
+            frame.v.copy_from_slice(&yuv.v()[..uv_w * uv_h]);
+        } else {
+            for row in 0..uv_h {
+                let src_u_start = row * u_stride;
+                frame.u[row * uv_w..(row + 1) * uv_w]
+                    .copy_from_slice(&yuv.u()[src_u_start..src_u_start + uv_w]);
+                let src_v_start = row * v_stride;
+                frame.v[row * uv_w..(row + 1) * uv_w]
+                    .copy_from_slice(&yuv.v()[src_v_start..src_v_start + uv_w]);
+            }
+        }
+
+        frame.keyframe = keyframe;
+        Ok(frame)
     }
 }
 

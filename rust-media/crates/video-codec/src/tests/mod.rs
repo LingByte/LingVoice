@@ -499,3 +499,42 @@ fn test_decode_with_pool() {
         assert_eq!(pool.pooled_count(), 1);
     }
 }
+
+#[test]
+fn test_hardware_encoder_detection() {
+    use crate::{hardware_encoder_available, EncoderBackend};
+
+    // VP8/VP9/AV1 never have hardware encoders in our implementation
+    assert!(hardware_encoder_available(lm_core::CodecType::Vp8).is_none());
+    assert!(hardware_encoder_available(lm_core::CodecType::Vp9).is_none());
+    assert!(hardware_encoder_available(lm_core::CodecType::Av1).is_none());
+
+    // H.264 may have VideoToolbox on macOS
+    let h264_hw = hardware_encoder_available(lm_core::CodecType::H264);
+    #[cfg(all(feature = "videotoolbox", target_os = "macos"))]
+    {
+        assert!(h264_hw.is_some());
+        assert_eq!(h264_hw.unwrap(), EncoderBackend::VideoToolbox);
+    }
+    #[cfg(not(all(feature = "videotoolbox", target_os = "macos")))]
+    {
+        assert!(h264_hw.is_none());
+    }
+}
+
+#[test]
+fn test_create_encoder_auto_fallback() {
+    use crate::create_encoder_auto;
+
+    // VP8 with prefer_hardware=true should still work (no HW available, falls back)
+    let enc = create_encoder_auto(lm_core::CodecType::Vp8, 160, 120, true);
+    assert!(enc.is_ok(), "VP8 auto encoder should succeed");
+
+    // H.264 with prefer_hardware=false should use software
+    let enc = create_encoder_auto(lm_core::CodecType::H264, 160, 120, false);
+    assert!(enc.is_ok(), "H264 software encoder should succeed");
+
+    // H.264 with prefer_hardware=true should succeed (HW or SW fallback)
+    let enc = create_encoder_auto(lm_core::CodecType::H264, 160, 120, true);
+    assert!(enc.is_ok(), "H264 auto encoder should succeed");
+}

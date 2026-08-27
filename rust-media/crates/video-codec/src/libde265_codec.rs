@@ -47,8 +47,14 @@ impl Drop for Libde265Decoder {
     }
 }
 
-impl VideoDecoder for Libde265Decoder {
-    fn decode(&mut self, data: &[u8], timestamp: u64) -> Result<YuvFrame, VideoCodecError> {
+impl Libde265Decoder {
+    /// Core decode logic. When `pool` is Some, writes directly into pool-acquired frame.
+    fn decode_inner(
+        &mut self,
+        data: &[u8],
+        timestamp: u64,
+        pool: Option<&crate::YuvFramePool>,
+    ) -> Result<YuvFrame, VideoCodecError> {
         if data.is_empty() {
             return Err(VideoCodecError::InvalidInput("empty input data".into()));
         }
@@ -86,25 +92,51 @@ impl VideoDecoder for Libde265Decoder {
                 if img.is_null() {
                     return Err(VideoCodecError::DecodeFailed("no output frame yet".into()));
                 }
-                let result = extract_yuv(img, timestamp);
+                // Get dimensions first to acquire pool frame
+                let w = de265_get_image_width(img, 0) as u32;
+                let h = de265_get_image_height(img, 0) as u32;
+                let mut pool_frame = pool.map(|p| p.acquire(w, h, timestamp));
+                let result = extract_yuv_into(img, timestamp, pool_frame.as_mut());
                 de265_release_next_picture(self.ctx);
                 return result;
             }
 
-            let result = extract_yuv(img, timestamp);
+            let w = de265_get_image_width(img, 0) as u32;
+            let h = de265_get_image_height(img, 0) as u32;
+            let mut pool_frame = pool.map(|p| p.acquire(w, h, timestamp));
+            let result = extract_yuv_into(img, timestamp, pool_frame.as_mut());
             de265_release_next_picture(self.ctx);
             result
         }
+    }
+}
+
+impl VideoDecoder for Libde265Decoder {
+    fn decode(&mut self, data: &[u8], timestamp: u64) -> Result<YuvFrame, VideoCodecError> {
+        self.decode_inner(data, timestamp, None)
     }
 
     fn codec(&self) -> lm_core::CodecType {
         lm_core::CodecType::H265
     }
+
+    fn decode_with_pool(
+        &mut self,
+        data: &[u8],
+        timestamp: u64,
+        pool: &crate::YuvFramePool,
+    ) -> Result<YuvFrame, VideoCodecError> {
+        self.decode_inner(data, timestamp, Some(pool))
+    }
 }
 
-unsafe fn extract_yuv(
+/// Extract YUV data from a de265 image into pre-allocated frame buffers.
+/// When `frame` is Some, writes directly into its planes (pool mode, zero extra allocation).
+/// When `frame` is None, allocates new Vecs (legacy mode).
+unsafe fn extract_yuv_into(
     img: *const de265_image,
     timestamp: u64,
+    frame: Option<&mut crate::YuvFrame>,
 ) -> Result<YuvFrame, VideoCodecError> {
     let width = de265_get_image_width(img, 0) as u32;
     let height = de265_get_image_height(img, 0) as u32;
@@ -143,33 +175,6 @@ unsafe fn extract_yuv(
     let y_size = w * h;
     let uv_size = uv_w * uv_h;
 
-    let mut y = vec![0u8; y_size];
-    let mut u = vec![0u8; uv_size];
-    let mut v = vec![0u8; uv_size];
-
-    if y_stride == w {
-        let src = std::slice::from_raw_parts(y_ptr, y_size);
-        y.copy_from_slice(src);
-    } else {
-        for row in 0..h {
-            let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride), w);
-            y[row * w..(row + 1) * w].copy_from_slice(src);
-        }
-    }
-    if u_stride == uv_w && v_stride == uv_w {
-        let src_u = std::slice::from_raw_parts(u_ptr, uv_size);
-        u.copy_from_slice(src_u);
-        let src_v = std::slice::from_raw_parts(v_ptr, uv_size);
-        v.copy_from_slice(src_v);
-    } else {
-        for row in 0..uv_h {
-            let src_u = std::slice::from_raw_parts(u_ptr.add(row * u_stride), uv_w);
-            u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
-            let src_v = std::slice::from_raw_parts(v_ptr.add(row * v_stride), uv_w);
-            v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
-        }
-    }
-
     // Detect keyframe from NAL unit type: 19=IDR_W_RADL, 20=IDR_N_LP, 21=CRA
     let mut nal_type: c_int = 0;
     de265_get_image_NAL_header(
@@ -181,13 +186,86 @@ unsafe fn extract_yuv(
     );
     let is_keyframe = (19..=21).contains(&nal_type);
 
-    Ok(YuvFrame {
-        y,
-        u,
-        v,
-        width,
-        height,
-        timestamp,
-        keyframe: is_keyframe,
-    })
+    if let Some(f) = frame {
+        // Pool mode: write directly into pre-allocated planes
+        if y_stride == w {
+            let src = std::slice::from_raw_parts(y_ptr, y_size);
+            f.y.copy_from_slice(src);
+        } else {
+            for row in 0..h {
+                let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride), w);
+                f.y[row * w..(row + 1) * w].copy_from_slice(src);
+            }
+        }
+        if u_stride == uv_w && v_stride == uv_w {
+            let src_u = std::slice::from_raw_parts(u_ptr, uv_size);
+            f.u.copy_from_slice(src_u);
+            let src_v = std::slice::from_raw_parts(v_ptr, uv_size);
+            f.v.copy_from_slice(src_v);
+        } else {
+            for row in 0..uv_h {
+                let src_u = std::slice::from_raw_parts(u_ptr.add(row * u_stride), uv_w);
+                f.u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
+                let src_v = std::slice::from_raw_parts(v_ptr.add(row * v_stride), uv_w);
+                f.v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+            }
+        }
+        f.keyframe = is_keyframe;
+        // Return a clone for the caller since we consumed the Option
+        Ok(YuvFrame {
+            y: f.y.clone(),
+            u: f.u.clone(),
+            v: f.v.clone(),
+            width,
+            height,
+            timestamp,
+            keyframe: is_keyframe,
+            bit_depth: 8,
+            y16: Vec::new(),
+            u16: Vec::new(),
+            v16: Vec::new(),
+        })
+    } else {
+        // Legacy mode: allocate new Vecs
+        let mut y = vec![0u8; y_size];
+        let mut u = vec![0u8; uv_size];
+        let mut v = vec![0u8; uv_size];
+
+        if y_stride == w {
+            let src = std::slice::from_raw_parts(y_ptr, y_size);
+            y.copy_from_slice(src);
+        } else {
+            for row in 0..h {
+                let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride), w);
+                y[row * w..(row + 1) * w].copy_from_slice(src);
+            }
+        }
+        if u_stride == uv_w && v_stride == uv_w {
+            let src_u = std::slice::from_raw_parts(u_ptr, uv_size);
+            u.copy_from_slice(src_u);
+            let src_v = std::slice::from_raw_parts(v_ptr, uv_size);
+            v.copy_from_slice(src_v);
+        } else {
+            for row in 0..uv_h {
+                let src_u = std::slice::from_raw_parts(u_ptr.add(row * u_stride), uv_w);
+                u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
+                let src_v = std::slice::from_raw_parts(v_ptr.add(row * v_stride), uv_w);
+                v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+            }
+        }
+
+        Ok(YuvFrame {
+            y,
+            u,
+            v,
+            width,
+            height,
+            timestamp,
+            keyframe: is_keyframe,
+            bit_depth: 8,
+            y16: Vec::new(),
+            u16: Vec::new(),
+            v16: Vec::new(),
+        })
+    }
 }

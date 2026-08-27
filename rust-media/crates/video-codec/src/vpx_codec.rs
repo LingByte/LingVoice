@@ -241,10 +241,41 @@ fn copy_yuv_from_image(
     let mut u = vec![0u8; uv_size];
     let mut v = vec![0u8; uv_size];
 
+    fill_yuv_planes(img, &mut y, &mut u, &mut v, width, height, uv_w, uv_h);
+
+    YuvFrame {
+        y,
+        u,
+        v,
+        width,
+        height,
+        timestamp,
+        keyframe,
+        bit_depth: 8,
+        y16: Vec::new(),
+        u16: Vec::new(),
+        v16: Vec::new(),
+    }
+}
+
+/// Fill pre-allocated Y/U/V planes from a vpx image. Avoids allocation when used with pool.
+#[allow(clippy::too_many_arguments)]
+fn fill_yuv_planes(
+    img: &VpxImage,
+    y: &mut [u8],
+    u: &mut [u8],
+    v: &mut [u8],
+    width: u32,
+    height: u32,
+    uv_w: usize,
+    uv_h: usize,
+) {
     let y_stride = img.stride[0] as usize;
     let w = width as usize;
+    let y_size = w * height as usize;
+    let uv_size = uv_w * uv_h;
+
     if y_stride == w {
-        // Bulk copy when stride matches width (common case)
         let src = unsafe { std::slice::from_raw_parts(img.planes[0], y_size) };
         y.copy_from_slice(src);
     } else {
@@ -257,7 +288,6 @@ fn copy_yuv_from_image(
     let u_stride = img.stride[1] as usize;
     let v_stride = img.stride[2] as usize;
     if u_stride == uv_w && v_stride == uv_w {
-        // Bulk copy for both UV planes
         let src_u = unsafe { std::slice::from_raw_parts(img.planes[1], uv_size) };
         u.copy_from_slice(src_u);
         let src_v = unsafe { std::slice::from_raw_parts(img.planes[2], uv_size) };
@@ -271,16 +301,6 @@ fn copy_yuv_from_image(
                 unsafe { std::slice::from_raw_parts(img.planes[2].add(row * v_stride), uv_w) };
             v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
         }
-    }
-
-    YuvFrame {
-        y,
-        u,
-        v,
-        width,
-        height,
-        timestamp,
-        keyframe,
     }
 }
 
@@ -377,6 +397,54 @@ impl VideoDecoder for VpxDecoder {
 
     fn codec(&self) -> lm_core::CodecType {
         self.codec_type
+    }
+
+    fn decode_with_pool(
+        &mut self,
+        data: &[u8],
+        timestamp: u64,
+        pool: &crate::YuvFramePool,
+    ) -> Result<YuvFrame, VideoCodecError> {
+        if data.is_empty() {
+            return Err(VideoCodecError::InvalidInput("empty input data".into()));
+        }
+
+        let ret = unsafe {
+            vpx_codec_decode(&mut self.ctx, data.as_ptr(), data.len(), ptr::null_mut(), 0)
+        };
+        if ret != 0 {
+            return Err(VideoCodecError::DecodeFailed(vpx_err_str(&mut self.ctx)));
+        }
+
+        let mut iter: *mut VpxCodecIter = ptr::null_mut();
+        let img = unsafe { vpx_codec_get_frame(&mut self.ctx, &mut iter) };
+        if img.is_null() {
+            return Err(VideoCodecError::DecodeFailed("no output frame yet".into()));
+        }
+
+        let img_ref = unsafe { &*img };
+        let width = img_ref.d_w as u32;
+        let height = img_ref.d_h as u32;
+        debug_assert!(width > 0 && height > 0, "decoded frame has zero dimensions");
+
+        let keyframe = (img_ref.fmt & VPX_FRAME_IS_KEY) != 0;
+        let uv_w = (width / 2) as usize;
+        let uv_h = (height / 2) as usize;
+
+        // Acquire frame from pool and fill directly — no intermediate allocation
+        let mut frame = pool.acquire(width, height, timestamp);
+        fill_yuv_planes(
+            img_ref,
+            &mut frame.y,
+            &mut frame.u,
+            &mut frame.v,
+            width,
+            height,
+            uv_w,
+            uv_h,
+        );
+        frame.keyframe = keyframe;
+        Ok(frame)
     }
 }
 
@@ -543,7 +611,9 @@ impl VideoEncoder for VpxEncoder {
         }
 
         let mut iter: *mut VpxCodecIter = ptr::null_mut();
-        let mut data = Vec::new();
+        // Pre-allocate based on estimated compressed size (typically 1/4 to 1/8 of raw)
+        let estimated_size = (self.config.width * self.config.height / 4) as usize;
+        let mut data = Vec::with_capacity(estimated_size.max(1024));
         let mut is_keyframe = false;
 
         loop {

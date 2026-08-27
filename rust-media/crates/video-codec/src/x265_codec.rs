@@ -220,7 +220,9 @@ impl VideoEncoder for X265Encoder {
                 return Err(VideoCodecError::EncodeFailed("no NAL output".into()));
             }
 
-            let mut data = Vec::new();
+            // Pre-allocate based on estimated compressed size
+            let estimated_size = (self.config.width * self.config.height / 4) as usize;
+            let mut data = Vec::with_capacity(estimated_size.max(1024));
             let mut is_keyframe = false;
 
             for i in 0..pi_nal as usize {

@@ -255,12 +255,118 @@ impl VideoDecoder for Dav1dDecoder {
                 height,
                 timestamp,
                 keyframe,
+                bit_depth: 8,
+                y16: Vec::new(),
+                u16: Vec::new(),
+                v16: Vec::new(),
             })
         }
     }
 
     fn codec(&self) -> lm_core::CodecType {
         lm_core::CodecType::Av1
+    }
+
+    fn decode_with_pool(
+        &mut self,
+        data: &[u8],
+        timestamp: u64,
+        pool: &crate::YuvFramePool,
+    ) -> Result<YuvFrame, VideoCodecError> {
+        if data.is_empty() {
+            return Err(VideoCodecError::InvalidInput("empty input data".into()));
+        }
+
+        unsafe {
+            let mut dav1d_data: Dav1dData = std::mem::zeroed();
+            let buf_ptr = dav1d_data_create(&mut dav1d_data, data.len());
+            if buf_ptr.is_null() {
+                return Err(VideoCodecError::DecodeFailed(
+                    "dav1d_data_create failed".into(),
+                ));
+            }
+            ptr::copy_nonoverlapping(data.as_ptr(), buf_ptr, data.len());
+
+            let send_ret = dav1d_send_data(self.ctx, &mut dav1d_data);
+            dav1d_data_unref(&mut dav1d_data);
+
+            if send_ret < 0 && send_ret != libc::EAGAIN {
+                return Err(VideoCodecError::DecodeFailed(format!(
+                    "dav1d_send_data failed: {}",
+                    send_ret
+                )));
+            }
+
+            let mut pic: Dav1dPicture = std::mem::zeroed();
+            let ret = dav1d_get_picture(self.ctx, &mut pic);
+
+            if ret == libc::EAGAIN {
+                dav1d_picture_unref(&mut pic);
+                return Err(VideoCodecError::DecodeFailed("no output frame yet".into()));
+            }
+            if ret < 0 {
+                dav1d_picture_unref(&mut pic);
+                return Err(VideoCodecError::DecodeFailed(format!(
+                    "dav1d_get_picture failed: {}",
+                    ret
+                )));
+            }
+
+            let width = pic.p.w as u32;
+            let height = pic.p.h as u32;
+
+            if pic.p.layout != DAV1D_PIXEL_LAYOUT_I420 || pic.p.bpc != 8 {
+                dav1d_picture_unref(&mut pic);
+                // Fall back to regular decode which will produce the proper error
+                return self.decode(data, timestamp);
+            }
+
+            let y_stride = pic.stride[0] as usize;
+            let uv_stride = pic.stride[1] as usize;
+            let w = width as usize;
+            let h = height as usize;
+            let uv_w = (width / 2) as usize;
+            let uv_h = (height / 2) as usize;
+            let y_size = w * h;
+            let uv_size = uv_w * uv_h;
+
+            let mut frame = pool.acquire(width, height, timestamp);
+
+            let y_ptr = pic.data[0] as *const u8;
+            let u_ptr = pic.data[1] as *const u8;
+            let v_ptr = pic.data[2] as *const u8;
+
+            if y_stride == w {
+                let src = std::slice::from_raw_parts(y_ptr, y_size);
+                frame.y.copy_from_slice(src);
+            } else {
+                for row in 0..h {
+                    let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride), w);
+                    frame.y[row * w..(row + 1) * w].copy_from_slice(src);
+                }
+            }
+            if uv_stride == uv_w {
+                let src_u = std::slice::from_raw_parts(u_ptr, uv_size);
+                frame.u.copy_from_slice(src_u);
+                let src_v = std::slice::from_raw_parts(v_ptr, uv_size);
+                frame.v.copy_from_slice(src_v);
+            } else {
+                for row in 0..uv_h {
+                    let src_u = std::slice::from_raw_parts(u_ptr.add(row * uv_stride), uv_w);
+                    frame.u[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_u);
+                    let src_v = std::slice::from_raw_parts(v_ptr.add(row * uv_stride), uv_w);
+                    frame.v[row * uv_w..(row + 1) * uv_w].copy_from_slice(src_v);
+                }
+            }
+
+            let keyframe = pic.frame_hdr.is_null()
+                || (*(pic.frame_hdr as *const Dav1dFrameHeaderLite)).frame_type == 0;
+
+            dav1d_picture_unref(&mut pic);
+
+            frame.keyframe = keyframe;
+            Ok(frame)
+        }
     }
 }
 
