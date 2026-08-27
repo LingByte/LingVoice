@@ -1868,9 +1868,9 @@ mod transcode_tests {
     #[test]
     fn test_e2e_video_transcode_vp8_to_h264() {
         // 1. 创建 VP8 encoder，编码一帧 YUV
-        let mut vp8_enc = video_codec::create_encoder(lm_core::CodecType::Vp8, 160, 120)
+        let mut vp8_enc = video_codec::create_encoder(lm_core::CodecType::Vp8, 320, 240)
             .expect("create vp8 encoder");
-        let yuv = video_codec::YuvFrame::black(160, 120, 9000);
+        let yuv = video_codec::YuvFrame::black(320, 240, 9000);
         let vp8_encoded = vp8_enc.encode(&yuv).expect("vp8 encode");
         assert!(!vp8_encoded.data.is_empty(), "vp8 encoded data empty");
         assert!(vp8_encoded.keyframe, "first vp8 frame should be keyframe");
@@ -1966,8 +1966,8 @@ mod transcode_tests {
                     let decoded = h264_dec.decode(&f.data, f.timestamp as u64);
                     // H.264 解码可能需要 SPS/PPS，第一帧可能成功
                     if let Ok(yuv_out) = decoded {
-                        assert_eq!(yuv_out.width, 160, "decoded width mismatch");
-                        assert_eq!(yuv_out.height, 120, "decoded height mismatch");
+                        assert_eq!(yuv_out.width, 320, "decoded width mismatch");
+                        assert_eq!(yuv_out.height, 240, "decoded height mismatch");
                     }
                 }
             }
@@ -1977,7 +1977,7 @@ mod transcode_tests {
     /// 多帧视频转码验证：编码 3 帧 VP8，逐帧转码为 H.264
     #[test]
     fn test_e2e_video_transcode_multi_frame() {
-        let mut vp8_enc = video_codec::create_encoder(lm_core::CodecType::Vp8, 160, 120)
+        let mut vp8_enc = video_codec::create_encoder(lm_core::CodecType::Vp8, 320, 240)
             .expect("create vp8 encoder");
         let mut tc_state =
             TranscodeState::new(lm_core::CodecType::Vp8, lm_core::CodecType::H264, 90000);
@@ -1987,7 +1987,7 @@ mod transcode_tests {
 
         for i in 0..3u32 {
             // 每帧不同的 YUV（渐变亮度）
-            let mut yuv = video_codec::YuvFrame::black(160, 120, 9000u64 * (i as u64 + 1));
+            let mut yuv = video_codec::YuvFrame::black(320, 240, 9000u64 * (i as u64 + 1));
             // 填充 Y 为不同值
             for y in yuv.y.iter_mut() {
                 *y = (i * 40) as u8;
@@ -2030,9 +2030,9 @@ mod transcode_tests {
     /// 验证转码输出的 sequence number 是递增的
     #[test]
     fn test_e2e_video_transcode_seq_increment() {
-        let mut vp8_enc = video_codec::create_encoder(lm_core::CodecType::Vp8, 160, 120)
+        let mut vp8_enc = video_codec::create_encoder(lm_core::CodecType::Vp8, 320, 240)
             .expect("create vp8 encoder");
-        let yuv = video_codec::YuvFrame::black(160, 120, 9000);
+        let yuv = video_codec::YuvFrame::black(320, 240, 9000);
         let vp8_encoded = vp8_enc.encode(&yuv).expect("vp8 encode");
 
         let mut vp8_pktizer = lm_depacketizer::create_packetizer(lm_core::CodecType::Vp8);

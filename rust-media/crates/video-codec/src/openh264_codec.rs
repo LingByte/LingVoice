@@ -1,31 +1,65 @@
 //! H.264 解码器/编码器 — 基于 Cisco OpenH264 (openh264 crate)
-//!
-//! OpenH264 是 Cisco 开源的 H.264 实现，支持 Baseline/Main/High profile。
-//! openh264 crate 默认下载预编译二进制，无需系统依赖。
 
-use crate::{EncodedFrame, VideoCodecError, VideoDecoder, VideoEncoder, YuvFrame};
+use crate::{
+    EncodedFrame, EncoderConfig as LmEncoderConfig, VideoCodecError, VideoDecoder, VideoEncoder,
+    YuvFrame,
+};
 use openh264::decoder::{Decoder, DecoderConfig};
-use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate, FrameType};
+use openh264::encoder::{
+    BitRate, Encoder, EncoderConfig as Oh264EncConfig, FrameRate, FrameType, RateControlMode,
+};
 use openh264::formats::YUVSource;
 use openh264::{OpenH264API, Timestamp};
 
-/// H.264 解码器
+fn detect_h264_keyframe(data: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 4 < data.len() {
+        if data[i] == 0 && data[i + 1] == 0 {
+            let (start_len, nal_start) = if data[i + 2] == 1 {
+                (3, i + 3)
+            } else if data[i + 2] == 0 && i + 3 < data.len() && data[i + 3] == 1 {
+                (4, i + 4)
+            } else {
+                i += 1;
+                continue;
+            };
+            if nal_start < data.len() {
+                let nal_type = data[nal_start] & 0x1F;
+                if nal_type == 5 || nal_type == 7 || nal_type == 8 {
+                    return true;
+                }
+            }
+            i += start_len;
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
 pub struct Openh264Decoder {
     decoder: Decoder,
 }
 
 impl Openh264Decoder {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, VideoCodecError> {
         let api = OpenH264API::from_source();
         let config = DecoderConfig::new().debug(false);
-        let decoder =
-            Decoder::with_api_config(api, config).expect("Failed to create H.264 decoder");
-        Self { decoder }
+        let decoder = Decoder::with_api_config(api, config).map_err(|e| {
+            VideoCodecError::DecodeFailed(format!("Failed to create H.264 decoder: {}", e))
+        })?;
+        Ok(Self { decoder })
     }
 }
 
 impl VideoDecoder for Openh264Decoder {
     fn decode(&mut self, data: &[u8], timestamp: u64) -> Result<YuvFrame, VideoCodecError> {
+        if data.is_empty() {
+            return Err(VideoCodecError::InvalidInput("empty input data".into()));
+        }
+
+        let keyframe = detect_h264_keyframe(data);
+
         let yuv = self
             .decoder
             .decode(data)
@@ -39,24 +73,19 @@ impl VideoDecoder for Openh264Decoder {
         }
 
         let (y_stride, u_stride, v_stride) = yuv.strides();
-
-        let y_size = width * height;
         let uv_w = width / 2;
         let uv_h = height / 2;
         let uv_size = uv_w * uv_h;
 
-        let mut y = vec![0u8; y_size];
+        let mut y = vec![0u8; width * height];
         let mut u = vec![0u8; uv_size];
         let mut v = vec![0u8; uv_size];
 
-        // 复制 Y 平面（stride 可能 > width）
         for row in 0..height {
             let src_start = row * y_stride;
             y[row * width..(row + 1) * width]
                 .copy_from_slice(&yuv.y()[src_start..src_start + width]);
         }
-
-        // 复制 U/V 平面
         for row in 0..uv_h {
             let src_u_start = row * u_stride;
             u[row * uv_w..(row + 1) * uv_w]
@@ -73,7 +102,7 @@ impl VideoDecoder for Openh264Decoder {
             width: width as u32,
             height: height as u32,
             timestamp,
-            keyframe: false,
+            keyframe,
         })
     }
 
@@ -82,31 +111,6 @@ impl VideoDecoder for Openh264Decoder {
     }
 }
 
-/// H.264 编码器
-pub struct Openh264Encoder {
-    encoder: Encoder,
-    force_keyframe: bool,
-}
-
-impl Openh264Encoder {
-    pub fn new(width: u32, height: u32) -> Result<Self, VideoCodecError> {
-        let _ = (width, height); // 维度从 YUVSource 自动获取
-        let api = OpenH264API::from_source();
-        let config = EncoderConfig::new()
-            .max_frame_rate(FrameRate::from_hz(30.0))
-            .bitrate(BitRate::from_bps(500_000));
-
-        let encoder = Encoder::with_api_config(api, config)
-            .map_err(|e| VideoCodecError::EncodeFailed(e.to_string()))?;
-
-        Ok(Self {
-            encoder,
-            force_keyframe: false,
-        })
-    }
-}
-
-/// 为 YuvFrame 实现 YUVSource trait，这样可以直接传给 openh264 encoder
 impl YUVSource for YuvFrame {
     fn dimensions(&self) -> (usize, usize) {
         (self.width as usize, self.height as usize)
@@ -129,25 +133,61 @@ impl YUVSource for YuvFrame {
     }
 }
 
+pub struct Openh264Encoder {
+    encoder: Encoder,
+    config: LmEncoderConfig,
+    force_keyframe: bool,
+}
+
+impl Openh264Encoder {
+    pub fn new(config: LmEncoderConfig) -> Result<Self, VideoCodecError> {
+        if config.width == 0 || config.height == 0 {
+            return Err(VideoCodecError::InvalidInput(
+                "width and height must be non-zero".into(),
+            ));
+        }
+
+        let api = OpenH264API::from_source();
+        let enc_config = Oh264EncConfig::new()
+            .max_frame_rate(FrameRate::from_hz(config.framerate as f32))
+            .bitrate(BitRate::from_bps(config.bitrate))
+            .rate_control_mode(RateControlMode::Bitrate);
+
+        let encoder = Encoder::with_api_config(api, enc_config).map_err(|e| {
+            VideoCodecError::EncodeFailed(format!("Failed to create H.264 encoder: {}", e))
+        })?;
+
+        Ok(Self {
+            encoder,
+            config,
+            force_keyframe: false,
+        })
+    }
+}
+
 impl VideoEncoder for Openh264Encoder {
     fn encode(&mut self, frame: &YuvFrame) -> Result<EncodedFrame, VideoCodecError> {
-        let timestamp = Timestamp::from_millis((frame.timestamp / 90) as u64); // 90kHz → ms
+        if frame.width != self.config.width || frame.height != self.config.height {
+            return Err(VideoCodecError::InvalidInput(format!(
+                "frame dimensions {}x{} != encoder {}x{}",
+                frame.width, frame.height, self.config.width, self.config.height
+            )));
+        }
 
-        let stream = if self.force_keyframe {
+        let timestamp = Timestamp::from_millis(frame.timestamp / 90);
+
+        if self.force_keyframe {
             self.force_keyframe = false;
-            self.encoder
-                .encode_at(frame, timestamp)
-                .map_err(|e| VideoCodecError::EncodeFailed(e.to_string()))?
-        } else {
-            self.encoder
-                .encode(frame)
-                .map_err(|e| VideoCodecError::EncodeFailed(e.to_string()))?
-        };
+            self.encoder.force_intra_frame();
+        }
 
-        // 检查帧类型
+        let stream = self
+            .encoder
+            .encode_at(frame, timestamp)
+            .map_err(|e| VideoCodecError::EncodeFailed(e.to_string()))?;
+
         let keyframe = stream.frame_type() == FrameType::IDR || stream.frame_type() == FrameType::I;
 
-        // 收集所有 NAL 单元，合并为 Annex-B 格式
         let mut data = Vec::new();
         for layer_idx in 0..stream.num_layers() {
             if let Some(layer) = stream.layer(layer_idx) {
@@ -178,5 +218,13 @@ impl VideoEncoder for Openh264Encoder {
 
     fn codec(&self) -> lm_core::CodecType {
         lm_core::CodecType::H264
+    }
+
+    fn set_bitrate(&mut self, bps: u32) {
+        self.config.bitrate = bps;
+    }
+
+    fn set_framerate(&mut self, fps: u32) {
+        self.config.framerate = fps;
     }
 }

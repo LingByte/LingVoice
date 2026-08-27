@@ -9,10 +9,16 @@ authors.workspace = true
 default = ["vpx", "openh264"]
 vpx = []
 openh264 = ["dep:openh264"]
+x265 = []
+libde265 = ["dep:libde265-sys2"]
+dav1d = []
+libaom = []
+videotoolbox = []
 
 [dependencies]
 lm-core = { path = "../lm-core" }
 openh264 = { version = "0.9", optional = true }
+libde265-sys2 = { version = "0.1", optional = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
