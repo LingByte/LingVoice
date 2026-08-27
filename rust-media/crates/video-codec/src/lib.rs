@@ -105,6 +105,148 @@ impl YuvFrame {
     pub fn uv_size(&self) -> usize {
         ((self.width / 2) * (self.height / 2)) as usize
     }
+
+    /// 将帧的缓冲区归还到池中以便复用，避免重复分配。
+    /// 调用后 self 的 y/u/v 变为空 Vec。
+    pub fn recycle_buffers(&mut self, pool: &YuvFramePool) {
+        let y_size = self.y_size();
+        let uv_size = self.uv_size();
+        let y = std::mem::take(&mut self.y);
+        let u = std::mem::take(&mut self.u);
+        let v = std::mem::take(&mut self.v);
+        pool.return_buffers(
+            self.width,
+            self.height,
+            (y, u, v),
+            (y_size, uv_size),
+        );
+    }
+}
+
+/// YUV 帧缓冲池 — 复用 Vec<u8> 缓冲区减少堆分配。
+///
+/// 在高频转码场景（每秒 30-60 帧）中，每帧 YUV420p 数据的
+/// 分配/释放开销显著。缓冲池按分辨率缓存 (y, u, v) 三个 Vec，
+/// 解码器从池中获取，编码器用完后归还。
+///
+/// 池内部用 Mutex 保护，线程安全。每个分辨率最多缓存 8 组缓冲区。
+pub struct YuvFramePool {
+    inner: std::sync::Mutex<YuvFramePoolInner>,
+}
+
+struct YuvFramePoolInner {
+    /// 按 (width, height) 分组的空闲缓冲区
+    buffers: std::collections::HashMap<(u32, u32), Vec<BufferSet>>,
+    /// 每个分辨率最多缓存的缓冲区组数
+    max_per_resolution: usize,
+}
+
+struct BufferSet {
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
+    #[allow(dead_code)]
+    y_capacity: usize,
+    #[allow(dead_code)]
+    uv_capacity: usize,
+}
+
+impl Default for YuvFramePool {
+    fn default() -> Self {
+        Self::new(8)
+    }
+}
+
+impl YuvFramePool {
+    /// 创建缓冲池，指定每个分辨率最多缓存的缓冲区组数。
+    pub fn new(max_per_resolution: usize) -> Self {
+        Self {
+            inner: std::sync::Mutex::new(YuvFramePoolInner {
+                buffers: std::collections::HashMap::new(),
+                max_per_resolution,
+            }),
+        }
+    }
+
+    /// 从池中获取一个 YuvFrame，缓冲区已预分配到正确大小。
+    /// 如果池中没有匹配分辨率的缓冲区，则新分配。
+    pub fn acquire(&self, width: u32, height: u32, timestamp: u64) -> YuvFrame {
+        let y_size = (width * height) as usize;
+        let uv_size = ((width / 2) * (height / 2)) as usize;
+
+        let (y, u, v) = {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(free_list) = inner.buffers.get_mut(&(width, height)) {
+                if let Some(bufset) = free_list.pop() {
+                    let mut y = bufset.y;
+                    let mut u = bufset.u;
+                    let mut v = bufset.v;
+                    y.resize(y_size, 0);
+                    u.resize(uv_size, 128);
+                    v.resize(uv_size, 128);
+                    return YuvFrame {
+                        y,
+                        u,
+                        v,
+                        width,
+                        height,
+                        timestamp,
+                        keyframe: true,
+                    };
+                }
+            }
+            (
+                vec![0u8; y_size],
+                vec![128u8; uv_size],
+                vec![128u8; uv_size],
+            )
+        };
+
+        YuvFrame {
+            y,
+            u,
+            v,
+            width,
+            height,
+            timestamp,
+            keyframe: true,
+        }
+    }
+
+    /// 归还缓冲区到池中以便复用。
+    fn return_buffers(
+        &self,
+        width: u32,
+        height: u32,
+        bufs: (Vec<u8>, Vec<u8>, Vec<u8>),
+        capacities: (usize, usize),
+    ) {
+        let mut inner = self.inner.lock().unwrap();
+        let max_per_resolution = inner.max_per_resolution;
+        let free_list = inner.buffers.entry((width, height)).or_default();
+        if free_list.len() >= max_per_resolution {
+            return; // 池已满，丢弃缓冲区
+        }
+        free_list.push(BufferSet {
+            y: bufs.0,
+            u: bufs.1,
+            v: bufs.2,
+            y_capacity: capacities.0,
+            uv_capacity: capacities.1,
+        });
+    }
+
+    /// 清空池中所有缓冲区，释放内存。
+    pub fn clear(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.buffers.clear();
+    }
+
+    /// 返回池中当前缓存的缓冲区组数。
+    pub fn pooled_count(&self) -> usize {
+        let inner = self.inner.lock().unwrap();
+        inner.buffers.values().map(|v| v.len()).sum()
+    }
 }
 
 /// 编码后的视频帧

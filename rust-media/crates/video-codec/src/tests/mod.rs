@@ -379,3 +379,84 @@ fn test_empty_input_decode() {
         );
     }
 }
+
+#[test]
+fn test_yuv_frame_pool_acquire_recycle() {
+    use crate::YuvFramePool;
+
+    let pool = YuvFramePool::default();
+
+    // Acquire a frame
+    let mut frame = pool.acquire(320, 240, 0);
+    assert_eq!(frame.width, 320);
+    assert_eq!(frame.height, 240);
+    assert_eq!(frame.y.len(), 320 * 240);
+    assert_eq!(frame.u.len(), 160 * 120);
+    assert_eq!(frame.v.len(), 160 * 120);
+
+    // Recycle it back
+    frame.recycle_buffers(&pool);
+    assert_eq!(frame.y.len(), 0);
+    assert_eq!(frame.u.len(), 0);
+    assert_eq!(frame.v.len(), 0);
+    assert_eq!(pool.pooled_count(), 1);
+
+    // Acquire again — should reuse the recycled buffer
+    let frame2 = pool.acquire(320, 240, 100);
+    assert_eq!(frame2.width, 320);
+    assert_eq!(frame2.height, 240);
+    assert_eq!(frame2.y.len(), 320 * 240);
+    assert_eq!(pool.pooled_count(), 0);
+}
+
+#[test]
+fn test_yuv_frame_pool_multiple_resolutions() {
+    use crate::YuvFramePool;
+
+    let pool = YuvFramePool::default();
+
+    // Acquire frames at different resolutions
+    let f1 = pool.acquire(160, 120, 0);
+    let f2 = pool.acquire(320, 240, 0);
+    assert_eq!(f1.y.len(), 160 * 120);
+    assert_eq!(f2.y.len(), 320 * 240);
+
+    // Recycle both
+    let mut f1 = f1;
+    let mut f2 = f2;
+    f1.recycle_buffers(&pool);
+    f2.recycle_buffers(&pool);
+    assert_eq!(pool.pooled_count(), 2);
+
+    // Acquire at first resolution — should get recycled buffer
+    let f1_again = pool.acquire(160, 120, 0);
+    assert_eq!(f1_again.y.len(), 160 * 120);
+    assert_eq!(pool.pooled_count(), 1);
+
+    // Acquire at second resolution
+    let f2_again = pool.acquire(320, 240, 0);
+    assert_eq!(f2_again.y.len(), 320 * 240);
+    assert_eq!(pool.pooled_count(), 0);
+}
+
+#[test]
+fn test_yuv_frame_pool_max_limit() {
+    use crate::YuvFramePool;
+
+    let pool = YuvFramePool::new(2);
+
+    // Acquire 3 frames (all freshly allocated since pool is empty)
+    let mut f1 = pool.acquire(160, 120, 0);
+    let mut f2 = pool.acquire(160, 120, 1);
+    let mut f3 = pool.acquire(160, 120, 2);
+
+    // Recycle all 3 — only 2 should be pooled (max_per_resolution=2)
+    f1.recycle_buffers(&pool);
+    f2.recycle_buffers(&pool);
+    f3.recycle_buffers(&pool);
+    assert_eq!(pool.pooled_count(), 2);
+
+    // Clear pool
+    pool.clear();
+    assert_eq!(pool.pooled_count(), 0);
+}
