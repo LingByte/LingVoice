@@ -840,8 +840,8 @@ impl CmafMuxer {
 
     fn build_moov(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
         let mut moov = Vec::new();
-        // mvhd (简化)
-        moov.extend_from_slice(&full_box_header(96, b"mvhd", 0, 0));
+        // mvhd v0: creation(4)+modification(4)+timescale(4)+duration(4)+rate(4)+volume(2)+reserved(10)+matrix(36)+pre_defined(24) = 92
+        moov.extend_from_slice(&full_box_header(92, b"mvhd", 0, 0));
         moov.extend_from_slice(&0u32.to_be_bytes()); // creation_time
         moov.extend_from_slice(&0u32.to_be_bytes()); // modification_time
         moov.extend_from_slice(&self.timescale.to_be_bytes());
@@ -900,8 +900,8 @@ impl CmafMuxer {
 
     fn build_mdia(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
         let mut mdia = Vec::new();
-        // mdhd
-        mdia.extend_from_slice(&full_box_header(24, b"mdhd", 0, 0));
+        // mdhd v0: creation(4)+modification(4)+timescale(4)+duration(4)+language(2)+pre_defined(2) = 20
+        mdia.extend_from_slice(&full_box_header(20, b"mdhd", 0, 0));
         mdia.extend_from_slice(&0u32.to_be_bytes()); // creation_time
         mdia.extend_from_slice(&0u32.to_be_bytes()); // modification_time
         mdia.extend_from_slice(&self.timescale.to_be_bytes());
@@ -922,17 +922,21 @@ impl CmafMuxer {
 
     fn build_minf(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
         let mut minf = Vec::new();
-        // vmhd
-        minf.extend_from_slice(&full_box_header(12, b"vmhd", 0, 1));
+        // vmhd v0: graphicsmode(2)+opcolor(6) = 8, flags=1 (force flag)
+        minf.extend_from_slice(&full_box_header(8, b"vmhd", 0, 1));
         minf.extend_from_slice(&0u16.to_be_bytes()); // graphicsmode
         minf.extend_from_slice(&[0u8; 6]); // opcolor
-                                           // dinf (dref)
-        minf.extend_from_slice(&full_box_header(16, b"dinf", 0, 0));
-        let dref = full_box_header(12, b"dref", 0, 0);
-        minf.extend_from_slice(&box_header(dref.len() + 8, b"dinf"));
-        minf.extend_from_slice(&dref);
-        minf.extend_from_slice(&0u32.to_be_bytes()); // entry_count = 0
-                                                     // stbl (简化: stsd + stts + stsc + stsz + stco)
+                                           // dinf → dref
+                                           // dref: full box with entry_count(4) = 0, payload = 4
+        let dref_payload = 4u32.to_be_bytes(); // entry_count = 0
+        let dref_header = full_box_header(dref_payload.len(), b"dref", 0, 0);
+        let mut dref_box = Vec::new();
+        dref_box.extend_from_slice(&dref_header);
+        dref_box.extend_from_slice(&dref_payload);
+        // dinf contains dref
+        minf.extend_from_slice(&box_header(dref_box.len(), b"dinf"));
+        minf.extend_from_slice(&dref_box);
+        // stbl (简化: stsd + stts + stsc + stsz + stco)
         let stbl = self.build_stbl(width, height, codec);
         minf.extend_from_slice(&box_header(stbl.len(), b"stbl"));
         minf.extend_from_slice(&stbl);
@@ -941,23 +945,23 @@ impl CmafMuxer {
 
     fn build_stbl(&self, width: u32, height: u32, codec: &str) -> Vec<u8> {
         let mut stbl = Vec::new();
-        // stsd (sample description)
+        // stsd: payload = entry_count(4) + stsd_data
         let stsd_data = self.build_stsd(width, height, codec);
-        stbl.extend_from_slice(&full_box_header(8 + stsd_data.len(), b"stsd", 0, 0));
+        stbl.extend_from_slice(&full_box_header(4 + stsd_data.len(), b"stsd", 0, 0));
         stbl.extend_from_slice(&1u32.to_be_bytes()); // entry_count
         stbl.extend_from_slice(&stsd_data);
-        // stts (time-to-sample, empty)
-        stbl.extend_from_slice(&full_box_header(16, b"stts", 0, 0));
+        // stts: payload = entry_count(4) = 4 (empty table)
+        stbl.extend_from_slice(&full_box_header(4, b"stts", 0, 0));
         stbl.extend_from_slice(&0u32.to_be_bytes()); // entry_count
-                                                     // stsc (sample-to-chunk, empty)
-        stbl.extend_from_slice(&full_box_header(16, b"stsc", 0, 0));
+                                                     // stsc: payload = entry_count(4) = 4 (empty table)
+        stbl.extend_from_slice(&full_box_header(4, b"stsc", 0, 0));
         stbl.extend_from_slice(&0u32.to_be_bytes()); // entry_count
-                                                     // stsz (sample size, empty)
-        stbl.extend_from_slice(&full_box_header(20, b"stsz", 0, 0));
+                                                     // stsz: payload = sample_size(4) + sample_count(4) = 8 (empty)
+        stbl.extend_from_slice(&full_box_header(8, b"stsz", 0, 0));
         stbl.extend_from_slice(&0u32.to_be_bytes()); // sample_size
         stbl.extend_from_slice(&0u32.to_be_bytes()); // sample_count
-                                                     // stco (chunk offset, empty)
-        stbl.extend_from_slice(&full_box_header(16, b"stco", 0, 0));
+                                                     // stco: payload = entry_count(4) = 4 (empty)
+        stbl.extend_from_slice(&full_box_header(4, b"stco", 0, 0));
         stbl.extend_from_slice(&0u32.to_be_bytes()); // entry_count
         stbl
     }
@@ -977,20 +981,41 @@ impl CmafMuxer {
         stsd.extend_from_slice(&[0u8; 32]); // compressorname
         stsd.extend_from_slice(&0x0018u16.to_be_bytes()); // depth
         stsd.extend_from_slice(&0xFFFFu16.to_be_bytes()); // pre_defined
-                                                          // codec box (avcC / hvcC)
-        let codec_type = if codec.starts_with("avc") {
-            b"avcC"
+                                                          // codec box (avcC / hvcC / vpcC)
+        if codec.starts_with("avc") {
+            // avcC: AVC Decoder Configuration Record
+            // 从 codec 字符串解析 profile/level, 例如 "avc1.640028" → profile=0x64, level=0x28
+            let (profile, compatibility, level) = parse_avc_codec_string(codec);
+            let avcc = build_avcc(profile, compatibility, level);
+            stsd.extend_from_slice(&box_header(avcc.len(), b"avcC"));
+            stsd.extend_from_slice(&avcc);
+        } else if codec.starts_with("hvc") || codec.starts_with("hev") {
+            // hvcC: HEVC Decoder Configuration Record
+            let hvcc = build_hvcc();
+            stsd.extend_from_slice(&box_header(hvcc.len(), b"hvcC"));
+            stsd.extend_from_slice(&hvcc);
+        } else if codec.starts_with("vp09") || codec.starts_with("vp08") {
+            // vpcC: VP9/VP8 Configuration
+            let vpcc = build_vpcc();
+            stsd.extend_from_slice(&full_box_header(vpcc.len(), b"vpcC", 1, 0));
+            stsd.extend_from_slice(&vpcc);
+        } else if codec.starts_with("av01") {
+            // av1C: AV1 Codec Configuration
+            let av1c = build_av1c();
+            stsd.extend_from_slice(&box_header(av1c.len(), b"av1C"));
+            stsd.extend_from_slice(&av1c);
         } else {
-            b"hvcC"
-        };
-        // 简化: 空 codec config
-        stsd.extend_from_slice(&box_header(8, codec_type));
+            // 未知 codec: 空 config
+            stsd.extend_from_slice(&box_header(0, b"avcC"));
+        }
         stsd
     }
 
     fn build_trex(&self) -> Vec<u8> {
         let mut trex = Vec::new();
-        trex.extend_from_slice(&full_box_header(24, b"trex", 0, 0));
+        // trex payload: track_id(4) + default_sample_description_index(4) +
+        //               default_sample_duration(4) + default_sample_size(4) + default_sample_flags(4) = 20
+        trex.extend_from_slice(&full_box_header(20, b"trex", 0, 0));
         trex.extend_from_slice(&self.track_id.to_be_bytes());
         trex.extend_from_slice(&1u32.to_be_bytes()); // default_sample_description_index
         trex.extend_from_slice(&0u32.to_be_bytes()); // default_sample_duration
@@ -1075,6 +1100,167 @@ fn full_box_header(payload_size: usize, box_type: &[u8; 4], version: u8, flags: 
     header[8] = version;
     header[9..12].copy_from_slice(&flags.to_be_bytes()[1..4]);
     header
+}
+
+/// 从 codec 字符串解析 AVC profile/level
+/// e.g. "avc1.640028" → profile=0x64 (High), compatibility=0x00, level=0x28 (4.0)
+fn parse_avc_codec_string(codec: &str) -> (u8, u8, u8) {
+    // 格式: avc1.XXYZZ, XX=profile, YY=compatibility, ZZ=level
+    let parts: Vec<&str> = codec.split('.').collect();
+    if parts.len() >= 2 && parts[1].len() >= 6 {
+        let hex = parts[1];
+        let profile = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0x42); // Baseline
+        let compatibility = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+        let level = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0x1E); // 3.0
+        (profile, compatibility, level)
+    } else {
+        (0x42, 0x00, 0x1E) // Baseline 3.0 默认
+    }
+}
+
+/// 构建 avcC (AVC Decoder Configuration Record)
+/// ISO 14496-15 Section 5.3.4.1
+fn build_avcc(profile: u8, compatibility: u8, level: u8) -> Vec<u8> {
+    let mut avcc = Vec::new();
+    avcc.push(1); // configurationVersion = 1
+    avcc.push(profile); // AVCProfileIndication
+    avcc.push(compatibility); // profile_compatibility
+    avcc.push(level); // AVCLevelIndication
+    avcc.push(0xFF); // lengthSizeMinusOne=3 (4-byte NAL length) | reserved 6 bits = 0x3F
+                     // numSequenceParameterSets = 1 (0xE0 | 1)
+    avcc.push(0xE1);
+    // SPS: 简化的 SPS (Baseline profile, level 3.0)
+    // 实际 SPS 应从编码器获取, 这里用最小有效 SPS
+    let sps = build_minimal_sps(profile, compatibility, level);
+    avcc.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+    avcc.extend_from_slice(&sps);
+    // numPictureParameterSets = 1
+    avcc.push(1);
+    // PPS: 简化的 PPS
+    let pps = build_minimal_pps();
+    avcc.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+    avcc.extend_from_slice(&pps);
+    avcc
+}
+
+/// 构建最小 SPS (Sequence Parameter Set)
+fn build_minimal_sps(profile: u8, compatibility: u8, level: u8) -> Vec<u8> {
+    // 这是一个简化的 SPS, 实际应从编码器获取
+    // NAL header: type=7 (SPS), nal_ref_idc=3 → 0x67
+    let mut sps = vec![0x67, profile, compatibility, level];
+    // SPS body: 简化的 exp-golomb 编码
+    // 实际 SPS 需要根据分辨率等参数编码
+    // 这里提供 Baseline profile 的最小 SPS
+    sps.extend_from_slice(&[
+        0xFF, 0xE0, // seq_parameter_set_id=0, chroma_format_idc=1, bit_depth_luma=0
+        0x20, // log2_max_pic_order_cnt_lsb = 0
+        // 简化的剩余字段
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    sps
+}
+
+/// 构建最小 PPS (Picture Parameter Set)
+fn build_minimal_pps() -> Vec<u8> {
+    // NAL header: type=8 (PPS), nal_ref_idc=3 → 0x68
+    vec![0x68, 0xCE, 0x38, 0x80]
+}
+
+/// 构建 hvcC (HEVC Decoder Configuration Record)
+/// ISO 14496-15 Section 8.3.3.1
+fn build_hvcc() -> Vec<u8> {
+    let mut hvcc = Vec::new();
+    hvcc.push(1); // configurationVersion = 1
+                  // general_profile_space(2) + general_tier_flag(1) + general_profile_idc(5) = 0x01 (Main)
+    hvcc.push(0x01);
+    // general_profile_compatibility_flags (4 bytes) = 0x60000000 (Main)
+    hvcc.extend_from_slice(&[0x60, 0x00, 0x00, 0x00]);
+    // general_constraint_indicator_flags (6 bytes)
+    hvcc.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    // general_level_idc = 93 (Level 3.1)
+    hvcc.push(93);
+    // min_spatial_segmentation_idc (4+12 bits) = 0
+    hvcc.extend_from_slice(&[0xF0, 0x00]);
+    // parallelismType (6+2 bits) = 0
+    hvcc.push(0xFC);
+    // chromaFormat (6+2 bits) = 1
+    hvcc.push(0xFD);
+    // bitDepthLumaMinus8 (5+3 bits) = 0
+    hvcc.push(0xF8);
+    // bitDepthChromaMinus8 (5+3 bits) = 0
+    hvcc.push(0xF8);
+    // avgFrameRate (2 bytes) = 0
+    hvcc.extend_from_slice(&[0x00, 0x00]);
+    // constantFrameRate(2) + numTemporalLayers(3) + temporalIdNested(1) + lengthSizeMinusOne(2)
+    // = 0 | 1 | 1 | 3 = 0x0F
+    hvcc.push(0x0F);
+    // numOfArrays = 3 (VPS, SPS, PPS)
+    hvcc.push(3);
+    // Array 1: VPS
+    hvcc.push(0xA0); // array_completeness=1, NAL_unit_type=32 (VPS)
+    hvcc.extend_from_slice(&1u16.to_be_bytes()); // numNalus=1
+    let vps = vec![
+        0x40, 0x01, 0x0C, 0x01, 0xFF, 0xFF, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00,
+        0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x5D, 0xAC, 0x09,
+    ];
+    hvcc.extend_from_slice(&(vps.len() as u16).to_be_bytes());
+    hvcc.extend_from_slice(&vps);
+    // Array 2: SPS
+    hvcc.push(0xA1); // array_completeness=1, NAL_unit_type=33 (SPS)
+    hvcc.extend_from_slice(&1u16.to_be_bytes());
+    let sps = vec![
+        0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00,
+        0x00, 0x03, 0x00, 0x5D, 0xA0, 0x02, 0x80, 0x80, 0x2D, 0x16, 0x59, 0x59, 0xA4, 0x93, 0x2B,
+        0x80, 0x40, 0x00, 0x00, 0x03, 0x00, 0x40, 0x00, 0x00, 0x07, 0x82,
+    ];
+    hvcc.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+    hvcc.extend_from_slice(&sps);
+    // Array 3: PPS
+    hvcc.push(0xA2); // array_completeness=1, NAL_unit_type=34 (PPS)
+    hvcc.extend_from_slice(&1u16.to_be_bytes());
+    let pps = vec![
+        0x44, 0x01, 0xC1, 0x73, 0xD0, 0x90, 0x40, 0x00, 0x00, 0x03, 0x00, 0x40, 0x00, 0x00, 0x07,
+        0x82,
+    ];
+    hvcc.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+    hvcc.extend_from_slice(&pps);
+    hvcc
+}
+
+/// 构建 vpcC (VP9 Codec Configuration)
+/// ISO 14496-15 Section 8.4.2.1 (v1)
+fn build_vpcc() -> Vec<u8> {
+    let mut vpcc = Vec::new();
+    // profile(2) + level(3) + bitDepth(3) = 0 | 0 | 8 = 0x08
+    vpcc.push(0x00); // profile=0, level=0
+    vpcc.push(0x08); // bitDepth=8
+                     // chromaSubsampling(4) + videoFullRangeFlag(1) + reserved(3) = 1 | 0 | 0 = 0x08
+    vpcc.push(0x08); // chromaSubsampling=1 (4:2:0)
+                     // colorPrimaries(8) = 1 (BT.709)
+    vpcc.push(1);
+    // transferCharacteristics(8) = 1 (BT.709)
+    vpcc.push(1);
+    // matrixCoefficients(8) = 1 (BT.709)
+    vpcc.push(1);
+    // codecIntializationDataSize(16) = 0
+    vpcc.extend_from_slice(&0u16.to_be_bytes());
+    vpcc
+}
+
+/// 构建 av1C (AV1 Codec Configuration)
+/// AV1 Codec Specification Section 2.4.1
+fn build_av1c() -> Vec<u8> {
+    let mut av1c = Vec::new();
+    // marker(1) + version(7) = 0x81 (version=1)
+    av1c.push(0x81);
+    // seq_profile(3) + seq_level_idx_0(5) = 0 | 0 = 0x00 (Main profile, level 2.0)
+    av1c.push(0x00);
+    // seq_tier_0(1) + high_bitdepth(1) + twelve_bit(1) + monochrome(1) +
+    // chroma_subsampling_x(1) + chroma_subsampling_y(1) + chroma_sample_position(2) = 0
+    av1c.push(0x00);
+    // reserved(3) + initial_presentation_delay_present(1) + reserved(4) = 0
+    av1c.push(0x00);
+    av1c
 }
 
 #[cfg(test)]

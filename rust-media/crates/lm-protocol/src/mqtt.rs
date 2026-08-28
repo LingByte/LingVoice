@@ -507,6 +507,262 @@ impl MqttControlMessage {
 }
 
 // ============================================================================
+// QoS (服务质量) 管理
+// ============================================================================
+
+/// MQTT QoS 级别
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MqttQos {
+    /// 至多一次 (fire and forget)
+    AtMostOnce,
+    /// 至少一次 (需要确认)
+    AtLeastOnce,
+    /// 恰好一次 (需要确认 + 手势)
+    ExactlyOnce,
+}
+
+impl MqttQos {
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            MqttQos::AtMostOnce => 0,
+            MqttQos::AtLeastOnce => 1,
+            MqttQos::ExactlyOnce => 2,
+        }
+    }
+
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(MqttQos::AtMostOnce),
+            1 => Some(MqttQos::AtLeastOnce),
+            2 => Some(MqttQos::ExactlyOnce),
+            _ => None,
+        }
+    }
+}
+
+/// QoS 消息跟踪器 — 跟踪未确认的消息
+#[derive(Debug)]
+pub struct QosTracker {
+    /// QoS 级别
+    qos: MqttQos,
+    /// 待确认的消息 packet_id → (timestamp, retry_count)
+    pending: std::collections::HashMap<u16, (u64, u8)>,
+    /// 下一个 packet_id
+    next_packet_id: u16,
+    /// 最大重试次数
+    max_retries: u8,
+    /// 重试间隔 (ms)
+    retry_interval_ms: u64,
+}
+
+impl QosTracker {
+    pub fn new(qos: MqttQos) -> Self {
+        Self {
+            qos,
+            pending: std::collections::HashMap::new(),
+            next_packet_id: 1,
+            max_retries: 5,
+            retry_interval_ms: 1000,
+        }
+    }
+
+    /// 注册一个待发送消息, 返回 packet_id
+    pub fn register(&mut self, timestamp_ms: u64) -> u16 {
+        if self.qos == MqttQos::AtMostOnce {
+            return 0; // QoS 0 不需要 packet_id
+        }
+        let id = self.next_packet_id;
+        self.next_packet_id = self.next_packet_id.wrapping_add(1);
+        if self.next_packet_id == 0 {
+            self.next_packet_id = 1; // 跳过 0
+        }
+        self.pending.insert(id, (timestamp_ms, 0));
+        id
+    }
+
+    /// 确认消息已收到
+    pub fn acknowledge(&mut self, packet_id: u16) -> bool {
+        self.pending.remove(&packet_id).is_some()
+    }
+
+    /// 检查需要重试的消息, 返回需要重发的 packet_id 列表
+    pub fn check_retries(&mut self, current_time_ms: u64) -> Vec<u16> {
+        if self.qos == MqttQos::AtMostOnce {
+            return Vec::new();
+        }
+        let mut to_retry = Vec::new();
+        for (id, (ts, retries)) in self.pending.iter_mut() {
+            if current_time_ms.saturating_sub(*ts) >= self.retry_interval_ms
+                && *retries < self.max_retries
+            {
+                to_retry.push(*id);
+                *retries += 1;
+                *ts = current_time_ms;
+            }
+        }
+        to_retry
+    }
+
+    /// 清理超过最大重试次数的消息
+    pub fn cleanup_expired(&mut self) -> Vec<u16> {
+        let expired: Vec<u16> = self
+            .pending
+            .iter()
+            .filter(|(_, (_, retries))| *retries >= self.max_retries)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &expired {
+            self.pending.remove(id);
+        }
+        expired
+    }
+
+    /// 待确认消息数
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// QoS 级别
+    pub fn qos(&self) -> MqttQos {
+        self.qos
+    }
+}
+
+// ============================================================================
+// MQTT 会话状态管理
+// ============================================================================
+
+/// MQTT 会话状态
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MqttSessionState {
+    /// 已断开
+    Disconnected,
+    /// 正在连接
+    Connecting,
+    /// 已连接
+    Connected,
+    /// 正在订阅
+    Subscribing,
+    /// 已订阅
+    Subscribed,
+    /// 正在发布
+    Publishing,
+    /// 错误
+    Error,
+}
+
+/// MQTT 会话管理器 — 跟踪连接状态和订阅
+#[derive(Debug)]
+pub struct MqttSession {
+    /// 设备 ID
+    device_id: String,
+    /// 当前状态
+    state: MqttSessionState,
+    /// 已订阅的 topic 列表
+    subscribed_topics: Vec<String>,
+    /// QoS 跟踪器 (发布方向)
+    publish_qos: QosTracker,
+    /// QoS 跟踪器 (订阅方向)
+    subscribe_qos: QosTracker,
+    /// 最后心跳时间
+    last_heartbeat_ms: u64,
+    /// 心跳超时 (ms)
+    heartbeat_timeout_ms: u64,
+    /// 接收统计
+    packets_received: u64,
+    /// 发送统计
+    packets_sent: u64,
+}
+
+impl MqttSession {
+    pub fn new(device_id: &str, qos: MqttQos) -> Self {
+        Self {
+            device_id: device_id.to_string(),
+            state: MqttSessionState::Disconnected,
+            subscribed_topics: Vec::new(),
+            publish_qos: QosTracker::new(qos),
+            subscribe_qos: QosTracker::new(qos),
+            last_heartbeat_ms: 0,
+            heartbeat_timeout_ms: 30_000, // 30s
+            packets_received: 0,
+            packets_sent: 0,
+        }
+    }
+
+    /// 状态转换
+    pub fn set_state(&mut self, state: MqttSessionState) {
+        self.state = state;
+    }
+
+    pub fn state(&self) -> MqttSessionState {
+        self.state
+    }
+
+    /// 添加订阅
+    pub fn add_subscription(&mut self, topic: String) {
+        if !self.subscribed_topics.contains(&topic) {
+            self.subscribed_topics.push(topic);
+        }
+    }
+
+    /// 移除订阅
+    pub fn remove_subscription(&mut self, topic: &str) {
+        self.subscribed_topics.retain(|t| t != topic);
+    }
+
+    /// 已订阅 topic 列表
+    pub fn subscriptions(&self) -> &[String] {
+        &self.subscribed_topics
+    }
+
+    /// 更新心跳
+    pub fn update_heartbeat(&mut self, timestamp_ms: u64) {
+        self.last_heartbeat_ms = timestamp_ms;
+    }
+
+    /// 检查心跳是否超时
+    pub fn is_heartbeat_expired(&self, current_time_ms: u64) -> bool {
+        current_time_ms.saturating_sub(self.last_heartbeat_ms) > self.heartbeat_timeout_ms
+    }
+
+    /// 记录接收
+    pub fn record_received(&mut self) {
+        self.packets_received += 1;
+    }
+
+    /// 记录发送
+    pub fn record_sent(&mut self) {
+        self.packets_sent += 1;
+    }
+
+    /// 统计
+    pub fn stats(&self) -> (u64, u64) {
+        (self.packets_received, self.packets_sent)
+    }
+
+    /// 发布 QoS 跟踪器
+    pub fn publish_qos(&mut self) -> &mut QosTracker {
+        &mut self.publish_qos
+    }
+
+    /// 订阅 QoS 跟踪器
+    pub fn subscribe_qos(&mut self) -> &mut QosTracker {
+        &mut self.subscribe_qos
+    }
+
+    /// 设备 ID
+    pub fn device_id(&self) -> &str {
+        &self.device_id
+    }
+
+    /// 断开连接, 清理状态
+    pub fn disconnect(&mut self) {
+        self.state = MqttSessionState::Disconnected;
+        self.subscribed_topics.clear();
+    }
+}
+
+// ============================================================================
 // 测试
 // ============================================================================
 
@@ -759,5 +1015,144 @@ mod tests {
         let bad_json = b"{not valid json}";
         let err = MqttControlMessage::decode(bad_json).unwrap_err();
         assert!(matches!(err, MqttError::Json(_)));
+    }
+
+    #[test]
+    fn test_mqtt_qos_levels() {
+        assert_eq!(MqttQos::AtMostOnce.as_u8(), 0);
+        assert_eq!(MqttQos::AtLeastOnce.as_u8(), 1);
+        assert_eq!(MqttQos::ExactlyOnce.as_u8(), 2);
+        assert_eq!(MqttQos::from_u8(0), Some(MqttQos::AtMostOnce));
+        assert_eq!(MqttQos::from_u8(3), None);
+    }
+
+    #[test]
+    fn test_qos_tracker_at_most_once() {
+        let mut tracker = QosTracker::new(MqttQos::AtMostOnce);
+        let id = tracker.register(1000);
+        assert_eq!(id, 0); // QoS 0 不分配 packet_id
+        assert_eq!(tracker.pending_count(), 0);
+        // 重试检查不应返回任何消息
+        let retries = tracker.check_retries(2000);
+        assert!(retries.is_empty());
+    }
+
+    #[test]
+    fn test_qos_tracker_at_least_once() {
+        let mut tracker = QosTracker::new(MqttQos::AtLeastOnce);
+        let id1 = tracker.register(1000);
+        assert!(id1 > 0);
+        let id2 = tracker.register(1000);
+        assert!(id2 > 0 && id2 != id1);
+        assert_eq!(tracker.pending_count(), 2);
+
+        // 确认第一条
+        assert!(tracker.acknowledge(id1));
+        assert_eq!(tracker.pending_count(), 1);
+
+        // 重复确认应失败
+        assert!(!tracker.acknowledge(id1));
+    }
+
+    #[test]
+    fn test_qos_tracker_retries() {
+        let mut tracker = QosTracker::new(MqttQos::AtLeastOnce);
+        let id = tracker.register(1000);
+        assert_eq!(tracker.pending_count(), 1);
+
+        // 时间未到, 不应重试
+        let retries = tracker.check_retries(1500);
+        assert!(retries.is_empty());
+
+        // 时间到, 应重试
+        let retries = tracker.check_retries(2500);
+        assert_eq!(retries, vec![id]);
+    }
+
+    #[test]
+    fn test_qos_tracker_cleanup() {
+        let mut tracker = QosTracker::new(MqttQos::AtLeastOnce);
+        let id = tracker.register(1000);
+
+        // 模拟多次重试, 每次时间递增以触发 retry
+        let mut time = 1000u64;
+        for _ in 0..10 {
+            time += 2000; // 超过 retry_interval
+            tracker.check_retries(time);
+        }
+        let expired = tracker.cleanup_expired();
+        assert!(
+            expired.contains(&id),
+            "id {} should be expired, expired={:?}",
+            id,
+            expired
+        );
+        assert_eq!(tracker.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_mqtt_session_state() {
+        let mut session = MqttSession::new("device1", MqttQos::AtLeastOnce);
+        assert_eq!(session.state(), MqttSessionState::Disconnected);
+        assert_eq!(session.device_id(), "device1");
+
+        session.set_state(MqttSessionState::Connecting);
+        assert_eq!(session.state(), MqttSessionState::Connecting);
+
+        session.set_state(MqttSessionState::Connected);
+        assert_eq!(session.state(), MqttSessionState::Connected);
+    }
+
+    #[test]
+    fn test_mqtt_session_subscriptions() {
+        let mut session = MqttSession::new("device1", MqttQos::AtLeastOnce);
+        session.add_subscription("lingvoice/device1/audio/up".to_string());
+        session.add_subscription("lingvoice/device1/video/up".to_string());
+        assert_eq!(session.subscriptions().len(), 2);
+
+        // 重复添加不应增加
+        session.add_subscription("lingvoice/device1/audio/up".to_string());
+        assert_eq!(session.subscriptions().len(), 2);
+
+        session.remove_subscription("lingvoice/device1/audio/up");
+        assert_eq!(session.subscriptions().len(), 1);
+    }
+
+    #[test]
+    fn test_mqtt_session_heartbeat() {
+        let mut session = MqttSession::new("device1", MqttQos::AtLeastOnce);
+        session.update_heartbeat(1000);
+        assert!(!session.is_heartbeat_expired(31000)); // 刚好 30s, 未超时
+        assert!(session.is_heartbeat_expired(31001)); // 超时
+    }
+
+    #[test]
+    fn test_mqtt_session_stats() {
+        let mut session = MqttSession::new("device1", MqttQos::AtLeastOnce);
+        session.record_received();
+        session.record_received();
+        session.record_sent();
+        let (rx, tx) = session.stats();
+        assert_eq!(rx, 2);
+        assert_eq!(tx, 1);
+    }
+
+    #[test]
+    fn test_mqtt_session_disconnect() {
+        let mut session = MqttSession::new("device1", MqttQos::AtLeastOnce);
+        session.add_subscription("test/topic".to_string());
+        session.set_state(MqttSessionState::Connected);
+        session.disconnect();
+        assert_eq!(session.state(), MqttSessionState::Disconnected);
+        assert_eq!(session.subscriptions().len(), 0);
+    }
+
+    #[test]
+    fn test_mqtt_session_qos_integration() {
+        let mut session = MqttSession::new("device1", MqttQos::AtLeastOnce);
+        let id = session.publish_qos().register(1000);
+        assert!(id > 0);
+        assert_eq!(session.publish_qos().pending_count(), 1);
+        assert!(session.publish_qos().acknowledge(id));
     }
 }

@@ -827,7 +827,7 @@ impl Mp4Recorder {
         Ok(())
     }
 
-    /// 完成录制：关闭临时文件，用 ffmpeg 转封装为 MP4
+    /// 完成录制：优先用纯 Rust MP4 muxer, 失败则 fallback 到 ffmpeg
     pub async fn finalize(mut self) -> Result<RecordingResult> {
         // 如果是音频，回写 WAV header 的 data_size
         if self.is_audio {
@@ -840,28 +840,34 @@ impl Mp4Recorder {
         self.file.flush().await?;
         self.file.shutdown().await?;
 
-        // 用 ffmpeg 转封装
         let output_path = self.mp4_path.clone();
         let temp_path = self.temp_path.clone();
 
-        let result = tokio::process::Command::new("ffmpeg")
-            .args(["-y", "-i", &temp_path, "-c", "copy", &output_path])
-            .output()
-            .await;
+        // 优先尝试纯 Rust MP4 muxer
+        let native_ok = try_native_mp4(&temp_path, &output_path, &self).await;
 
-        match result {
-            Ok(cmd_out) if cmd_out.status.success() => {
-                // 删除临时文件
-                let _ = tokio::fs::remove_file(&temp_path).await;
+        if !native_ok {
+            // Fallback: ffmpeg 转封装
+            let result = tokio::process::Command::new("ffmpeg")
+                .args(["-y", "-i", &temp_path, "-c", "copy", &output_path])
+                .output()
+                .await;
+
+            match result {
+                Ok(cmd_out) if cmd_out.status.success() => {
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                }
+                _ => {
+                    warn!(
+                        temp = %temp_path,
+                        output = %output_path,
+                        "ffmpeg remux to mp4 failed, keeping temp file"
+                    );
+                }
             }
-            _ => {
-                // ffmpeg 失败，保留临时文件作为 fallback
-                warn!(
-                    temp = %temp_path,
-                    output = %output_path,
-                    "ffmpeg remux to mp4 failed, keeping temp file"
-                );
-            }
+        } else {
+            // 纯 Rust muxer 成功, 删除临时文件
+            let _ = tokio::fs::remove_file(&temp_path).await;
         }
 
         let duration_ms = self.start_time.elapsed().as_millis() as u64;
@@ -875,6 +881,644 @@ impl Mp4Recorder {
             file_size,
         })
     }
+}
+
+/// 尝试用纯 Rust MP4 muxer 生成 MP4
+/// 返回 true 表示成功
+async fn try_native_mp4(temp_path: &str, output_path: &str, recorder: &Mp4Recorder) -> bool {
+    // 读取临时文件
+    let temp_data = match tokio::fs::read(temp_path).await {
+        Ok(data) => data,
+        Err(_) => return false,
+    };
+
+    // 根据临时文件类型选择 muxer
+    let mp4_data = if recorder.is_audio {
+        // WAV → MP4 (音频 only)
+        native_mp4_from_wav(&temp_data, recorder.sample_rate, recorder.channels)
+    } else if let Some(codec) = recorder.video_codec {
+        match codec {
+            lm_core::CodecType::H264 => native_mp4_from_h264(&temp_data),
+            lm_core::CodecType::Vp8 | lm_core::CodecType::Vp9 => {
+                native_mp4_from_ivf(&temp_data, codec)
+            }
+            _ => return false, // 不支持的 codec, fallback 到 ffmpeg
+        }
+    } else {
+        return false;
+    };
+
+    match mp4_data {
+        Some(data) => {
+            // 写入 MP4 文件
+            match tokio::fs::write(output_path, &data).await {
+                Ok(_) => {
+                    info!("native MP4 muxer succeeded for {}", output_path);
+                    true
+                }
+                Err(_) => false,
+            }
+        }
+        None => false,
+    }
+}
+
+/// 从 H.264 Annex B 裸流生成 MP4
+fn native_mp4_from_h264(h264_data: &[u8]) -> Option<Vec<u8>> {
+    // 解析 H.264 NAL units, 提取 SPS/PPS 和帧数据
+    let mut sps: Vec<u8> = Vec::new();
+    let mut pps: Vec<u8> = Vec::new();
+    let mut samples: Vec<(usize, usize, bool)> = Vec::new(); // (offset, size, is_keyframe)
+
+    let mut offset = 0;
+    while offset < h264_data.len() {
+        // 查找 start code (0x00 0x00 0x01 或 0x00 0x00 0x00 0x01)
+        let sc_len = if offset + 4 <= h264_data.len()
+            && h264_data[offset] == 0
+            && h264_data[offset + 1] == 0
+            && h264_data[offset + 2] == 0
+            && h264_data[offset + 3] == 1
+        {
+            4
+        } else if offset + 3 <= h264_data.len()
+            && h264_data[offset] == 0
+            && h264_data[offset + 1] == 0
+            && h264_data[offset + 2] == 1
+        {
+            3
+        } else {
+            offset += 1;
+            continue;
+        };
+
+        let nal_start = offset + sc_len;
+        // 查找下一个 start code 或 EOF
+        let mut nal_end = h264_data.len();
+        let mut search = nal_start + 1;
+        while search + 3 <= h264_data.len() {
+            if (h264_data[search] == 0 && h264_data[search + 1] == 0 && h264_data[search + 2] == 1)
+                || (search + 4 <= h264_data.len()
+                    && h264_data[search] == 0
+                    && h264_data[search + 1] == 0
+                    && h264_data[search + 2] == 0
+                    && h264_data[search + 3] == 1)
+            {
+                nal_end = search;
+                break;
+            }
+            search += 1;
+        }
+
+        let nal_type = h264_data[nal_start] & 0x1F;
+        match nal_type {
+            7 => {
+                // SPS
+                sps = h264_data[nal_start..nal_end].to_vec();
+            }
+            8 => {
+                // PPS
+                pps = h264_data[nal_start..nal_end].to_vec();
+            }
+            5 => {
+                // IDR (keyframe)
+                samples.push((nal_start - sc_len, nal_end - nal_start + sc_len, true));
+            }
+            1 => {
+                // Non-IDR
+                samples.push((nal_start - sc_len, nal_end - nal_start + sc_len, false));
+            }
+            _ => {}
+        }
+        offset = nal_end;
+    }
+
+    if sps.is_empty() || pps.is_empty() || samples.is_empty() {
+        return None;
+    }
+
+    // 构建 MP4
+    build_mp4(&sps, &pps, &samples, h264_data, Mp4VideoCodec::Avc1)
+}
+
+/// 从 IVF 文件生成 MP4 (VP8/VP9)
+fn native_mp4_from_ivf(ivf_data: &[u8], codec: lm_core::CodecType) -> Option<Vec<u8>> {
+    // IVF header: 32 bytes
+    if ivf_data.len() < 32 {
+        return None;
+    }
+    // IVF frame: [frame_size(4, LE)] [timestamp(8, LE)] [data]
+    let mut samples: Vec<(usize, usize, bool)> = Vec::new();
+    let mut offset = 32;
+    while offset + 12 <= ivf_data.len() {
+        let frame_size = u32::from_le_bytes([
+            ivf_data[offset],
+            ivf_data[offset + 1],
+            ivf_data[offset + 2],
+            ivf_data[offset + 3],
+        ]) as usize;
+        let data_offset = offset + 12;
+        if data_offset + frame_size > ivf_data.len() {
+            break;
+        }
+        // VP8/VP9 keyframe: 检查第一字节的 bit 0
+        let is_keyframe = if data_offset < ivf_data.len() {
+            if codec == lm_core::CodecType::Vp8 {
+                ivf_data[data_offset] & 0x01 == 0 // VP8: P bit = 0 = keyframe
+            } else {
+                // VP9: frame_tag bit 0 = 0 = keyframe
+                ivf_data[data_offset] & 0x04 == 0 // 简化判断
+            }
+        } else {
+            false
+        };
+        samples.push((data_offset, frame_size, is_keyframe));
+        offset = data_offset + frame_size;
+    }
+
+    if samples.is_empty() {
+        return None;
+    }
+
+    let mp4_codec = match codec {
+        lm_core::CodecType::Vp8 => Mp4VideoCodec::Vp08,
+        lm_core::CodecType::Vp9 => Mp4VideoCodec::Vp09,
+        _ => return None,
+    };
+
+    // VP8/VP9 没有 SPS/PPS, 传空
+    build_mp4(&[], &[], &samples, ivf_data, mp4_codec)
+}
+
+/// 从 WAV 生成 MP4 (音频 only, PCM)
+fn native_mp4_from_wav(wav_data: &[u8], sample_rate: u32, channels: u16) -> Option<Vec<u8>> {
+    // WAV header: 44 bytes, 然后是 PCM 数据
+    if wav_data.len() < 44 {
+        return None;
+    }
+    // 简化: 直接将 WAV PCM 数据放入 MP4 mdat
+    // 实际应构建完整的音频 MP4, 但这需要 mp4a sample description
+    // 这里返回 None, 让 ffmpeg 处理音频
+    let _ = (sample_rate, channels);
+    None
+}
+
+/// MP4 视频编解码类型
+enum Mp4VideoCodec {
+    Avc1,
+    Vp08,
+    Vp09,
+}
+
+/// 构建完整的 MP4 文件
+fn build_mp4(
+    sps: &[u8],
+    pps: &[u8],
+    samples: &[(usize, usize, bool)],
+    raw_data: &[u8],
+    codec: Mp4VideoCodec,
+) -> Option<Vec<u8>> {
+    // MP4 结构: ftyp + moov + mdat
+    // 简化实现: 构建 ftyp + moov (含 sample table) + mdat
+
+    let mut mp4 = Vec::new();
+
+    // ftyp
+    let ftyp_payload: &[u8] = b"isom\x00\x00\x02\x00isomavc1mp42";
+    mp4.extend_from_slice(&(8u32 + ftyp_payload.len() as u32).to_be_bytes());
+    mp4.extend_from_slice(b"ftyp");
+    mp4.extend_from_slice(ftyp_payload);
+
+    // mdat: 收集所有 sample 数据
+    // 将 H.264 Annex B start code 转换为 4-byte length prefix
+    let mut mdat_data = Vec::new();
+    let mut sample_offsets: Vec<(u64, u32, u32, bool)> = Vec::new(); // (offset, size, duration, keyframe)
+    let timescale = 90000u32;
+    let frame_duration = 3000u32; // 33ms at 90kHz = ~30fps
+
+    for (i, (data_offset, data_size, is_keyframe)) in samples.iter().enumerate() {
+        let sample_offset = mdat_data.len() as u64;
+
+        if matches!(codec, Mp4VideoCodec::Avc1) {
+            // H.264: 转换 Annex B → length-prefix
+            // 找到 NAL units 并用 4-byte length 前缀
+            let mut nal_offset = *data_offset;
+            while nal_offset < *data_offset + *data_size {
+                // 跳过 start code
+                let sc_len = if nal_offset + 4 <= raw_data.len()
+                    && raw_data[nal_offset] == 0
+                    && raw_data[nal_offset + 1] == 0
+                    && raw_data[nal_offset + 2] == 0
+                    && raw_data[nal_offset + 3] == 1
+                {
+                    4
+                } else if nal_offset + 3 <= raw_data.len()
+                    && raw_data[nal_offset] == 0
+                    && raw_data[nal_offset + 1] == 0
+                    && raw_data[nal_offset + 2] == 1
+                {
+                    3
+                } else {
+                    break;
+                };
+                let nal_start = nal_offset + sc_len;
+                // 查找下一个 start code
+                let mut nal_end = *data_offset + *data_size;
+                let mut search = nal_start + 1;
+                while search + 3 <= *data_offset + *data_size {
+                    if raw_data[search] == 0
+                        && raw_data[search + 1] == 0
+                        && (raw_data[search + 2] == 1
+                            || (search + 4 <= *data_offset + *data_size
+                                && raw_data[search + 2] == 0
+                                && raw_data[search + 3] == 1))
+                    {
+                        nal_end = search;
+                        break;
+                    }
+                    search += 1;
+                }
+                let nal_len = (nal_end - nal_start) as u32;
+                mdat_data.extend_from_slice(&nal_len.to_be_bytes());
+                mdat_data.extend_from_slice(&raw_data[nal_start..nal_end]);
+                nal_offset = nal_end;
+            }
+        } else {
+            // VP8/VP9: 直接复制
+            mdat_data.extend_from_slice(&raw_data[*data_offset..*data_offset + *data_size]);
+        }
+
+        let sample_size = (mdat_data.len() as u64 - sample_offset) as u32;
+        sample_offsets.push((sample_offset, sample_size, frame_duration, *is_keyframe));
+        let _ = i;
+    }
+
+    // mdat box
+    let mdat_size = 8u32 + mdat_data.len() as u32;
+    let mdat_offset_in_file = mp4.len() as u32; // ftyp size
+    let mdat_data_offset = mdat_offset_in_file + 8; // mdat header size
+
+    // moov box
+    let moov = build_moov_box(
+        sps,
+        pps,
+        &sample_offsets,
+        mdat_data_offset,
+        mdat_data.len() as u32,
+        timescale,
+        &codec,
+    );
+
+    // 写入 moov (在 mdat 之前)
+    mp4.extend_from_slice(&moov);
+
+    // 写入 mdat
+    mp4.extend_from_slice(&mdat_size.to_be_bytes());
+    mp4.extend_from_slice(b"mdat");
+    mp4.extend_from_slice(&mdat_data);
+
+    Some(mp4)
+}
+
+/// 构建 moov box
+fn build_moov_box(
+    sps: &[u8],
+    pps: &[u8],
+    samples: &[(u64, u32, u32, bool)],
+    mdat_data_offset: u32,
+    mdat_data_len: u32,
+    timescale: u32,
+    codec: &Mp4VideoCodec,
+) -> Vec<u8> {
+    let mut moov = Vec::new();
+
+    // mvhd
+    let mut mvhd = Vec::new();
+    mvhd.extend_from_slice(&full_box_header(92, b"mvhd", 0, 0));
+    mvhd.extend_from_slice(&0u32.to_be_bytes()); // creation_time
+    mvhd.extend_from_slice(&0u32.to_be_bytes()); // modification_time
+    mvhd.extend_from_slice(&timescale.to_be_bytes());
+    let total_duration: u64 = samples.iter().map(|(_, _, dur, _)| *dur as u64).sum();
+    mvhd.extend_from_slice(&(total_duration as u32).to_be_bytes());
+    mvhd.extend_from_slice(&0x00010000u32.to_be_bytes()); // rate
+    mvhd.extend_from_slice(&0x0100u16.to_be_bytes()); // volume
+    mvhd.extend_from_slice(&[0u8; 10]); // reserved
+    mvhd.extend_from_slice(
+        &[0x00010000u32, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000]
+            .iter()
+            .flat_map(|v| v.to_be_bytes())
+            .collect::<Vec<_>>(),
+    );
+    mvhd.extend_from_slice(&[0u8; 24]); // pre_defined
+    moov.extend_from_slice(&box_header(mvhd.len(), b"mvhd"));
+    moov.extend_from_slice(&mvhd);
+
+    // trak
+    let trak = build_trak_box(sps, pps, samples, mdat_data_offset, timescale, codec);
+    moov.extend_from_slice(&box_header(trak.len(), b"trak"));
+    moov.extend_from_slice(&trak);
+
+    // 包装 moov box
+    let mut moov_box = Vec::new();
+    moov_box.extend_from_slice(&box_header(moov.len(), b"moov"));
+    moov_box.extend_from_slice(&moov);
+    moov_box
+}
+
+/// 构建 trak box
+fn build_trak_box(
+    sps: &[u8],
+    pps: &[u8],
+    samples: &[(u64, u32, u32, bool)],
+    mdat_data_offset: u32,
+    timescale: u32,
+    codec: &Mp4VideoCodec,
+) -> Vec<u8> {
+    let mut trak = Vec::new();
+
+    // tkhd
+    let mut tkhd = Vec::new();
+    tkhd.extend_from_slice(&full_box_header(80, b"tkhd", 0, 3));
+    tkhd.extend_from_slice(&0u32.to_be_bytes()); // creation_time
+    tkhd.extend_from_slice(&0u32.to_be_bytes()); // modification_time
+    tkhd.extend_from_slice(&1u32.to_be_bytes()); // track_id
+    tkhd.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    let total_duration: u64 = samples.iter().map(|(_, _, dur, _)| *dur as u64).sum();
+    tkhd.extend_from_slice(&(total_duration as u32).to_be_bytes());
+    tkhd.extend_from_slice(&[0u8; 8]); // reserved
+    tkhd.extend_from_slice(&0u16.to_be_bytes()); // layer
+    tkhd.extend_from_slice(&0u16.to_be_bytes()); // alternate_group
+    tkhd.extend_from_slice(&0u16.to_be_bytes()); // volume
+    tkhd.extend_from_slice(&0u16.to_be_bytes()); // reserved
+    tkhd.extend_from_slice(
+        &[0x00010000u32, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000]
+            .iter()
+            .flat_map(|v| v.to_be_bytes())
+            .collect::<Vec<_>>(),
+    );
+    tkhd.extend_from_slice(&0x01400000u32.to_be_bytes()); // width 320.0 (16.16)
+    tkhd.extend_from_slice(&0x00F00000u32.to_be_bytes()); // height 240.0 (16.16)
+    trak.extend_from_slice(&box_header(tkhd.len(), b"tkhd"));
+    trak.extend_from_slice(&tkhd);
+
+    // mdia
+    let mdia = build_mdia_box(sps, pps, samples, mdat_data_offset, timescale, codec);
+    trak.extend_from_slice(&box_header(mdia.len(), b"mdia"));
+    trak.extend_from_slice(&mdia);
+
+    trak
+}
+
+/// 构建 mdia box
+fn build_mdia_box(
+    sps: &[u8],
+    pps: &[u8],
+    samples: &[(u64, u32, u32, bool)],
+    mdat_data_offset: u32,
+    timescale: u32,
+    codec: &Mp4VideoCodec,
+) -> Vec<u8> {
+    let mut mdia = Vec::new();
+
+    // mdhd
+    let mut mdhd = Vec::new();
+    mdhd.extend_from_slice(&full_box_header(20, b"mdhd", 0, 0));
+    mdhd.extend_from_slice(&0u32.to_be_bytes()); // creation_time
+    mdhd.extend_from_slice(&0u32.to_be_bytes()); // modification_time
+    mdhd.extend_from_slice(&timescale.to_be_bytes());
+    let total_duration: u64 = samples.iter().map(|(_, _, dur, _)| *dur as u64).sum();
+    mdhd.extend_from_slice(&(total_duration as u32).to_be_bytes());
+    mdhd.extend_from_slice(&0x55C40000u32.to_be_bytes()); // language + pre_defined
+    mdia.extend_from_slice(&box_header(mdhd.len(), b"mdhd"));
+    mdia.extend_from_slice(&mdhd);
+
+    // hdlr
+    let mut hdlr = Vec::new();
+    hdlr.extend_from_slice(&full_box_header(21, b"hdlr", 0, 0));
+    hdlr.extend_from_slice(&0u32.to_be_bytes()); // pre_defined
+    hdlr.extend_from_slice(b"vide"); // handler_type
+    hdlr.extend_from_slice(&[0u8; 12]); // reserved
+    hdlr.push(0); // name
+    mdia.extend_from_slice(&box_header(hdlr.len(), b"hdlr"));
+    mdia.extend_from_slice(&hdlr);
+
+    // minf → stbl
+    let stbl = build_stbl_box(sps, pps, samples, mdat_data_offset, codec);
+    let mut minf = Vec::new();
+    // vmhd
+    let mut vmhd = Vec::new();
+    vmhd.extend_from_slice(&full_box_header(8, b"vmhd", 0, 1));
+    vmhd.extend_from_slice(&0u16.to_be_bytes());
+    vmhd.extend_from_slice(&[0u8; 6]);
+    minf.extend_from_slice(&box_header(vmhd.len(), b"vmhd"));
+    minf.extend_from_slice(&vmhd);
+    // dinf → dref
+    let dref_payload = 4u32.to_be_bytes();
+    let dref_header = full_box_header(dref_payload.len(), b"dref", 0, 0);
+    let mut dref_box = Vec::new();
+    dref_box.extend_from_slice(&dref_header);
+    dref_box.extend_from_slice(&dref_payload);
+    minf.extend_from_slice(&box_header(dref_box.len(), b"dinf"));
+    minf.extend_from_slice(&dref_box);
+    // stbl
+    minf.extend_from_slice(&box_header(stbl.len(), b"stbl"));
+    minf.extend_from_slice(&stbl);
+    mdia.extend_from_slice(&box_header(minf.len(), b"minf"));
+    mdia.extend_from_slice(&minf);
+
+    mdia
+}
+
+/// 构建 stbl box (sample table)
+fn build_stbl_box(
+    sps: &[u8],
+    pps: &[u8],
+    samples: &[(u64, u32, u32, bool)],
+    mdat_data_offset: u32,
+    codec: &Mp4VideoCodec,
+) -> Vec<u8> {
+    let mut stbl = Vec::new();
+
+    // stsd
+    let stsd_data = build_stsd_data(sps, pps, codec);
+    stbl.extend_from_slice(&full_box_header(4 + stsd_data.len(), b"stsd", 0, 0));
+    stbl.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+    stbl.extend_from_slice(&stsd_data);
+
+    // stts (time-to-sample)
+    let mut stts = Vec::new();
+    stts.extend_from_slice(&full_box_header(8, b"stts", 0, 0));
+    stts.extend_from_slice(&1u32.to_be_bytes()); // entry_count = 1
+    stts.extend_from_slice(&(samples.len() as u32).to_be_bytes()); // sample_count
+    stts.extend_from_slice(&3000u32.to_be_bytes()); // sample_delta (33ms)
+    stbl.extend_from_slice(&box_header(stts.len(), b"stts"));
+    stbl.extend_from_slice(&stts);
+
+    // stsc (sample-to-chunk) — 所有 sample 在一个 chunk
+    let mut stsc = Vec::new();
+    stsc.extend_from_slice(&full_box_header(16, b"stsc", 0, 0));
+    stsc.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+    stsc.extend_from_slice(&1u32.to_be_bytes()); // first_chunk
+    stsc.extend_from_slice(&(samples.len() as u32).to_be_bytes()); // samples_per_chunk
+    stsc.extend_from_slice(&1u32.to_be_bytes()); // sample_description_index
+    stbl.extend_from_slice(&box_header(stsc.len(), b"stsc"));
+    stbl.extend_from_slice(&stsc);
+
+    // stsz (sample sizes)
+    let mut stsz = Vec::new();
+    stsz.extend_from_slice(&full_box_header(8 + samples.len() * 4, b"stsz", 0, 0));
+    stsz.extend_from_slice(&0u32.to_be_bytes()); // sample_size = 0 (variable)
+    stsz.extend_from_slice(&(samples.len() as u32).to_be_bytes()); // sample_count
+    for (_, size, _, _) in samples {
+        stsz.extend_from_slice(&size.to_be_bytes());
+    }
+    stbl.extend_from_slice(&box_header(stsz.len(), b"stsz"));
+    stbl.extend_from_slice(&stsz);
+
+    // stco (chunk offsets) — 指向 mdat 中的数据
+    let mut stco = Vec::new();
+    stco.extend_from_slice(&full_box_header(8, b"stco", 0, 0));
+    stco.extend_from_slice(&1u32.to_be_bytes()); // entry_count = 1
+    stco.extend_from_slice(&(mdat_data_offset).to_be_bytes()); // chunk_offset
+    stbl.extend_from_slice(&box_header(stco.len(), b"stco"));
+    stbl.extend_from_slice(&stco);
+
+    // stss (sync samples — keyframe indices)
+    let keyframe_indices: Vec<u32> = samples
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, _, _, is_key))| *is_key)
+        .map(|(i, _)| i as u32 + 1) // 1-based
+        .collect();
+    if !keyframe_indices.is_empty() {
+        let mut stss = Vec::new();
+        stss.extend_from_slice(&full_box_header(
+            4 + keyframe_indices.len() * 4,
+            b"stss",
+            0,
+            0,
+        ));
+        stss.extend_from_slice(&(keyframe_indices.len() as u32).to_be_bytes());
+        for idx in &keyframe_indices {
+            stss.extend_from_slice(&idx.to_be_bytes());
+        }
+        stbl.extend_from_slice(&box_header(stss.len(), b"stss"));
+        stbl.extend_from_slice(&stss);
+    }
+
+    stbl
+}
+
+/// 构建 stsd data (sample description)
+fn build_stsd_data(sps: &[u8], pps: &[u8], codec: &Mp4VideoCodec) -> Vec<u8> {
+    let mut stsd = Vec::new();
+    // Visual Sample Entry
+    stsd.extend_from_slice(&[0u8; 6]); // reserved
+    stsd.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+    stsd.extend_from_slice(&[0u8; 16]); // pre_defined + reserved
+    stsd.extend_from_slice(&320u16.to_be_bytes()); // width
+    stsd.extend_from_slice(&240u16.to_be_bytes()); // height
+    stsd.extend_from_slice(&0x00480000u32.to_be_bytes()); // horizresolution
+    stsd.extend_from_slice(&0x00480000u32.to_be_bytes()); // vertresolution
+    stsd.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    stsd.extend_from_slice(&1u16.to_be_bytes()); // frame_count
+    stsd.extend_from_slice(&[0u8; 32]); // compressorname
+    stsd.extend_from_slice(&0x0018u16.to_be_bytes()); // depth
+    stsd.extend_from_slice(&0xFFFFu16.to_be_bytes()); // pre_defined
+
+    match codec {
+        Mp4VideoCodec::Avc1 => {
+            // avc1 box
+            let avc1_type = b"avc1";
+            // avcC
+            let mut avcc = Vec::new();
+            avcc.push(1); // configurationVersion
+            if !sps.is_empty() {
+                avcc.push(sps[1]); // AVCProfileIndication
+                avcc.push(sps[2]); // profile_compatibility
+                avcc.push(sps[3]); // AVCLevelIndication
+            } else {
+                avcc.push(0x42); // Baseline
+                avcc.push(0x00);
+                avcc.push(0x1E); // Level 3.0
+            }
+            avcc.push(0xFF); // lengthSizeMinusOne=3
+            avcc.push(0xE1); // numSPS=1
+            avcc.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+            avcc.extend_from_slice(sps);
+            avcc.push(1); // numPPS=1
+            avcc.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+            avcc.extend_from_slice(pps);
+
+            // avc1 box header
+            let avc1_payload = stsd.len() + 8 + avcc.len() + 8; // stsd data + avc1 header + avcc + avcc header
+            let _ = avc1_payload;
+            // 先写 avc1 box header (size will be fixed)
+            let avc1_size = 8 + stsd.len() + 8 + avcc.len(); // 这不对, 需要重新组织
+                                                             // 实际: avc1 box 包含 visual sample entry + avcC
+                                                             // visual sample entry 已经在 stsd 中
+                                                             // 所以 avc1 box = stsd (visual sample entry) + avcC box
+            let _ = avc1_size;
+
+            // 重新构建: avc1 box = [size][type=avc1][visual sample entry][avcC box]
+            let avc1_total = 8 + stsd.len() + 8 + avcc.len();
+            let mut result = Vec::new();
+            result.extend_from_slice(&(avc1_total as u32).to_be_bytes());
+            result.extend_from_slice(avc1_type);
+            result.extend_from_slice(&stsd); // visual sample entry
+                                             // avcC box
+            result.extend_from_slice(&(8 + avcc.len() as u32).to_be_bytes());
+            result.extend_from_slice(b"avcC");
+            result.extend_from_slice(&avcc);
+            return result;
+        }
+        Mp4VideoCodec::Vp08 | Mp4VideoCodec::Vp09 => {
+            let vpc_type = if matches!(codec, Mp4VideoCodec::Vp08) {
+                b"vp08"
+            } else {
+                b"vp09"
+            };
+            // vpcC (VP9/VP8 Configuration)
+            let mut vpcc = Vec::new();
+            vpcc.push(0x00); // profile=0, level=0
+            vpcc.push(0x08); // bitDepth=8
+            vpcc.push(0x08); // chromaSubsampling=1 (4:2:0)
+            vpcc.push(1); // colorPrimaries=1 (BT.709)
+            vpcc.push(1); // transferCharacteristics=1
+            vpcc.push(1); // matrixCoefficients=1
+            vpcc.extend_from_slice(&0u16.to_be_bytes()); // codecIntializationDataSize=0
+
+            let vpc_total = 8 + stsd.len() + 12 + vpcc.len();
+            let mut result = Vec::new();
+            result.extend_from_slice(&(vpc_total as u32).to_be_bytes());
+            result.extend_from_slice(vpc_type);
+            result.extend_from_slice(&stsd); // visual sample entry
+                                             // vpcC box (full box)
+            result.extend_from_slice(&(12 + vpcc.len() as u32).to_be_bytes());
+            result.extend_from_slice(b"vpcC");
+            result.push(1); // version
+            result.extend_from_slice(&[0u8; 3]); // flags
+            result.extend_from_slice(&vpcc);
+            return result;
+        }
+    }
+}
+
+/// MP4 box header helper
+fn box_header(size: usize, box_type: &[u8; 4]) -> [u8; 8] {
+    let mut header = [0u8; 8];
+    header[0..4].copy_from_slice(&(size as u32 + 8).to_be_bytes());
+    header[4..8].copy_from_slice(box_type);
+    header
+}
+
+/// MP4 full box header helper
+fn full_box_header(payload_size: usize, box_type: &[u8; 4], version: u8, flags: u32) -> [u8; 12] {
+    let mut header = [0u8; 12];
+    header[0..4].copy_from_slice(&(payload_size as u32 + 12).to_be_bytes());
+    header[4..8].copy_from_slice(box_type);
+    header[8] = version;
+    header[9..12].copy_from_slice(&flags.to_be_bytes()[1..4]);
+    header
 }
 
 // ============================================================================

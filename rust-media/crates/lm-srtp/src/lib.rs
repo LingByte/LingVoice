@@ -85,32 +85,36 @@ fn derive_key(
     ssrc: u32,
     key_len: usize,
 ) -> Vec<u8> {
-    // 构建 IV (16 bytes): master_salt(14) || key_id(1) || 0x00(1)
-    // 但实际 RFC 3711 的 KDF 是:
-    // x = master_salt (14 bytes)
-    // key_id 占 1 byte, ssrc 占 4 bytes, 后面补 0
-    // IV = (salt << 16) | (key_id << 8) | 0x00 ... (16 bytes)
-    // 更精确: r = key_id * 2^8, x XOR (ssrc << 16 | r << 8 | 0)
+    // RFC 3711 Section 4.3: Key Derivation Function
+    //
+    // key_id (16 bytes, 128 bit):
+    //   byte 0:    label (r=0 for SRTP, r=1 for SRTCP, x=0 for key, x=1 for salt)
+    //   bytes 1-4: SSRC (big-endian)
+    //   bytes 5-13: DIV(kdr, packet_index) — kdr=0 时全 0
+    //   byte 14:   0x00
+    //   byte 15:   0x00
+    //
+    // x = key_id XOR master_salt (salt 右对齐: salt(14) || 00 00)
+    // session_key = AES-CM(master_key, x) 的前 key_len bytes
 
-    // 简化实现: 构建一个 16 byte 的 IV
-    let mut iv = [0u8; 16];
-    // master_salt 是 14 bytes, 放在 IV 的前 14 bytes
-    iv[..14].copy_from_slice(master_salt);
-    // key_id 放在 byte 14
-    iv[14] = key_id;
-    // byte 15 = 0
+    let mut key_id_buf = [0u8; 16];
+    key_id_buf[0] = key_id; // label byte
+    key_id_buf[1..5].copy_from_slice(&ssrc.to_be_bytes());
+    // bytes 5-13: kdr=0 时全 0 (已初始化为 0)
+    // bytes 14-15: 0x00 (已初始化为 0)
 
-    // 将 ssrc 混入: XOR ssrc 到 IV 的适当位置
-    // RFC 3711: x XOR (ssrc * 2^16 | key_id * 2^8)
-    // ssrc 在 IV 的 byte 4-7 位置 XOR
-    let ssrc_bytes = ssrc.to_be_bytes();
-    iv[4] ^= ssrc_bytes[0];
-    iv[5] ^= ssrc_bytes[1];
-    iv[6] ^= ssrc_bytes[2];
-    iv[7] ^= ssrc_bytes[3];
+    // master_salt 是 14 bytes, 右对齐到 16 bytes: salt(14) || 00 00
+    let mut salt_16 = [0u8; 16];
+    salt_16[..14].copy_from_slice(master_salt);
 
-    // AES-CM 加密全零明文得到 session key
-    let mut cipher = AesCm::new(master_key.into(), &iv.into());
+    // x = key_id XOR salt_16
+    let mut x = [0u8; 16];
+    for i in 0..16 {
+        x[i] = key_id_buf[i] ^ salt_16[i];
+    }
+
+    // session_key = AES-CM(master_key, x) 加密全零明文
+    let mut cipher = AesCm::new(master_key.into(), &x.into());
     let mut key = vec![0u8; key_len];
     cipher.apply_keystream(&mut key);
     key
@@ -207,32 +211,37 @@ impl SrtpSession {
         })
     }
 
-    /// 生成 SRTP IV
-    /// IV = (k_s * 2^16) XOR (SSRC * 2^64) XOR (i * 2^16)
-    /// 简化: IV = salt(14) || 0x00(2) XOR (ssrc at bytes 2-5) XOR (index at bytes 6-9)
+    /// 生成 SRTP IV (RFC 3711 Section 4.1.1)
+    /// IV = (k_s << 16) XOR (SSRC << 64) XOR (i << 16)
+    ///
+    /// 128-bit 大端布局:
+    ///   bytes 0-3:   salt[0..4]
+    ///   bytes 4-7:   salt[4..8] XOR SSRC
+    ///   bytes 8-13:  salt[8..14] XOR index(48 bit)
+    ///   bytes 14-15: 0x00 0x00
     fn generate_iv(&self, seq: u16, roc: u32) -> [u8; 16] {
         let mut iv = [0u8; 16];
-        // salt key (14 bytes) 左移 16 位 = 放在 IV 的前 14 bytes
+        // k_s << 16: salt(14) || 00 00
         iv[..14].copy_from_slice(&self.salt_key);
 
-        // XOR SSRC (4 bytes) at position 4
+        // SSRC << 64: XOR SSRC into bytes 4-7
         let ssrc_bytes = self.ssrc.to_be_bytes();
         iv[4] ^= ssrc_bytes[0];
         iv[5] ^= ssrc_bytes[1];
         iv[6] ^= ssrc_bytes[2];
         iv[7] ^= ssrc_bytes[3];
 
-        // XOR packet index (48 bits: ROC(32) | seq(16)) at position 8
+        // i << 16: packet index = ROC(32) || seq(16) = 48 bit
+        // 左移 16 bit 后占 bytes 8-13 (48 bit = 6 bytes)
         let index = ((roc as u64) << 16) | (seq as u64);
-        let idx_bytes = index.to_be_bytes();
-        // index 是 48 bit, 放在 IV 的 byte 2-7 (从右数)
-        // 实际: IV[8..14] XOR index 的低 48 bit
-        iv[8] ^= idx_bytes[5];
-        iv[9] ^= idx_bytes[4];
-        iv[10] ^= idx_bytes[3];
-        iv[11] ^= idx_bytes[2];
-        iv[12] ^= idx_bytes[1];
-        iv[13] ^= idx_bytes[0];
+        let idx_bytes = index.to_be_bytes(); // 8 bytes, 大端
+                                             // index 是 48 bit, 取低 6 bytes (idx_bytes[2..8])
+        iv[8] ^= idx_bytes[2];
+        iv[9] ^= idx_bytes[3];
+        iv[10] ^= idx_bytes[4];
+        iv[11] ^= idx_bytes[5];
+        iv[12] ^= idx_bytes[6];
+        iv[13] ^= idx_bytes[7];
 
         iv
     }
@@ -487,19 +496,28 @@ impl SrtpSession {
         let e_flag: u32 = 1 << 31;
         let srtcp_index_with_e = srtcp_index | e_flag;
 
-        // 生成 IV (类似 SRTP, 但用 SRTCP index)
+        // 生成 SRTCP IV (RFC 3711 Section 4.1.1)
+        // IV = (k_s << 16) XOR (SSRC << 64) XOR (i << 16)
+        // SRTCP index 是 31 bit, 在 i << 16 中占 bytes 8-13
         let mut iv = [0u8; 16];
+        // k_s << 16: salt(14) || 00 00
         iv[..14].copy_from_slice(&self.salt_key);
+        // SSRC << 64: XOR into bytes 4-7
         let ssrc_bytes = self.ssrc.to_be_bytes();
         iv[4] ^= ssrc_bytes[0];
         iv[5] ^= ssrc_bytes[1];
         iv[6] ^= ssrc_bytes[2];
         iv[7] ^= ssrc_bytes[3];
-        let idx_bytes = srtcp_index.to_be_bytes();
-        iv[8] ^= idx_bytes[0];
-        iv[9] ^= idx_bytes[1];
-        iv[10] ^= idx_bytes[2];
-        iv[11] ^= idx_bytes[3];
+        // i << 16: SRTCP index (31 bit) 左移 16 → bytes 8-13
+        // index 作为 48-bit 值: 高 17 bit = 0, 低 31 bit = srtcp_index
+        let index_48 = (srtcp_index as u64) << 16; // i << 16
+        let idx_bytes = index_48.to_be_bytes(); // 8 bytes
+        iv[8] ^= idx_bytes[2];
+        iv[9] ^= idx_bytes[3];
+        iv[10] ^= idx_bytes[4];
+        iv[11] ^= idx_bytes[5];
+        iv[12] ^= idx_bytes[6];
+        iv[13] ^= idx_bytes[7];
 
         // AES-CM 加密 payload
         let mut cipher = AesCm::new(self.encryption_key.as_slice().into(), &iv.into());
@@ -556,7 +574,7 @@ impl SrtpSession {
         let mut decrypted_payload = encrypted_payload.to_vec();
 
         if e_flag == 1 {
-            // 解密
+            // 解密: 生成 SRTCP IV (与加密相同)
             let mut iv = [0u8; 16];
             iv[..14].copy_from_slice(&self.salt_key);
             let ssrc_bytes = self.ssrc.to_be_bytes();
@@ -564,11 +582,14 @@ impl SrtpSession {
             iv[5] ^= ssrc_bytes[1];
             iv[6] ^= ssrc_bytes[2];
             iv[7] ^= ssrc_bytes[3];
-            let idx_bytes = srtcp_index.to_be_bytes();
-            iv[8] ^= idx_bytes[0];
-            iv[9] ^= idx_bytes[1];
-            iv[10] ^= idx_bytes[2];
-            iv[11] ^= idx_bytes[3];
+            let index_48 = (srtcp_index as u64) << 16;
+            let idx_bytes = index_48.to_be_bytes();
+            iv[8] ^= idx_bytes[2];
+            iv[9] ^= idx_bytes[3];
+            iv[10] ^= idx_bytes[4];
+            iv[11] ^= idx_bytes[5];
+            iv[12] ^= idx_bytes[6];
+            iv[13] ^= idx_bytes[7];
 
             let mut cipher = AesCm::new(self.encryption_key.as_slice().into(), &iv.into());
             cipher.apply_keystream(&mut decrypted_payload);

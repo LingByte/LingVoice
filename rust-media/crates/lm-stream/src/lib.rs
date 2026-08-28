@@ -586,6 +586,8 @@ struct SubscriberEntry {
     policy: LayerSelectionPolicy,
     /// 订阅者估计可用带宽（kbps），0 = 未知
     estimated_bandwidth_kbps: std::sync::atomic::AtomicU64,
+    /// 当前订阅的层 (用于检测层切换)
+    current_tier: std::sync::Mutex<SimulcastTier>,
 }
 
 impl SimulcastStreamV1 {
@@ -746,6 +748,7 @@ impl SimulcastStreamV1 {
             sink,
             policy,
             estimated_bandwidth_kbps: AtomicU64::new(0),
+            current_tier: std::sync::Mutex::new(layer),
         });
 
         info!(
@@ -783,7 +786,7 @@ impl SimulcastStreamV1 {
                 // 如果是自适应策略，检查是否需要切换层
                 if entry.policy == LayerSelectionPolicy::Adaptive {
                     let new_layer = self.select_layer_for_policy(&entry.policy, bandwidth_kbps);
-                    let current_layer = self.select_layer_for_policy(&entry.policy, 0); // 简化
+                    let current_layer = *entry.current_tier.lock().unwrap();
                     if new_layer != current_layer {
                         info!(
                             stream = ?self.id,
@@ -792,6 +795,8 @@ impl SimulcastStreamV1 {
                             bandwidth_kbps,
                             "adaptive layer switch triggered"
                         );
+                        // 更新当前层
+                        *entry.current_tier.lock().unwrap() = new_layer;
                         // 切换层时请求关键帧
                         self.send_pli(new_layer);
                     }
@@ -1138,6 +1143,9 @@ pub struct SvcStream {
     /// 各层的帧缓冲
     layer_frames: RwLock<std::collections::HashMap<SvcLayerId, Vec<MediaFrame>>>,
 
+    /// 帧组装缓冲: 累积非 marker 包的 payload, marker=1 时组装完整帧
+    packet_buffer: std::sync::Mutex<Vec<u8>>,
+
     /// 订阅者 → SVC 层选择
     subscribers: RwLock<Vec<SvcSubscriberEntry>>,
 
@@ -1166,6 +1174,7 @@ impl SvcStream {
             temporal_layers,
             ssrc,
             layer_frames: RwLock::new(std::collections::HashMap::new()),
+            packet_buffer: std::sync::Mutex::new(Vec::new()),
             subscribers: RwLock::new(Vec::new()),
             keyframe_requester: RwLock::new(None),
         }
@@ -1240,18 +1249,26 @@ impl SvcStream {
                 (0u8, temporal.min(self.temporal_layers.saturating_sub(1)))
             }
             CodecType::Vp9 => {
-                // VP9 RTP payload descriptor (RFC 7741/draft):
-                // Byte 0: I P L F B E V U R
-                // 如果 I=1, 后面有 PictureID (1 or 2 bytes)
-                // 如果 L=1, 后面有 TL0PICIDX
-                // 空间层通过 SSRC 或 S bit 标识
+                // VP9 RTP payload descriptor (RFC 7741):
+                // Byte 0: I(7) P(6) L(5) F(4) B(3) E(2) V(1) U(0)
+                //   I=1: PictureID follows (1 or 2 bytes, MSB=1 → 16-bit)
+                //   P: 0=intra(keyframe), 1=inter
+                //   L=1: TL0PICIDX follows (1 byte)
+                //   F: flexible mode
+                //   B: start of frame
+                //   E: end of frame
+                //   V=1: spatial/temporal index follows (1 byte: SID[3] TID[3] R U)
+                //   U=1: extension byte follows
                 let mut temporal = 0u8;
                 let mut spatial = 0u8;
                 if !payload.is_empty() {
                     let first = payload[0];
                     let i_bit = (first >> 7) & 0x01;
                     let l_bit = (first >> 5) & 0x01;
+                    let v_bit = (first >> 1) & 0x01;
+                    let u_bit = first & 0x01;
                     let mut offset = 1;
+                    // PictureID
                     if i_bit == 1 && offset < payload.len() {
                         let pic_id = payload[offset];
                         offset += 1;
@@ -1259,15 +1276,24 @@ impl SvcStream {
                             offset += 1; // 16-bit PictureID
                         }
                     }
+                    // TL0PICIDX
                     if l_bit == 1 && offset < payload.len() {
-                        temporal = payload[offset];
                         offset += 1;
                     }
-                    // P bit = 0 时可能有 spatial info
-                    let p_bit = (first >> 6) & 0x01;
-                    if p_bit == 0 && offset < payload.len() {
-                        // 简化: 假设 spatial 在后续字节
-                        spatial = 0;
+                    // V=1: spatial/temporal index byte: SID(3) TID(3) R(1) U(1)
+                    if v_bit == 1 && offset < payload.len() {
+                        let idx_byte = payload[offset];
+                        spatial = (idx_byte >> 5) & 0x07; // top 3 bits = SID
+                        temporal = (idx_byte >> 2) & 0x07; // next 3 bits = TID
+                        offset += 1;
+                    }
+                    // U=1: extension byte (may contain more info, skip)
+                    if u_bit == 1 && offset < payload.len() {
+                        // extension byte: skip any additional bytes
+                        let ext = payload[offset];
+                        offset += 1;
+                        // extension may have more bytes depending on flags
+                        let _ = ext;
                     }
                 }
                 (
@@ -1301,8 +1327,55 @@ impl SvcStream {
                     temporal.min(self.temporal_layers.saturating_sub(1)),
                 )
             }
+            CodecType::H264 => {
+                // H.264 SVC (H.264 Annex G):
+                // NAL type 14 (Prefix NAL Unit) 或 type 20 (Coded Slice Extension)
+                // 包含 SVC extension header: 3 bytes
+                //   byte 0: reserved(1) idr_flag(1) priority_id(6)
+                //   byte 1: no_inter_layer_pred(1) dependency_id(3) quality_id(4)
+                //   byte 2: temporal_id(3) use_ref_base_pic_flag(1) discardable_flag(1) output_flag(1) reserved(2)
+                //
+                // 对于非 SVC H.264 (单层), dependency_id=0, temporal_id=0
+                let mut spatial = 0u8; // dependency_id
+                let mut temporal = 0u8;
+                if !payload.is_empty() {
+                    // H.264 RTP payload (RFC 6184):
+                    // For FU-A: byte 0=FU indicator, byte 1=FU header (NAL type in lower 5 bits)
+                    // For single NAL: byte 0 = NAL header (type in lower 5 bits)
+                    let nal_type = if payload[0] & 0x1F == 28 {
+                        // FU-A: NAL type in second byte
+                        if payload.len() > 1 {
+                            payload[1] & 0x1F
+                        } else {
+                            0
+                        }
+                    } else {
+                        payload[0] & 0x1F
+                    };
+
+                    if nal_type == 14 || nal_type == 20 {
+                        // SVC NAL: extension header after NAL header
+                        // For single NAL: extension at bytes 1-3
+                        // For FU-A: extension at bytes 2-4
+                        let ext_offset = if payload[0] & 0x1F == 28 { 2 } else { 1 };
+                        if ext_offset + 2 < payload.len() {
+                            // byte 1 of extension: no_inter_layer_pred(1) dependency_id(3) quality_id(4)
+                            let dep_byte = payload[ext_offset + 1];
+                            spatial = (dep_byte >> 4) & 0x07; // dependency_id = spatial layer
+                                                              // byte 2 of extension: temporal_id(3) ...
+                            let tid_byte = payload[ext_offset + 2];
+                            temporal = (tid_byte >> 5) & 0x07; // temporal_id
+                        }
+                    }
+                    // 非 SVC H.264: spatial=0, temporal=0 (默认)
+                }
+                (
+                    spatial.min(self.spatial_layers.saturating_sub(1)),
+                    temporal.min(self.temporal_layers.saturating_sub(1)),
+                )
+            }
             _ => {
-                // H.264 SVC 或其他: 简化处理, 默认 base 层
+                // 其他 codec: 默认 base 层
                 (0u8, 0u8)
             }
         };
@@ -1312,25 +1385,35 @@ impl SvcStream {
 
     /// 推送 RTP 包
     ///
-    /// 从包中提取 SVC 层标识, 组装帧, 并分发给订阅了对应层的订阅者。
+    /// 从包中提取 SVC 层标识, 组装帧 (累积非 marker 包), 并分发给订阅了对应层的订阅者。
     /// 返回 true 如果帧组装完成。
     pub fn push_packet(&self, pkt: &RtpPacket) -> bool {
         let layer_id = self.extract_layer_id(pkt);
 
-        // 简化: 单个 RTP 包 = 一帧 (实际需要 depacketizer 组装)
-        // 这里用 marker bit 判断帧边界
-        if !pkt.marker {
-            return false;
-        }
+        // 帧组装: 累积 payload, marker=1 时表示帧完整
+        let frame_data = {
+            let mut buf = self.packet_buffer.lock().unwrap();
+            buf.extend_from_slice(&pkt.payload);
+            if !pkt.marker {
+                return false;
+            }
+            // marker=1, 帧完整, 取出缓冲数据
+            let data = buf.clone();
+            buf.clear();
+            data
+        };
+
+        // 从 payload 判断 keyframe
+        let keyframe = self.detect_keyframe(&frame_data);
 
         let frame = MediaFrame {
             kind: TrackKind::Video,
             codec: self.codec,
             timestamp: pkt.timestamp,
-            keyframe: false, // 简化: 实际从 payload 判断
+            keyframe,
             spatial_layer: layer_id.spatial_idx(),
             temporal_layer: layer_id.temporal_idx(),
-            data: pkt.payload.clone(),
+            data: bytes::Bytes::from(frame_data),
             ssrc: pkt.ssrc,
             rid: String::new(),
         };
@@ -1350,6 +1433,75 @@ impl SvcStream {
         self.dispatch_to_subscribers(layer_id, &frame);
 
         true
+    }
+
+    /// 从帧数据判断是否为关键帧
+    fn detect_keyframe(&self, data: &[u8]) -> bool {
+        if data.is_empty() {
+            return false;
+        }
+        match self.codec {
+            CodecType::Vp8 => {
+                // VP8: first byte of payload (after RTP descriptor) has bit 0 = P bit
+                // P=0 means keyframe. But RTP descriptor varies.
+                // 简化: 检查第一个字节 (RTP descriptor) 后的 VP8 payload
+                // VP8 RTP descriptor: at least 1 byte, X bit determines extension
+                if data.is_empty() {
+                    return false;
+                }
+                let first = data[0];
+                let x_bit = (first >> 7) & 0x01;
+                let mut offset = 1;
+                if x_bit == 1 && offset < data.len() {
+                    let ext = data[offset];
+                    offset += 1;
+                    // I bit (PictureID)
+                    if (ext >> 7) & 0x01 == 1 && offset < data.len() {
+                        let pic_id = data[offset];
+                        offset += 1;
+                        if pic_id & 0x80 != 0 && offset < data.len() {
+                            offset += 1;
+                        }
+                    }
+                    // L bit (TL0PICIDX)
+                    if (ext >> 6) & 0x01 == 1 && offset < data.len() {
+                        offset += 1;
+                    }
+                    // T bit (TID) or V bit
+                    if (ext >> 5) & 0x01 == 1 && offset < data.len() {
+                        offset += 1;
+                    }
+                }
+                if offset < data.len() {
+                    // VP8 payload header: byte 0 bit 0 = P (0=keyframe, 1=inter)
+                    let p_bit = data[offset] & 0x01;
+                    return p_bit == 0;
+                }
+                false
+            }
+            CodecType::Vp9 => {
+                // VP9: P bit in RTP descriptor byte 0, bit 6. P=0 = keyframe
+                let p_bit = (data[0] >> 6) & 0x01;
+                p_bit == 0
+            }
+            CodecType::H264 => {
+                // H.264: NAL type 5 (IDR) or type 7 (SPS) indicates keyframe
+                // For FU-A: check NAL type in FU header
+                let nal_type = if data[0] & 0x1F == 28 && data.len() > 1 {
+                    data[1] & 0x1F
+                } else {
+                    data[0] & 0x1F
+                };
+                nal_type == 5 || nal_type == 7 || nal_type == 8 // IDR, SPS, PPS
+            }
+            CodecType::Av1 => {
+                // AV1: keyframe indicated by frame type in OBU
+                // 简化: 检查 first byte W bit (0 = keyframe)
+                let w = (data[0] >> 4) & 0x03;
+                w == 0
+            }
+            _ => false,
+        }
     }
 
     /// 添加订阅者 (指定目标层)

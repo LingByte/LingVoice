@@ -240,44 +240,86 @@ impl TwccFeedback {
         let fb_count = data[19];
 
         // status chunks + deltas 从 offset 20 开始
+        // TWCC feedback format (RFC 8888 / draft-holmer-rmcat):
+        //   status_chunk_count (2 bytes) — 状态块数量
+        //   status_chunks (status_chunk_count * 2 bytes)
+        //   deltas (variable, 1 or 2 bytes each)
+        //
+        // 但实际 RTCP 包中没有 status_chunk_count 字段!
+        // status chunks 和 deltas 是连续的, 需要根据 status chunks 解析来确定 delta 数量
         let mut offset = 20;
         let mut status_chunks: Vec<u8> = Vec::new();
 
-        // 解析 status chunks 直到用完或遇到 deltas
-        // 每个 status chunk 是 2 字节 (16bit)
-        // 我们需要根据 packet_count 来确定有多少 delta
-        // 简化: 解析所有剩余数据, status chunks 在前, deltas 在后
-        // 由于 status chunk 和 delta 混在一起难以分离, 我们采用一种简化策略:
-        // status chunks 数量 = (declared_bytes - 20 - delta_bytes) / 2
-        // 但我们不知道 delta_bytes, 所以这里采用: 解析 run-length chunks 直到覆盖 packet_count 个包
+        // 解析 status chunks, 同时跟踪需要多少 delta 以及每个 delta 的大小
+        // 每个 status chunk 是 2 bytes:
+        //   Run Length: [0(1bit)] [symbol(2bits)] [run_len(13bits)]
+        //     symbol 00: not received (0 delta)
+        //     symbol 01: received, small delta (1 byte each)
+        //     symbol 10: received, large delta (2 bytes each)
+        //   Status Vector: [1(1bit)] [mode(1bit)] [vector(14bits)]
+        //     mode 0: 7 symbols of 2 bits each
+        //     mode 1: 14 symbols of 1 bit each (0=not received, 1=received small delta)
 
         let mut covered_packets: u32 = 0;
+        let mut delta_bytes_needed: usize = 0; // 需要读取的 delta 字节数
+
         while offset + 2 <= declared_bytes && offset + 2 <= data.len() {
             let chunk = u16::from_be_bytes([data[offset], data[offset + 1]]);
-            let symbol = (chunk >> 13) & 0x3;
-            let run_len = (chunk & 0x1FFF) as u32;
             status_chunks.push(data[offset]);
             status_chunks.push(data[offset + 1]);
             offset += 2;
 
-            if symbol == 0b00 {
-                // not received
-                covered_packets += run_len;
-            } else if symbol == 0b01 {
-                // small delta (8bit each)
-                covered_packets += run_len;
-                // 后面跟 run_len 个 8bit delta
-                // 我们跳过 8bit delta, 但这里简化为读取
-                // 实际上 8bit delta 紧跟在 status chunk 之后
-                // 但我们的编码器使用 16bit delta, 所以这里简化处理
-                break;
-            } else if symbol == 0b10 {
-                // large delta (16bit each)
-                covered_packets += run_len;
-                break;
+            let is_status_vector = (chunk >> 15) & 0x01;
+
+            if is_status_vector == 0 {
+                // Run Length Chunk
+                let symbol = (chunk >> 13) & 0x03;
+                let run_len = (chunk & 0x1FFF) as u32;
+                match symbol {
+                    0 => {
+                        // not received, no deltas
+                        covered_packets += run_len;
+                    }
+                    1 => {
+                        // small delta (1 byte each)
+                        covered_packets += run_len;
+                        delta_bytes_needed += run_len as usize;
+                    }
+                    2 => {
+                        // large delta (2 bytes each)
+                        covered_packets += run_len;
+                        delta_bytes_needed += (run_len as usize) * 2;
+                    }
+                    _ => {
+                        // reserved, stop
+                        break;
+                    }
+                }
             } else {
-                // 11 = reserved
-                break;
+                // Status Vector Chunk
+                let mode = (chunk >> 14) & 0x01;
+                let vector = chunk & 0x3FFF;
+                if mode == 0 {
+                    // 7 symbols of 2 bits each
+                    for i in 0..7u32 {
+                        let symbol = (vector >> (12 - i * 2)) & 0x03;
+                        covered_packets += 1;
+                        match symbol {
+                            1 => delta_bytes_needed += 1, // small delta
+                            2 => delta_bytes_needed += 2, // large delta
+                            _ => {}                       // not received or reserved
+                        }
+                    }
+                } else {
+                    // 14 symbols of 1 bit each (0=not received, 1=received small delta)
+                    for i in 0..14u32 {
+                        let bit = (vector >> (13 - i)) & 0x01;
+                        covered_packets += 1;
+                        if bit == 1 {
+                            delta_bytes_needed += 1; // small delta
+                        }
+                    }
+                }
             }
 
             if covered_packets >= packet_count as u32 {
@@ -285,12 +327,92 @@ impl TwccFeedback {
             }
         }
 
-        // 剩余作为 deltas (16bit)
+        // 读取 deltas: 根据 status chunks 的指示, 每个 delta 是 1 或 2 bytes
+        // 简化: 重新解析 status chunks 来确定每个 delta 的大小
+        // 这里我们读取 delta_bytes_needed 个字节, 然后按 1 或 2 bytes 分组
+        // 由于混合了 small (1 byte) 和 large (2 bytes) delta, 需要重新遍历
         let mut deltas: Vec<i16> = Vec::new();
-        while offset + 2 <= declared_bytes && offset + 2 <= data.len() {
-            let d = i16::from_be_bytes([data[offset], data[offset + 1]]);
-            deltas.push(d);
-            offset += 2;
+        let mut chunk_idx = 0;
+        let mut delta_offset = offset;
+
+        while chunk_idx + 2 <= status_chunks.len() && delta_offset < declared_bytes {
+            let chunk =
+                u16::from_be_bytes([status_chunks[chunk_idx], status_chunks[chunk_idx + 1]]);
+            chunk_idx += 2;
+            let is_status_vector = (chunk >> 15) & 0x01;
+
+            if is_status_vector == 0 {
+                let symbol = (chunk >> 13) & 0x03;
+                let run_len = (chunk & 0x1FFF) as usize;
+                match symbol {
+                    0 => {} // not received
+                    1 => {
+                        // small delta (1 byte each, unsigned 0-255 = 0-63.75ms)
+                        for _ in 0..run_len {
+                            if delta_offset < declared_bytes && delta_offset < data.len() {
+                                deltas.push(data[delta_offset] as i16);
+                                delta_offset += 1;
+                            }
+                        }
+                    }
+                    2 => {
+                        // large delta (2 bytes each, signed)
+                        for _ in 0..run_len {
+                            if delta_offset + 2 <= declared_bytes && delta_offset + 2 <= data.len()
+                            {
+                                let d = i16::from_be_bytes([
+                                    data[delta_offset],
+                                    data[delta_offset + 1],
+                                ]);
+                                deltas.push(d);
+                                delta_offset += 2;
+                            }
+                        }
+                    }
+                    _ => break,
+                }
+            } else {
+                let mode = (chunk >> 14) & 0x01;
+                let vector = chunk & 0x3FFF;
+                if mode == 0 {
+                    // 7 symbols of 2 bits
+                    for i in 0..7u32 {
+                        let symbol = (vector >> (12 - i * 2)) & 0x03;
+                        match symbol {
+                            1 => {
+                                if delta_offset < declared_bytes && delta_offset < data.len() {
+                                    deltas.push(data[delta_offset] as i16);
+                                    delta_offset += 1;
+                                }
+                            }
+                            2 => {
+                                if delta_offset + 2 <= declared_bytes
+                                    && delta_offset + 2 <= data.len()
+                                {
+                                    let d = i16::from_be_bytes([
+                                        data[delta_offset],
+                                        data[delta_offset + 1],
+                                    ]);
+                                    deltas.push(d);
+                                    delta_offset += 2;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    // 14 symbols of 1 bit
+                    for i in 0..14u32 {
+                        let bit = (vector >> (13 - i)) & 0x01;
+                        if bit == 1 {
+                            if delta_offset < declared_bytes && delta_offset < data.len() {
+                                deltas.push(data[delta_offset] as i16);
+                                delta_offset += 1;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Ok(Self {
@@ -628,21 +750,32 @@ impl LossBasedController {
     /// - `rtt_ms`: 往返时延
     /// 返回调整后的码率 (bps)
     pub fn update(&mut self, loss_rate: f64, rtt_ms: u32) -> u64 {
-        let _ = rtt_ms; // RTT 可用于更精细的控制, 此处简化
+        // 根据 RTT 调整降码率幅度
+        // 高 RTT (>200ms): 更激进降码率 (网络拥塞严重)
+        // 中 RTT (100-200ms): 中等降码率
+        // 低 RTT (<100ms): 保守降码率
+        let decrease_factor = if rtt_ms > 200 {
+            0.4 // 高 RTT, 降更多
+        } else if rtt_ms > 100 {
+            0.6
+        } else {
+            0.8 // 低 RTT, 降较少
+        };
 
         // RFC 8888 丢包率控制:
-        // - loss_rate > 10%: 大幅降码率 (x0.5)
-        // - loss_rate 2-10%: 中等降码率 (x0.8)
-        // - loss_rate < 2%: 增码率 (x1.05)
+        // - loss_rate > 10%: 大幅降码率
+        // - loss_rate 2-10%: 中等降码率
+        // - loss_rate < 2%: 增码率
         if loss_rate > 0.10 {
-            self.current_bitrate = (self.current_bitrate as f64 * 0.5) as u64;
+            self.current_bitrate = (self.current_bitrate as f64 * decrease_factor) as u64;
         } else if loss_rate > 0.02 {
-            self.current_bitrate = (self.current_bitrate as f64 * 0.8) as u64;
+            self.current_bitrate = (self.current_bitrate as f64 * (decrease_factor + 0.2)) as u64;
         } else if loss_rate < 0.02 {
-            // 低丢包, 增码率
-            // 如果之前有丢包, 恢复更快
+            // 低丢包恢复: RTT 低时恢复更快
+            let recovery_factor = if rtt_ms < 50 { 1.1 } else { 1.05 };
             if self.last_loss_rate > 0.02 {
-                self.current_bitrate = (self.current_bitrate as f64 * 1.1) as u64;
+                // 之前有丢包, 恢复更快
+                self.current_bitrate = (self.current_bitrate as f64 * recovery_factor) as u64;
             } else {
                 self.current_bitrate = (self.current_bitrate as f64 * 1.05) as u64;
             }
