@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 lm-core = { path = "../lm-core" }
 lm-stream = { path = "../lm-stream" }
+audio-codec = { path = "../audio-codec" }
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

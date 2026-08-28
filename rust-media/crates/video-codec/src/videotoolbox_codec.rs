@@ -171,6 +171,8 @@ extern "C" {
     ) -> usize;
     fn CVPixelBufferGetWidthOfPlane(pixel_buffer: CVPixelBufferRef, plane_index: usize) -> usize;
     fn CVPixelBufferGetHeightOfPlane(pixel_buffer: CVPixelBufferRef, plane_index: usize) -> usize;
+    fn CVPixelBufferGetWidth(pixel_buffer: CVPixelBufferRef) -> usize;
+    fn CVPixelBufferGetHeight(pixel_buffer: CVPixelBufferRef) -> usize;
     fn CVPixelBufferRelease(pixel_buffer: CVPixelBufferRef);
 
     // CoreFoundation
@@ -204,8 +206,26 @@ extern "C" {
 type VTDecompressionSessionRef = *mut c_void;
 type CMVideoFormatDescriptionRef = *mut c_void;
 
-/// VTDecompressionOutputHandler — newer block-based callback (macOS 10.8+)
-type VTDecompressionOutputHandler = *mut c_void;
+/// VTDecompressionOutputCallback — C 函数指针回调
+/// void (*)(void *refCon, void *frameRefCon, OSStatus status,
+///           VTDecodeInfoFlags infoFlags, CVImageBufferRef imageBuffer,
+///           CMTime pts, CMTime duration)
+type VTDecompressionOutputCallback = unsafe extern "C" fn(
+    ref_con: *mut c_void,
+    frame_ref_con: *mut c_void,
+    status: OSStatus,
+    info_flags: VTDecodeInfoFlags,
+    image_buffer: CVPixelBufferRef,
+    pts: CMTime,
+    duration: CMTime,
+);
+
+/// VTDecompressionOutputCallbackRecord — 回调函数 + refCon
+#[repr(C)]
+struct VTDecompressionOutputCallbackRecord {
+    callback: VTDecompressionOutputCallback,
+    ref_con: *mut c_void,
+}
 
 /// VTDecodeInfoFlags
 type VTDecodeInfoFlags = u32;
@@ -213,6 +233,150 @@ type VTDecodeInfoFlags = u32;
 /// 解码输出回调上下文
 struct DecodeCallbackContext {
     outputs: Mutex<Vec<YuvFrame>>,
+    cond: std::sync::Condvar,
+}
+
+/// VideoToolbox 解码输出回调函数
+///
+/// 当解码完成时，VideoToolbox 会调用此函数，传入解码后的 CVPixelBuffer。
+/// 我们从中提取 YUV 数据并推入输出队列。
+unsafe extern "C" fn decompression_output_callback(
+    ref_con: *mut c_void,
+    _frame_ref_con: *mut c_void,
+    status: OSStatus,
+    _info_flags: VTDecodeInfoFlags,
+    image_buffer: CVPixelBufferRef,
+    _pts: CMTime,
+    _duration: CMTime,
+) {
+    if status != NO_ERR || image_buffer.is_null() {
+        return;
+    }
+
+    let ctx = &*(ref_con as *const DecodeCallbackContext);
+
+    // 从 CVPixelBuffer 提取 YUV 数据
+    if let Some(frame) = extract_yuv_from_pixel_buffer_static(image_buffer) {
+        if let Ok(mut outputs) = ctx.outputs.lock() {
+            outputs.push(frame);
+            ctx.cond.notify_all();
+        }
+    }
+}
+
+/// 从 CVPixelBuffer 提取 YUV 数据 (静态函数版本，供回调使用)
+unsafe fn extract_yuv_from_pixel_buffer_static(pixel_buffer: CVPixelBufferRef) -> Option<YuvFrame> {
+    let pixel_format = CVPixelBufferGetPixelFormatType(pixel_buffer);
+    let plane_count = CVPixelBufferGetPlaneCount(pixel_buffer);
+    let width = CVPixelBufferGetWidth(pixel_buffer);
+    let height = CVPixelBufferGetHeight(pixel_buffer);
+
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    CVPixelBufferLockBaseAddress(pixel_buffer, 0);
+
+    let result = if pixel_format == KCV_PIXEL_FORMAT_TYPE_420YPCBCR8BIPLANAR_VIDEO_RANGE
+        || pixel_format == KCV_PIXEL_FORMAT_TYPE_420YPCBCR8BIPLANAR_FULL_RANGE
+    {
+        // NV12 (biplanar): Y plane + interleaved UV plane
+        let y_plane = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0) as *const u8;
+        let uv_plane = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 1) as *const u8;
+        let y_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 0);
+        let uv_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 1);
+
+        if !y_plane.is_null() && !uv_plane.is_null() {
+            let w = width;
+            let h = height;
+            let mut y = vec![0u8; w * h];
+            let mut u = vec![0u8; (w / 2) * (h / 2)];
+            let mut v = vec![0u8; (w / 2) * (h / 2)];
+
+            // Copy Y plane
+            for row in 0..h {
+                let src = std::slice::from_raw_parts(y_plane.add(row * y_stride), w);
+                y[row * w..row * w + w].copy_from_slice(src);
+            }
+
+            // Deinterleave UV
+            let uv_w = w / 2;
+            let uv_h = h / 2;
+            for row in 0..uv_h {
+                let src = std::slice::from_raw_parts(uv_plane.add(row * uv_stride), uv_w * 2);
+                for col in 0..uv_w {
+                    u[row * uv_w + col] = src[col * 2];
+                    v[row * uv_w + col] = src[col * 2 + 1];
+                }
+            }
+
+            Some(YuvFrame {
+                y,
+                u,
+                v,
+                width: width as u32,
+                height: height as u32,
+                timestamp: 0,
+                keyframe: false,
+                bit_depth: 8,
+                y16: Vec::new(),
+                u16: Vec::new(),
+                v16: Vec::new(),
+            })
+        } else {
+            None
+        }
+    } else if plane_count >= 3 {
+        // I420 (planar): separate Y, U, V planes
+        let y_plane = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 0) as *const u8;
+        let u_plane = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 1) as *const u8;
+        let v_plane = CVPixelBufferGetBaseAddressOfPlane(pixel_buffer, 2) as *const u8;
+        let y_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 0);
+        let u_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 1);
+        let v_stride = CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, 2);
+
+        if !y_plane.is_null() && !u_plane.is_null() && !v_plane.is_null() {
+            let w = width;
+            let h = height;
+            let mut y = vec![0u8; w * h];
+            let mut u = vec![0u8; (w / 2) * (h / 2)];
+            let mut v = vec![0u8; (w / 2) * (h / 2)];
+
+            for row in 0..h {
+                let src = std::slice::from_raw_parts(y_plane.add(row * y_stride), w);
+                y[row * w..row * w + w].copy_from_slice(src);
+            }
+            let uv_w = w / 2;
+            let uv_h = h / 2;
+            for row in 0..uv_h {
+                let src_u = std::slice::from_raw_parts(u_plane.add(row * u_stride), uv_w);
+                let src_v = std::slice::from_raw_parts(v_plane.add(row * v_stride), uv_w);
+                u[row * uv_w..row * uv_w + uv_w].copy_from_slice(src_u);
+                v[row * uv_w..row * uv_w + uv_w].copy_from_slice(src_v);
+            }
+
+            Some(YuvFrame {
+                y,
+                u,
+                v,
+                width: width as u32,
+                height: height as u32,
+                timestamp: 0,
+                keyframe: false,
+                bit_depth: 8,
+                y16: Vec::new(),
+                u16: Vec::new(),
+                v16: Vec::new(),
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    CVPixelBufferUnlockBaseAddress(pixel_buffer, 0);
+    result
 }
 
 #[repr(C)]
@@ -274,7 +438,7 @@ extern "C" {
         video_format_description: CMVideoFormatDescriptionRef,
         video_decoder_specification: CFDictionaryRef,
         destination_image_buffer_attributes: CFDictionaryRef,
-        output_callback: VTDecompressionOutputHandler,
+        output_callback: *const VTDecompressionOutputCallbackRecord,
         decompression_session_out: *mut VTDecompressionSessionRef,
     ) -> OSStatus;
 
@@ -1010,6 +1174,7 @@ impl VideoToolboxDecoder {
             format_desc: ptr::null_mut(),
             callback_ctx: Arc::new(DecodeCallbackContext {
                 outputs: Mutex::new(Vec::new()),
+                cond: std::sync::Condvar::new(),
             }),
             width: 0,
             height: 0,
@@ -1130,16 +1295,20 @@ impl VideoToolboxDecoder {
 
         let mut session: VTDecompressionSessionRef = ptr::null_mut();
 
-        // 创建解码会话
-        // 注意: 完整实现需要设置 output callback (VTDecompressionOutputHandler)
-        // 这里使用简化框架 — 实际 GPU 解码需要完整的回调设置
+        // 创建回调记录 (callback function + refCon)
+        let callback_record = VTDecompressionOutputCallbackRecord {
+            callback: decompression_output_callback,
+            ref_con: Arc::as_ptr(&self.callback_ctx) as *mut c_void,
+        };
+
+        // 创建解码会话，传入实际的回调函数
         let ret = unsafe {
             VTDecompressionSessionCreate(
                 ptr::null_mut(),
                 self.format_desc,
-                ptr::null_mut(), // decoder specification
-                ptr::null_mut(), // destination image buffer attributes
-                ptr::null_mut(), // output callback (简化: 使用 null)
+                ptr::null_mut(), // decoder specification (使用默认)
+                ptr::null_mut(), // destination image buffer attributes (使用默认)
+                &callback_record,
                 &mut session,
             )
         };
@@ -1507,19 +1676,36 @@ impl VideoDecoder for VideoToolboxDecoder {
             )));
         }
 
-        // 检查输出队列 (简化框架: 实际回调需要完整设置)
-        // 尝试从回调上下文获取输出
-        if let Ok(mut outputs) = self.callback_ctx.outputs.lock() {
-            if let Some(frame) = outputs.pop() {
-                return Ok(frame);
-            }
-        }
+        // 等待解码回调完成 (异步回调，通过 condvar 通知)
+        let frame = {
+            let mut guard = self.callback_ctx.outputs.lock().unwrap();
+            let timeout = std::time::Duration::from_millis(100);
 
-        // 回调未设置时, 返回错误 (框架限制)
-        // 完整实现需要设置 VTDecompressionOutputHandler 回调
-        Err(VideoCodecError::DecodeFailed(
-            "VideoToolbox decode callback not configured (framework limitation)".into(),
-        ))
+            // 先检查是否已有输出（同步解码可能立即完成）
+            if let Some(frame) = guard.pop() {
+                frame
+            } else {
+                // 等待回调通知
+                let (result, timeout_result) =
+                    self.callback_ctx.cond.wait_timeout(guard, timeout).unwrap();
+                guard = result;
+                if timeout_result.timed_out() {
+                    return Err(VideoCodecError::DecodeFailed(
+                        "VideoToolbox decode timeout (callback did not produce output)".into(),
+                    ));
+                }
+                match guard.pop() {
+                    Some(frame) => frame,
+                    None => {
+                        return Err(VideoCodecError::DecodeFailed(
+                            "VideoToolbox decode callback produced no output".into(),
+                        ));
+                    }
+                }
+            }
+        };
+
+        Ok(frame)
     }
 
     fn codec(&self) -> lm_core::CodecType {

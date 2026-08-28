@@ -76,12 +76,22 @@ impl Gb28181Demuxer {
             ]);
 
             if start_code == 0x000001BA {
-                // PS pack header
-                // 简化：跳过 pack header（14 bytes minimum）
+                // PS pack header (MPEG-PS)
+                // 结构：
+                //   4 bytes: start code (0x000001BA)
+                //   6 bytes: SCR + marker bits
+                //   3 bytes: mux_rate + marker bits
+                //   1 byte:  stuffing_length (低 3 位) + reserved (高 5 位 = 0xFF)
+                //   N bytes: stuffing bytes (0xFF * stuffing_length)
+                // 总长度 = 14 + stuffing_length
                 if offset + 14 > data.len() {
                     break;
                 }
-                offset += 14; // 简化：固定 14 bytes
+                let stuffing_length = (data[offset + 13] & 0x07) as usize;
+                if offset + 14 + stuffing_length > data.len() {
+                    break;
+                }
+                offset += 14 + stuffing_length;
             } else if start_code == 0x000001BB {
                 // System header
                 if offset + 6 > data.len() {
@@ -187,6 +197,318 @@ impl Demuxer for Gb28181Demuxer {
         self.ssrc = 0;
         self.video_depacketizer.reset();
     }
+}
+
+// ============================================================================
+// SIP 消息编解码 (GB28181 信令层)
+// ============================================================================
+
+/// SIP 请求方法
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SipMethod {
+    Register,
+    Invite,
+    Ack,
+    Bye,
+    Cancel,
+    Options,
+    Message,
+    Notify,
+    Subscribe,
+}
+
+impl SipMethod {
+    fn as_str(&self) -> &'static str {
+        match self {
+            SipMethod::Register => "REGISTER",
+            SipMethod::Invite => "INVITE",
+            SipMethod::Ack => "ACK",
+            SipMethod::Bye => "BYE",
+            SipMethod::Cancel => "CANCEL",
+            SipMethod::Options => "OPTIONS",
+            SipMethod::Message => "MESSAGE",
+            SipMethod::Notify => "NOTIFY",
+            SipMethod::Subscribe => "SUBSCRIBE",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "REGISTER" => Some(SipMethod::Register),
+            "INVITE" => Some(SipMethod::Invite),
+            "ACK" => Some(SipMethod::Ack),
+            "BYE" => Some(SipMethod::Bye),
+            "CANCEL" => Some(SipMethod::Cancel),
+            "OPTIONS" => Some(SipMethod::Options),
+            "MESSAGE" => Some(SipMethod::Message),
+            "NOTIFY" => Some(SipMethod::Notify),
+            "SUBSCRIBE" => Some(SipMethod::Subscribe),
+            _ => None,
+        }
+    }
+}
+
+/// SIP 消息类型
+#[derive(Debug, Clone)]
+pub enum SipMessage {
+    Request {
+        method: SipMethod,
+        uri: String,
+        headers: Vec<(String, String)>,
+        body: String,
+    },
+    Response {
+        status_code: u16,
+        status_text: String,
+        headers: Vec<(String, String)>,
+        body: String,
+    },
+}
+
+impl SipMessage {
+    /// 构建 SIP REGISTER 请求
+    pub fn register(
+        from: &str,
+        to: &str,
+        contact: &str,
+        call_id: &str,
+        cseq: u32,
+        expires: u32,
+    ) -> Self {
+        let headers = vec![
+            ("From".to_string(), format!("<sip:{}>;tag=reg", from)),
+            ("To".to_string(), format!("<sip:{}>", to)),
+            ("Contact".to_string(), format!("<sip:{}>", contact)),
+            ("Call-ID".to_string(), call_id.to_string()),
+            ("CSeq".to_string(), format!("{} REGISTER", cseq)),
+            ("Expires".to_string(), expires.to_string()),
+            ("Max-Forwards".to_string(), "70".to_string()),
+            ("User-Agent".to_string(), "LingVoice/1.0".to_string()),
+        ];
+        SipMessage::Request {
+            method: SipMethod::Register,
+            uri: format!("sip:{}", to),
+            headers,
+            body: String::new(),
+        }
+    }
+
+    /// 构建 SIP INVITE 请求 (GB28181 媒体邀请)
+    pub fn invite(
+        from: &str,
+        to: &str,
+        contact: &str,
+        call_id: &str,
+        cseq: u32,
+        sdp: &str,
+    ) -> Self {
+        let headers = vec![
+            ("From".to_string(), format!("<sip:{}>;tag=inv", from)),
+            ("To".to_string(), format!("<sip:{}>", to)),
+            ("Contact".to_string(), format!("<sip:{}>", contact)),
+            ("Call-ID".to_string(), call_id.to_string()),
+            ("CSeq".to_string(), format!("{} INVITE", cseq)),
+            ("Content-Type".to_string(), "application/sdp".to_string()),
+            ("Max-Forwards".to_string(), "70".to_string()),
+            ("User-Agent".to_string(), "LingVoice/1.0".to_string()),
+        ];
+        SipMessage::Request {
+            method: SipMethod::Invite,
+            uri: format!("sip:{}", to),
+            headers,
+            body: sdp.to_string(),
+        }
+    }
+
+    /// 构建 SIP BYE 请求
+    pub fn bye(from: &str, to: &str, call_id: &str, cseq: u32) -> Self {
+        let headers = vec![
+            ("From".to_string(), format!("<sip:{}>;tag=bye", from)),
+            ("To".to_string(), format!("<sip:{}>", to)),
+            ("Call-ID".to_string(), call_id.to_string()),
+            ("CSeq".to_string(), format!("{} BYE", cseq)),
+            ("Max-Forwards".to_string(), "70".to_string()),
+        ];
+        SipMessage::Request {
+            method: SipMethod::Bye,
+            uri: format!("sip:{}", to),
+            headers,
+            body: String::new(),
+        }
+    }
+
+    /// 构建 SIP 200 OK 响应
+    pub fn ok(request: &SipMessage, contact: &str) -> Self {
+        let headers = match request {
+            SipMessage::Request {
+                headers: req_headers,
+                ..
+            } => {
+                let mut h: Vec<(String, String)> = vec![
+                    (
+                        "Via".to_string(),
+                        get_header(req_headers, "Via").unwrap_or_default(),
+                    ),
+                    (
+                        "From".to_string(),
+                        get_header(req_headers, "From").unwrap_or_default(),
+                    ),
+                    (
+                        "To".to_string(),
+                        get_header(req_headers, "To").unwrap_or_default(),
+                    ),
+                    (
+                        "Call-ID".to_string(),
+                        get_header(req_headers, "Call-ID").unwrap_or_default(),
+                    ),
+                    (
+                        "CSeq".to_string(),
+                        get_header(req_headers, "CSeq").unwrap_or_default(),
+                    ),
+                    ("Contact".to_string(), format!("<sip:{}>", contact)),
+                    ("User-Agent".to_string(), "LingVoice/1.0".to_string()),
+                ];
+                // 如果请求有 Content-Type，响应也加上
+                if let Some(ct) = get_header(req_headers, "Content-Type") {
+                    h.push(("Content-Type".to_string(), ct));
+                }
+                h
+            }
+            _ => Vec::new(),
+        };
+        SipMessage::Response {
+            status_code: 200,
+            status_text: "OK".to_string(),
+            headers,
+            body: String::new(),
+        }
+    }
+
+    /// 序列化为 SIP 文本格式
+    pub fn to_string(&self) -> String {
+        let mut output = String::new();
+        match self {
+            SipMessage::Request {
+                method,
+                uri,
+                headers,
+                body,
+            } => {
+                output.push_str(&format!("{} sip:{} SIP/2.0\r\n", method.as_str(), uri));
+                for (key, value) in headers {
+                    output.push_str(&format!("{}: {}\r\n", key, value));
+                }
+                if !body.is_empty() {
+                    output.push_str(&format!("Content-Length: {}\r\n", body.len()));
+                } else {
+                    output.push_str("Content-Length: 0\r\n");
+                }
+                output.push_str("\r\n");
+                if !body.is_empty() {
+                    output.push_str(body);
+                }
+            }
+            SipMessage::Response {
+                status_code,
+                status_text,
+                headers,
+                body,
+            } => {
+                output.push_str(&format!("SIP/2.0 {} {}\r\n", status_code, status_text));
+                for (key, value) in headers {
+                    output.push_str(&format!("{}: {}\r\n", key, value));
+                }
+                if !body.is_empty() {
+                    output.push_str(&format!("Content-Length: {}\r\n", body.len()));
+                } else {
+                    output.push_str("Content-Length: 0\r\n");
+                }
+                output.push_str("\r\n");
+                if !body.is_empty() {
+                    output.push_str(body);
+                }
+            }
+        }
+        output
+    }
+
+    /// 从 SIP 文本解析
+    pub fn parse(data: &str) -> Option<Self> {
+        let lines: Vec<&str> = data.split("\r\n").collect();
+        if lines.is_empty() {
+            return None;
+        }
+
+        let first_line = lines[0];
+
+        if first_line.starts_with("SIP/2.0 ") {
+            // Response
+            let parts: Vec<&str> = first_line.splitn(3, ' ').collect();
+            if parts.len() < 3 {
+                return None;
+            }
+            let status_code: u16 = parts[1].parse().ok()?;
+            let status_text = parts[2].to_string();
+
+            let (headers, body) = parse_headers_and_body(&lines[1..]);
+            Some(SipMessage::Response {
+                status_code,
+                status_text,
+                headers,
+                body,
+            })
+        } else {
+            // Request
+            let parts: Vec<&str> = first_line.splitn(3, ' ').collect();
+            if parts.len() < 3 {
+                return None;
+            }
+            let method = SipMethod::from_str(parts[0])?;
+            let uri = parts[1]
+                .strip_prefix("sip:")
+                .unwrap_or(parts[1])
+                .to_string();
+
+            let (headers, body) = parse_headers_and_body(&lines[1..]);
+            Some(SipMessage::Request {
+                method,
+                uri,
+                headers,
+                body,
+            })
+        }
+    }
+}
+
+/// 从 header lines 解析 headers 和 body
+fn parse_headers_and_body(lines: &[&str]) -> (Vec<(String, String)>, String) {
+    let mut headers = Vec::new();
+    let mut body_start = lines.len();
+    for (i, line) in lines.iter().enumerate() {
+        if line.is_empty() {
+            body_start = i + 1;
+            break;
+        }
+        if let Some(pos) = line.find(':') {
+            let key = line[..pos].trim().to_string();
+            let value = line[pos + 1..].trim().to_string();
+            headers.push((key, value));
+        }
+    }
+    let body = if body_start < lines.len() {
+        lines[body_start..].join("\r\n")
+    } else {
+        String::new()
+    };
+    (headers, body)
+}
+
+/// 获取 header 值
+fn get_header(headers: &[(String, String)], name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.clone())
 }
 
 #[cfg(test)]
@@ -313,5 +635,91 @@ mod tests {
     fn test_gb28181_demuxer_default() {
         let demuxer = Gb28181Demuxer::default();
         assert_eq!(demuxer.protocol(), Protocol::Gb28181);
+    }
+
+    /// 构造一个最小的 PS pack header（14 + stuffing_length bytes）
+    /// - 4 bytes: start code 0x000001BA
+    /// - 6 bytes: SCR + marker bits（填 0）
+    /// - 3 bytes: mux_rate + marker bits（填 0）
+    /// - 1 byte:  0xF8 | stuffing_length（高 5 位 reserved=0xFF，低 3 位 stuffing_length）
+    /// - N bytes: stuffing bytes（0xFF * stuffing_length）
+    fn make_pack_header(stuffing_length: u8) -> Vec<u8> {
+        let mut hdr = vec![0x00, 0x00, 0x01, 0xBA]; // start code
+        hdr.extend_from_slice(&[0x00; 6]); // SCR + marker bits
+        hdr.extend_from_slice(&[0x00; 3]); // mux_rate + marker bits
+        hdr.push(0xF8 | (stuffing_length & 0x07)); // stuffing_length field
+        hdr.extend(std::iter::repeat(0xFF).take(stuffing_length as usize)); // stuffing bytes
+        hdr
+    }
+
+    #[test]
+    fn test_ps_pack_header_stuffing_length_zero() {
+        // stuffing_length = 0 → pack header 恰好 14 bytes
+        let mut demuxer = Gb28181Demuxer::new();
+        let mut ps = make_pack_header(0);
+        // 紧跟一个 system header (0x000001BB) 验证 offset 正确
+        ps.extend_from_slice(&[0x00, 0x00, 0x01, 0xBB, 0x00, 0x00]); // length=0
+        let rtp = wrap_ps_as_rtp(&ps, true);
+        let frames = demuxer.push_data(&rtp);
+        // 没有 PES → 无帧，但不应 panic / 越界
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn test_ps_pack_header_stuffing_length_nonzero() {
+        // stuffing_length = 5 → pack header 14 + 5 = 19 bytes
+        let mut demuxer = Gb28181Demuxer::new();
+        let mut ps = make_pack_header(5);
+        // 紧跟一个 system header 验证 offset 正确跳过 stuffing bytes
+        ps.extend_from_slice(&[0x00, 0x00, 0x01, 0xBB, 0x00, 0x00]); // length=0
+        let rtp = wrap_ps_as_rtp(&ps, true);
+        let frames = demuxer.push_data(&rtp);
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn test_ps_pack_header_stuffing_length_max() {
+        // stuffing_length = 7（低 3 位最大值）→ pack header 14 + 7 = 21 bytes
+        let mut demuxer = Gb28181Demuxer::new();
+        let mut ps = make_pack_header(7);
+        ps.extend_from_slice(&[0x00, 0x00, 0x01, 0xBB, 0x00, 0x00]); // length=0
+        let rtp = wrap_ps_as_rtp(&ps, true);
+        let frames = demuxer.push_data(&rtp);
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn test_ps_pack_header_stuffing_length_with_pes() {
+        // stuffing_length = 3，后面跟一个含 payload 的 PES 包
+        // 验证 stuffing 被正确跳过，能解析到 PES payload
+        let mut demuxer = Gb28181Demuxer::new();
+        let mut ps = make_pack_header(3);
+
+        // PES packet: start code 0x000001E0
+        // payload: [0,0,0,1, 0x65] = H264 IDR slice (NAL type 5 → keyframe)
+        let pes_payload = [0x00, 0x00, 0x00, 0x01, 0x65];
+        // PES header: 2 bytes flags + 1 byte PES_header_data_length=0
+        let pes_total_len = 3 + 0 + pes_payload.len(); // PES_packet_length 字段值
+        ps.extend_from_slice(&[0x00, 0x00, 0x01, 0xE0]); // start code
+        ps.extend_from_slice(&(pes_total_len as u16).to_be_bytes()); // PES_packet_length
+        ps.push(0x80); // flags byte 1
+        ps.push(0x00); // flags byte 2
+        ps.push(0x00); // PES_header_data_length = 0
+        ps.extend_from_slice(&pes_payload);
+
+        let rtp = wrap_ps_as_rtp(&ps, true);
+        let frames = demuxer.push_data(&rtp);
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].keyframe);
+    }
+
+    /// 将 PS 数据包装成 RTP 包（marker 可控）
+    fn wrap_ps_as_rtp(ps: &[u8], marker: bool) -> Vec<u8> {
+        let mut rtp = vec![0x80, if marker { 0xE0 } else { 0x60 }]; // V=2, PT=96
+        rtp.extend_from_slice(&0u16.to_be_bytes()); // seq
+        rtp.extend_from_slice(&9000u32.to_be_bytes()); // timestamp
+        rtp.extend_from_slice(&0x12345678u32.to_be_bytes()); // ssrc
+        rtp.extend_from_slice(ps);
+        rtp
     }
 }

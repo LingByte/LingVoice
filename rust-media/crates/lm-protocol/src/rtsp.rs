@@ -109,9 +109,19 @@ impl Demuxer for RtspDemuxer {
     }
 }
 
+/// MTU 常量 = 1400（留余量给 IP/UDP/RTP header）
+const MTU: usize = 1400;
+
+/// RTP header 固定长度（12 bytes）
+const RTP_HEADER_LEN: usize = 12;
+
+/// 单个 RTP 包最大 payload 长度
+const MAX_RTP_PAYLOAD: usize = MTU - RTP_HEADER_LEN;
+
 /// RTSP Remuxer
 ///
 /// 将 MediaFrame 封装为 RTP 包（interleaved 格式）。
+/// 支持根据 MTU 分片：超过 MTU 的帧会被拆分为多个 RTP 包。
 pub struct RtspRemuxer {
     /// channel 计数
     video_channel: u8,
@@ -161,6 +171,48 @@ impl RtspRemuxer {
         rtp
     }
 
+    /// 根据 MTU 将 payload 分片为多个 RTP 包。
+    ///
+    /// - 所有包使用相同 timestamp
+    /// - 第一包 marker=false，最后一包 marker=true
+    /// - sequence number 从 `start_seq` 开始递增（wrapping）
+    ///
+    /// 返回 (RTP 包列表, 使用的包数)。
+    fn create_rtp_packets(
+        payload_type: u8,
+        start_seq: u16,
+        timestamp: u32,
+        ssrc: u32,
+        payload: &[u8],
+    ) -> Vec<Vec<u8>> {
+        // 如果 payload 在单个 RTP 包内，直接返回单包
+        if payload.len() <= MAX_RTP_PAYLOAD {
+            return vec![Self::create_rtp_packet(
+                payload_type,
+                true, // marker
+                start_seq,
+                timestamp,
+                ssrc,
+                payload,
+            )];
+        }
+
+        // 分片：每个包最多 MAX_RTP_PAYLOAD 字节
+        let chunks: Vec<&[u8]> = payload.chunks(MAX_RTP_PAYLOAD).collect();
+        let total = chunks.len();
+
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(i, chunk)| {
+                let seq = start_seq.wrapping_add(i as u16);
+                // 最后一包 marker=true，其余 marker=false
+                let marker = i == total - 1;
+                Self::create_rtp_packet(payload_type, marker, seq, timestamp, ssrc, chunk)
+            })
+            .collect()
+    }
+
     /// 封装 interleaved 数据
     fn create_interleaved(channel: u8, data: &[u8]) -> Vec<u8> {
         let mut output = Vec::with_capacity(4 + data.len());
@@ -189,21 +241,18 @@ impl Remuxer for RtspRemuxer {
             TrackKind::Audio => (self.audio_channel, 97u8, &mut self.audio_seq, 48000u32),
         };
 
-        // 简化：一个 MediaFrame = 一个 RTP 包
-        // 实际需要根据 MTU 分片
-        let rtp = Self::create_rtp_packet(
-            payload_type,
-            true, // marker
-            *seq,
-            frame.timestamp,
-            frame.ssrc,
-            &frame.data,
-        );
+        // 根据 MTU 分片为多个 RTP 包
+        let rtp_packets =
+            Self::create_rtp_packets(payload_type, *seq, frame.timestamp, frame.ssrc, &frame.data);
 
-        let interleaved = Self::create_interleaved(channel, &rtp);
-        self.output_buffer.extend_from_slice(&interleaved);
+        // 序列号递增（按分片数量）
+        *seq = seq.wrapping_add(rtp_packets.len() as u16);
 
-        *seq = seq.wrapping_add(1);
+        // 每个 RTP 包封装为 interleaved 格式并写入输出缓冲
+        for rtp in &rtp_packets {
+            let interleaved = Self::create_interleaved(channel, rtp);
+            self.output_buffer.extend_from_slice(&interleaved);
+        }
 
         std::mem::take(&mut self.output_buffer)
     }
@@ -327,5 +376,147 @@ mod tests {
     fn test_rtsp_protocol() {
         let remuxer = RtspRemuxer::new();
         assert_eq!(remuxer.protocol(), Protocol::Rtsp);
+    }
+
+    #[test]
+    fn test_rtp_single_packet_no_fragment() {
+        // payload <= MAX_RTP_PAYLOAD → 单包，marker=true
+        let payload = vec![0x01; 100];
+        let packets = RtspRemuxer::create_rtp_packets(96, 0, 9000, 12345, &payload);
+        assert_eq!(packets.len(), 1);
+        // marker bit set
+        assert_eq!(packets[0][1] & 0x80, 0x80);
+        // seq = 0
+        assert_eq!(u16::from_be_bytes([packets[0][2], packets[0][3]]), 0);
+    }
+
+    #[test]
+    fn test_rtp_fragmentation_multiple_packets() {
+        // payload > MAX_RTP_PAYLOAD → 多包
+        let payload = vec![0xAB; MAX_RTP_PAYLOAD * 2 + 100];
+        let packets = RtspRemuxer::create_rtp_packets(96, 10, 9000, 12345, &payload);
+        // 3 包：MAX, MAX, 100
+        assert_eq!(packets.len(), 3);
+
+        // 所有包 timestamp 相同
+        for p in &packets {
+            let ts = u32::from_be_bytes([p[4], p[5], p[6], p[7]]);
+            assert_eq!(ts, 9000);
+        }
+
+        // 所有包 ssrc 相同
+        for p in &packets {
+            let ssrc = u32::from_be_bytes([p[8], p[9], p[10], p[11]]);
+            assert_eq!(ssrc, 12345);
+        }
+
+        // sequence number 递增: 10, 11, 12
+        assert_eq!(u16::from_be_bytes([packets[0][2], packets[0][3]]), 10);
+        assert_eq!(u16::from_be_bytes([packets[1][2], packets[1][3]]), 11);
+        assert_eq!(u16::from_be_bytes([packets[2][2], packets[2][3]]), 12);
+
+        // 第一包 marker=false
+        assert_eq!(packets[0][1] & 0x80, 0x00);
+        // 中间包 marker=false
+        assert_eq!(packets[1][1] & 0x80, 0x00);
+        // 最后一包 marker=true
+        assert_eq!(packets[2][1] & 0x80, 0x80);
+
+        // 验证 payload 大小
+        assert_eq!(packets[0].len() - RTP_HEADER_LEN, MAX_RTP_PAYLOAD);
+        assert_eq!(packets[1].len() - RTP_HEADER_LEN, MAX_RTP_PAYLOAD);
+        assert_eq!(packets[2].len() - RTP_HEADER_LEN, 100);
+
+        // 验证 payload 内容
+        assert!(packets[0][RTP_HEADER_LEN..].iter().all(|&b| b == 0xAB));
+        assert!(packets[1][RTP_HEADER_LEN..].iter().all(|&b| b == 0xAB));
+        assert!(packets[2][RTP_HEADER_LEN..].iter().all(|&b| b == 0xAB));
+    }
+
+    #[test]
+    fn test_rtp_fragmentation_exact_boundary() {
+        // payload 恰好 = MAX_RTP_PAYLOAD → 单包
+        let payload = vec![0x01; MAX_RTP_PAYLOAD];
+        let packets = RtspRemuxer::create_rtp_packets(96, 0, 9000, 12345, &payload);
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0][1] & 0x80, 0x80); // marker=true
+    }
+
+    #[test]
+    fn test_rtp_fragmentation_one_over_boundary() {
+        // payload = MAX_RTP_PAYLOAD + 1 → 2 包
+        let payload = vec![0x01; MAX_RTP_PAYLOAD + 1];
+        let packets = RtspRemuxer::create_rtp_packets(96, 0, 9000, 12345, &payload);
+        assert_eq!(packets.len(), 2);
+        // 第一包 marker=false
+        assert_eq!(packets[0][1] & 0x80, 0x00);
+        // 最后一包 marker=true
+        assert_eq!(packets[1][1] & 0x80, 0x80);
+        // 第二包 payload = 1 byte
+        assert_eq!(packets[1].len() - RTP_HEADER_LEN, 1);
+    }
+
+    #[test]
+    fn test_remuxer_push_large_frame() {
+        // 通过 push_frame 验证大帧分片输出多个 interleaved 包
+        let mut remuxer = RtspRemuxer::new();
+        let large_data = vec![0x42; MAX_RTP_PAYLOAD * 2 + 50];
+        let frame = MediaFrame::video(
+            CodecType::H264,
+            9000,
+            bytes::Bytes::from(large_data),
+            12345,
+            true,
+        );
+        let output = remuxer.push_frame(&frame);
+
+        // 解析输出中的多个 interleaved 包
+        let mut offset = 0;
+        let mut packets = Vec::new();
+        while offset + 4 <= output.len() {
+            assert_eq!(output[offset], b'$');
+            let channel = output[offset + 1];
+            let len = u16::from_be_bytes([output[offset + 2], output[offset + 3]]) as usize;
+            assert_eq!(channel, 0); // video
+            let rtp = &output[offset + 4..offset + 4 + len];
+            packets.push(rtp.to_vec());
+            offset += 4 + len;
+        }
+        assert_eq!(offset, output.len()); // 完全消费
+        assert_eq!(packets.len(), 3); // 3 个分片
+
+        // 验证 marker：前两个 false，最后一个 true
+        assert_eq!(packets[0][1] & 0x80, 0x00);
+        assert_eq!(packets[1][1] & 0x80, 0x00);
+        assert_eq!(packets[2][1] & 0x80, 0x80);
+
+        // 验证 seq 递增: 0, 1, 2
+        assert_eq!(u16::from_be_bytes([packets[0][2], packets[0][3]]), 0);
+        assert_eq!(u16::from_be_bytes([packets[1][2], packets[1][3]]), 1);
+        assert_eq!(u16::from_be_bytes([packets[2][2], packets[2][3]]), 2);
+
+        // 验证所有 timestamp 相同
+        for p in &packets {
+            let ts = u32::from_be_bytes([p[4], p[5], p[6], p[7]]);
+            assert_eq!(ts, 9000);
+        }
+
+        // 验证所有 ssrc 相同
+        for p in &packets {
+            let ssrc = u32::from_be_bytes([p[8], p[9], p[10], p[11]]);
+            assert_eq!(ssrc, 12345);
+        }
+
+        // 下一个帧的 seq 应从 3 开始
+        let small_frame = MediaFrame::video(
+            CodecType::H264,
+            9001,
+            bytes::Bytes::from(vec![0x01]),
+            12346,
+            true,
+        );
+        let out2 = remuxer.push_frame(&small_frame);
+        let seq = u16::from_be_bytes([out2[6], out2[7]]);
+        assert_eq!(seq, 3);
     }
 }

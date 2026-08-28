@@ -1049,17 +1049,603 @@ fn native_mp4_from_ivf(ivf_data: &[u8], codec: lm_core::CodecType) -> Option<Vec
     build_mp4(&[], &[], &samples, ivf_data, mp4_codec)
 }
 
-/// 从 WAV 生成 MP4 (音频 only, PCM)
+/// 从 WAV 生成 MP4 (音频 only, PCM/ALAW/ULAW)
+///
+/// 构建包含音频 track 的 MP4 文件:
+/// ftyp + moov (mvhd + trak + udta) + mdat
 fn native_mp4_from_wav(wav_data: &[u8], sample_rate: u32, channels: u16) -> Option<Vec<u8>> {
-    // WAV header: 44 bytes, 然后是 PCM 数据
     if wav_data.len() < 44 {
         return None;
     }
-    // 简化: 直接将 WAV PCM 数据放入 MP4 mdat
-    // 实际应构建完整的音频 MP4, 但这需要 mp4a sample description
-    // 这里返回 None, 让 ffmpeg 处理音频
-    let _ = (sample_rate, channels);
-    None
+
+    // 解析 WAV header 获取 PCM 数据
+    let bits_per_sample = u16::from_le_bytes([wav_data[34], wav_data[35]]);
+    let audio_format = u16::from_le_bytes([wav_data[20], wav_data[21]]);
+
+    // 查找 data chunk
+    let mut data_offset = 44;
+    let mut data_size = 0u32;
+    let mut offset = 12;
+    while offset + 8 <= wav_data.len() {
+        let chunk_id = &wav_data[offset..offset + 4];
+        let chunk_size = u32::from_le_bytes([
+            wav_data[offset + 4],
+            wav_data[offset + 5],
+            wav_data[offset + 6],
+            wav_data[offset + 7],
+        ]);
+        if chunk_id == b"data" {
+            data_offset = offset + 8;
+            data_size = chunk_size;
+            break;
+        }
+        offset += 8 + chunk_size as usize;
+    }
+
+    if data_size == 0 || data_offset as usize + data_size as usize > wav_data.len() {
+        return None;
+    }
+
+    let pcm_data = &wav_data[data_offset as usize..data_offset as usize + data_size as usize];
+
+    // 确定 MP4 音频 codec
+    // audio_format: 1 = PCM, 6 = ALAW, 7 = ULAW
+    let (mp4a_codec, esds_tag): (&[u8], u8) = match audio_format {
+        6 => (b"alaw", 0x06), // G.711 A-law
+        7 => (b"ulaw", 0x07), // G.711 µ-law
+        _ => (b"mp4a", 0x40), // AAC (fallback) or raw PCM
+    };
+
+    // 构建 sample table
+    // 假设每个 sample = 20ms 音频帧
+    let bytes_per_sample = (bits_per_sample / 8) as usize;
+    let frame_size = bytes_per_sample * channels as usize;
+    let samples_per_frame = (sample_rate as usize) / 50; // 20ms
+    let frame_bytes = samples_per_frame * frame_size;
+
+    let mut samples = Vec::new();
+    let mut offset_in_mdat = 0usize;
+    let mut pos = 0;
+    while pos + frame_bytes <= pcm_data.len() {
+        samples.push((frame_bytes, samples_per_frame, false));
+        offset_in_mdat += frame_bytes;
+        pos += frame_bytes;
+    }
+    // 剩余数据
+    if pos < pcm_data.len() {
+        let remaining = pcm_data.len() - pos;
+        let remaining_samples = remaining / frame_size;
+        samples.push((remaining, remaining_samples, false));
+        offset_in_mdat += remaining;
+    }
+
+    if samples.is_empty() {
+        return None;
+    }
+
+    let total_samples: u32 = samples.iter().map(|(_, n, _)| *n as u32).sum();
+    let duration = total_samples;
+    let timescale = sample_rate;
+
+    let mut mp4 = Vec::new();
+
+    // ftyp
+    let ftyp_payload: &[u8] = b"isom\x00\x00\x02\x00isommp41mp42";
+    mp4.extend_from_slice(&(8u32 + ftyp_payload.len() as u32).to_be_bytes());
+    mp4.extend_from_slice(b"ftyp");
+    mp4.extend_from_slice(ftyp_payload);
+
+    // moov
+    let moov = build_audio_moov(
+        sample_rate,
+        channels,
+        bits_per_sample,
+        &samples,
+        duration,
+        timescale,
+        mp4a_codec,
+        esds_tag,
+    );
+    mp4.extend_from_slice(&(8u32 + moov.len() as u32).to_be_bytes());
+    mp4.extend_from_slice(b"moov");
+    mp4.extend_from_slice(&moov);
+
+    // mdat
+    let mdat_offset = mp4.len();
+    mp4.extend_from_slice(&(8u32 + pcm_data.len() as u32).to_be_bytes());
+    mp4.extend_from_slice(b"mdat");
+    let mdat_data_offset = mp4.len(); // 数据在 mdat header 之后
+    mp4.extend_from_slice(pcm_data);
+
+    // 修正 stco 中的 chunk offset
+    // stco 中的值应指向 mdat 中的第一个 sample 数据
+    let chunk_offset = mdat_data_offset as u32;
+    // 在 mp4 中搜索 stco 并修正
+    patch_stco_offset(&mut mp4, chunk_offset);
+
+    let _ = mdat_offset;
+    Some(mp4)
+}
+
+/// 在 MP4 数据中搜索 stco box 并修正 chunk offset
+fn patch_stco_offset(mp4: &mut [u8], offset: u32) {
+    let mut i = 0;
+    while i + 16 < mp4.len() {
+        // 搜索 "stco" 标记
+        if &mp4[i + 4..i + 8] == b"stco" {
+            // stco 结构: 4(size) + 4(type) + 4(version+flags) + 4(entry_count) + 4*N(offsets)
+            let entry_count =
+                u32::from_be_bytes([mp4[i + 12], mp4[i + 13], mp4[i + 14], mp4[i + 15]]);
+            if entry_count >= 1 {
+                // 修正第一个 entry
+                mp4[i + 16..i + 20].copy_from_slice(&offset.to_be_bytes());
+            }
+            return;
+        }
+        i += 1;
+    }
+}
+
+/// 构建音频 MP4 的 moov box
+fn build_audio_moov(
+    sample_rate: u32,
+    channels: u16,
+    bits_per_sample: u16,
+    samples: &[(usize, usize, bool)],
+    duration: u32,
+    timescale: u32,
+    codec: &[u8],
+    esds_tag: u8,
+) -> Vec<u8> {
+    let mut moov = Vec::new();
+
+    // mvhd (movie header)
+    let mvhd = build_mvhd(timescale, duration);
+    moov.extend_from_slice(&(8u32 + mvhd.len() as u32).to_be_bytes());
+    moov.extend_from_slice(b"mvhd");
+    moov.extend_from_slice(&mvhd);
+
+    // trak (audio track)
+    let trak = build_audio_trak(
+        sample_rate,
+        channels,
+        bits_per_sample,
+        samples,
+        duration,
+        timescale,
+        codec,
+        esds_tag,
+    );
+    moov.extend_from_slice(&(8u32 + trak.len() as u32).to_be_bytes());
+    moov.extend_from_slice(b"trak");
+    moov.extend_from_slice(&trak);
+
+    moov
+}
+
+/// 构建 mvhd box (version 0)
+fn build_mvhd(timescale: u32, duration: u32) -> Vec<u8> {
+    let mut mvhd = Vec::new();
+    mvhd.extend_from_slice(&[0, 0, 0, 0]); // version + flags
+    mvhd.extend_from_slice(&0u32.to_be_bytes()); // creation_time
+    mvhd.extend_from_slice(&0u32.to_be_bytes()); // modification_time
+    mvhd.extend_from_slice(&timescale.to_be_bytes()); // timescale
+    mvhd.extend_from_slice(&duration.to_be_bytes()); // duration
+    mvhd.extend_from_slice(&0x00010000u32.to_be_bytes()); // rate (1.0)
+    mvhd.extend_from_slice(&0x0100u16.to_be_bytes()); // volume (1.0)
+    mvhd.extend_from_slice(&0u16.to_be_bytes()); // reserved
+    mvhd.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    mvhd.extend_from_slice(&0u32.to_be_bytes()); // reserved
+                                                 // matrix (identity)
+    let matrix: [u32; 9] = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000];
+    for m in &matrix {
+        mvhd.extend_from_slice(&m.to_be_bytes());
+    }
+    // pre_defined (6 * 4 bytes)
+    for _ in 0..6 {
+        mvhd.extend_from_slice(&0u32.to_be_bytes());
+    }
+    mvhd.extend_from_slice(&2u32.to_be_bytes()); // next_track_ID
+    mvhd
+}
+
+/// 构建音频 trak box
+fn build_audio_trak(
+    sample_rate: u32,
+    channels: u16,
+    bits_per_sample: u16,
+    samples: &[(usize, usize, bool)],
+    duration: u32,
+    timescale: u32,
+    codec: &[u8],
+    esds_tag: u8,
+) -> Vec<u8> {
+    let mut trak = Vec::new();
+
+    // tkhd (track header, version 0)
+    let tkhd = build_tkhd(duration, timescale);
+    trak.extend_from_slice(&(8u32 + tkhd.len() as u32).to_be_bytes());
+    trak.extend_from_slice(b"tkhd");
+    trak.extend_from_slice(&tkhd);
+
+    // mdia
+    let mdia = build_audio_mdia(
+        sample_rate,
+        channels,
+        bits_per_sample,
+        samples,
+        duration,
+        timescale,
+        codec,
+        esds_tag,
+    );
+    trak.extend_from_slice(&(8u32 + mdia.len() as u32).to_be_bytes());
+    trak.extend_from_slice(b"mdia");
+    trak.extend_from_slice(&mdia);
+
+    trak
+}
+
+/// 构建 tkhd box (version 0)
+fn build_tkhd(duration: u32, timescale: u32) -> Vec<u8> {
+    let mut tkhd = Vec::new();
+    tkhd.extend_from_slice(&[0, 0, 0, 0x03]); // version=0, flags=3 (track_enabled | track_in_movie)
+    tkhd.extend_from_slice(&0u32.to_be_bytes()); // creation_time
+    tkhd.extend_from_slice(&0u32.to_be_bytes()); // modification_time
+    tkhd.extend_from_slice(&1u32.to_be_bytes()); // track_ID
+    tkhd.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    tkhd.extend_from_slice(&duration.to_be_bytes()); // duration (in movie timescale)
+    tkhd.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    tkhd.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    tkhd.extend_from_slice(&0u16.to_be_bytes()); // layer
+    tkhd.extend_from_slice(&0u16.to_be_bytes()); // alternate_group
+    tkhd.extend_from_slice(&0x0100u16.to_be_bytes()); // volume (1.0 for audio)
+    tkhd.extend_from_slice(&0u16.to_be_bytes()); // reserved
+                                                 // matrix (identity)
+    let matrix: [u32; 9] = [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000];
+    for m in &matrix {
+        tkhd.extend_from_slice(&m.to_be_bytes());
+    }
+    tkhd.extend_from_slice(&0u32.to_be_bytes()); // width (0 for audio)
+    tkhd.extend_from_slice(&0u32.to_be_bytes()); // height (0 for audio)
+    let _ = timescale;
+    tkhd
+}
+
+/// 构建音频 mdia box
+fn build_audio_mdia(
+    sample_rate: u32,
+    channels: u16,
+    bits_per_sample: u16,
+    samples: &[(usize, usize, bool)],
+    duration: u32,
+    timescale: u32,
+    codec: &[u8],
+    esds_tag: u8,
+) -> Vec<u8> {
+    let mut mdia = Vec::new();
+
+    // mdhd (media header, version 0)
+    let mut mdhd = Vec::new();
+    mdhd.extend_from_slice(&[0, 0, 0, 0]); // version + flags
+    mdhd.extend_from_slice(&0u32.to_be_bytes()); // creation_time
+    mdhd.extend_from_slice(&0u32.to_be_bytes()); // modification_time
+    mdhd.extend_from_slice(&timescale.to_be_bytes()); // timescale
+    mdhd.extend_from_slice(&duration.to_be_bytes()); // duration
+    mdhd.extend_from_slice(&0x55C40000u32.to_be_bytes()); // language (undetermined) + quality
+    mdia.extend_from_slice(&(8u32 + mdhd.len() as u32).to_be_bytes());
+    mdia.extend_from_slice(b"mdhd");
+    mdia.extend_from_slice(&mdhd);
+
+    // hdlr (handler reference)
+    let mut hdlr = Vec::new();
+    hdlr.extend_from_slice(&[0, 0, 0, 0]); // version + flags
+    hdlr.extend_from_slice(&0u32.to_be_bytes()); // pre_defined
+    hdlr.extend_from_slice(b"soun"); // handler_type
+    hdlr.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    hdlr.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    hdlr.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    hdlr.extend_from_slice(b"SoundHandler\x00"); // name
+    mdia.extend_from_slice(&(8u32 + hdlr.len() as u32).to_be_bytes());
+    mdia.extend_from_slice(b"hdlr");
+    mdia.extend_from_slice(&hdlr);
+
+    // minf
+    let minf = build_audio_minf(
+        sample_rate,
+        channels,
+        bits_per_sample,
+        samples,
+        codec,
+        esds_tag,
+    );
+    mdia.extend_from_slice(&(8u32 + minf.len() as u32).to_be_bytes());
+    mdia.extend_from_slice(b"minf");
+    mdia.extend_from_slice(&minf);
+
+    mdia
+}
+
+/// 构建音频 minf box
+fn build_audio_minf(
+    sample_rate: u32,
+    channels: u16,
+    bits_per_sample: u16,
+    samples: &[(usize, usize, bool)],
+    codec: &[u8],
+    esds_tag: u8,
+) -> Vec<u8> {
+    let mut minf = Vec::new();
+
+    // smhd (sound media header)
+    let mut smhd = Vec::new();
+    smhd.extend_from_slice(&[0, 0, 0, 0]); // version + flags
+    smhd.extend_from_slice(&0u16.to_be_bytes()); // balance
+    smhd.extend_from_slice(&0u16.to_be_bytes()); // reserved
+    minf.extend_from_slice(&(8u32 + smhd.len() as u32).to_be_bytes());
+    minf.extend_from_slice(b"smhd");
+    minf.extend_from_slice(&smhd);
+
+    // dinf (data information)
+    let mut dinf = Vec::new();
+    let mut dref = Vec::new();
+    dref.extend_from_slice(&[0, 0, 0, 0]); // version + flags
+    dref.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+                                                 // url entry (self-contained)
+    let url_payload: &[u8] = &[0, 0, 0, 0x01]; // version=0, flags=1 (self-contained)
+    dref.extend_from_slice(&(8u32 + url_payload.len() as u32).to_be_bytes());
+    dref.extend_from_slice(b"url ");
+    dref.extend_from_slice(url_payload);
+    dinf.extend_from_slice(&(8u32 + dref.len() as u32).to_be_bytes());
+    dinf.extend_from_slice(b"dref");
+    dinf.extend_from_slice(&dref);
+    minf.extend_from_slice(&(8u32 + dinf.len() as u32).to_be_bytes());
+    minf.extend_from_slice(b"dinf");
+    minf.extend_from_slice(&dinf);
+
+    // stbl (sample table)
+    let stbl = build_audio_stbl(
+        sample_rate,
+        channels,
+        bits_per_sample,
+        samples,
+        codec,
+        esds_tag,
+    );
+    minf.extend_from_slice(&(8u32 + stbl.len() as u32).to_be_bytes());
+    minf.extend_from_slice(b"stbl");
+    minf.extend_from_slice(&stbl);
+
+    minf
+}
+
+/// 构建音频 stbl box
+fn build_audio_stbl(
+    sample_rate: u32,
+    channels: u16,
+    bits_per_sample: u16,
+    samples: &[(usize, usize, bool)],
+    codec: &[u8],
+    esds_tag: u8,
+) -> Vec<u8> {
+    let mut stbl = Vec::new();
+
+    // stsd (sample description)
+    let stsd = build_audio_stsd(sample_rate, channels, bits_per_sample, codec, esds_tag);
+    stbl.extend_from_slice(&(8u32 + stsd.len() as u32).to_be_bytes());
+    stbl.extend_from_slice(b"stsd");
+    stbl.extend_from_slice(&stsd);
+
+    // stts (decoding time-to-sample)
+    let mut stts = Vec::new();
+    stts.extend_from_slice(&[0, 0, 0, 0]); // version + flags
+                                           // 合并连续相同 sample_duration 的条目
+    let mut entries: Vec<(u32, u32)> = Vec::new();
+    for &(_, sample_count, _) in samples {
+        let sample_delta = sample_count as u32;
+        if let Some(last) = entries.last_mut() {
+            if last.1 == sample_delta {
+                last.0 += 1;
+            } else {
+                entries.push((1, sample_delta));
+            }
+        } else {
+            entries.push((1, sample_delta));
+        }
+    }
+    stts.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+    for (count, delta) in &entries {
+        stts.extend_from_slice(&count.to_be_bytes());
+        stts.extend_from_slice(&delta.to_be_bytes());
+    }
+    stbl.extend_from_slice(&(8u32 + stts.len() as u32).to_be_bytes());
+    stbl.extend_from_slice(b"stts");
+    stbl.extend_from_slice(&stts);
+
+    // stsc (sample-to-chunk)
+    let mut stsc = Vec::new();
+    stsc.extend_from_slice(&[0, 0, 0, 0]); // version + flags
+    stsc.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+    stsc.extend_from_slice(&1u32.to_be_bytes()); // first_chunk
+    stsc.extend_from_slice(&(samples.len() as u32).to_be_bytes()); // samples_per_chunk
+    stsc.extend_from_slice(&1u32.to_be_bytes()); // sample_description_index
+    stbl.extend_from_slice(&(8u32 + stsc.len() as u32).to_be_bytes());
+    stbl.extend_from_slice(b"stsc");
+    stbl.extend_from_slice(&stsc);
+
+    // stsz (sample sizes)
+    let mut stsz = Vec::new();
+    stsz.extend_from_slice(&[0, 0, 0, 0]); // version + flags
+    stsz.extend_from_slice(&0u32.to_be_bytes()); // sample_size (0 = variable)
+    stsz.extend_from_slice(&(samples.len() as u32).to_be_bytes()); // sample_count
+    for &(size, _, _) in samples {
+        stsz.extend_from_slice(&(size as u32).to_be_bytes());
+    }
+    stbl.extend_from_slice(&(8u32 + stsz.len() as u32).to_be_bytes());
+    stbl.extend_from_slice(b"stsz");
+    stbl.extend_from_slice(&stsz);
+
+    // stco (chunk offset)
+    let mut stco = Vec::new();
+    stco.extend_from_slice(&[0, 0, 0, 0]); // version + flags
+    stco.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+                                                 // chunk offset = ftyp_size + moov_size + 8 (mdat header)
+                                                 // This will be patched after moov is built; use placeholder for now
+    stco.extend_from_slice(&0u32.to_be_bytes()); // placeholder, will be patched
+    stbl.extend_from_slice(&(8u32 + stco.len() as u32).to_be_bytes());
+    stbl.extend_from_slice(b"stco");
+    stbl.extend_from_slice(&stco);
+
+    stbl
+}
+
+/// 构建音频 stsd box (sample description)
+fn build_audio_stsd(
+    sample_rate: u32,
+    channels: u16,
+    bits_per_sample: u16,
+    codec: &[u8],
+    esds_tag: u8,
+) -> Vec<u8> {
+    let mut stsd = Vec::new();
+    stsd.extend_from_slice(&[0, 0, 0, 0]); // version + flags
+    stsd.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+
+    // Audio sample entry (mp4a or raw)
+    let mut entry = Vec::new();
+    // 6 bytes reserved + 2 bytes data_ref_index
+    entry.extend_from_slice(&[0; 6]); // reserved
+    entry.extend_from_slice(&1u16.to_be_bytes()); // data_ref_index
+    entry.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    entry.extend_from_slice(&0u32.to_be_bytes()); // reserved
+    entry.extend_from_slice(&(channels as u16).to_be_bytes()); // channel_count
+    entry.extend_from_slice(&0u16.to_be_bytes()); // reserved
+    entry.extend_from_slice(&(bits_per_sample as u16).to_be_bytes()); // sample_size
+    entry.extend_from_slice(&0u16.to_be_bytes()); // compression_id
+    entry.extend_from_slice(&0u16.to_be_bytes()); // packet_size
+    entry.extend_from_slice(&(sample_rate as u32).to_be_bytes()); // sample_rate (fixed 16.16)
+                                                                  // Note: sample_rate in MP4 audio is 16.16 fixed point, but stored as u32
+                                                                  // Actually it's: (sample_rate << 16) as u32
+                                                                  // The above is wrong — let me fix:
+    entry.truncate(entry.len() - 4);
+    entry.extend_from_slice(&((sample_rate as u32) << 16).to_be_bytes());
+
+    // esds box (ES Descriptor) for AAC, or skip for raw PCM
+    if codec == b"mp4a" {
+        let esds = build_esds(esds_tag, sample_rate, channels);
+        entry.extend_from_slice(&(8u32 + esds.len() as u32).to_be_bytes());
+        entry.extend_from_slice(b"esds");
+        entry.extend_from_slice(&esds);
+    }
+
+    stsd.extend_from_slice(&(8u32 + entry.len() as u32).to_be_bytes());
+    stsd.extend_from_slice(codec);
+    stsd.extend_from_slice(&entry);
+
+    stsd
+}
+
+/// 构建 esds box (Elementary Stream Descriptor)
+fn build_esds(codec_tag: u8, sample_rate: u32, channels: u16) -> Vec<u8> {
+    let mut esds = Vec::new();
+    esds.extend_from_slice(&[0, 0, 0, 0]); // version + flags
+
+    // ES_Descriptor (tag 0x03)
+    let mut es_desc = Vec::new();
+    es_desc.extend_from_slice(&0x03u8.to_be_bytes()); // ES_DescrTag
+                                                      // ES_ID (2 bytes) + flags (1 byte)
+    let es_payload = vec![
+        0x00, 0x01, // ES_ID = 1
+        0x00, // flags = 0
+    ];
+    es_desc.extend_from_slice(&encode_desc_len(es_payload.len()));
+    es_desc.extend_from_slice(&es_payload);
+
+    // DecoderConfigDescriptor (tag 0x04)
+    let mut dec_config = Vec::new();
+    dec_config.extend_from_slice(&0x04u8.to_be_bytes()); // DecoderConfigDescrTag
+    let dec_payload = vec![
+        codec_tag, // objectTypeIndication (0x40 = Audio ISO/IEC 14496-3)
+        0x15,      // streamType=0x05 (audio) | upStream=0 | reserved=1 | bufferType=0x01
+        0x00, 0x00, 0x00, // bufferSizeDB
+        0x00, 0x01, 0xF4, 0x00, // maxBitrate = 128000
+        0x00, 0x01, 0xF4, 0x00, // avgBitrate = 128000
+    ];
+    dec_config.extend_from_slice(&encode_desc_len(dec_payload.len()));
+    dec_config.extend_from_slice(&dec_payload);
+
+    // DecSpecificInfoDescriptor (tag 0x05) — AudioSpecificConfig
+    let mut audio_config = Vec::new();
+    // AudioSpecificConfig for AAC-LC
+    // sampling_frequency_index (4 bits) + channel_configuration (4 bits)
+    let freq_idx: u8 = match sample_rate {
+        96000 => 0,
+        88200 => 1,
+        64000 => 2,
+        48000 => 3,
+        44100 => 4,
+        32000 => 5,
+        24000 => 6,
+        22050 => 7,
+        16000 => 8,
+        12000 => 9,
+        11025 => 10,
+        8000 => 11,
+        _ => 0x0F, // explicit
+    };
+    // AAC-LC = objectType 2, sampling freq index, channel config
+    let asc: Vec<u8> = if freq_idx == 0x0F {
+        vec![
+            (2u8 << 3) | (freq_idx >> 1), // objectType(5) + freqIdx high(3)
+            (freq_idx << 7) | ((channels as u8) << 3), // freqIdx low(1) + channel(3) + padding
+        ]
+    } else {
+        vec![
+            (2u8 << 3) | (freq_idx >> 1), // objectType(5) + freqIdx high(3)
+            (freq_idx << 7) | ((channels as u8) << 3), // freqIdx low(1) + channel(3) + padding
+        ]
+    };
+    audio_config.extend_from_slice(&0x05u8.to_be_bytes()); // DecSpecificInfoTag
+    audio_config.extend_from_slice(&encode_desc_len(asc.len()));
+    audio_config.extend_from_slice(&asc);
+
+    dec_config.extend_from_slice(&audio_config);
+    es_desc.extend_from_slice(&dec_config);
+
+    // SLConfigDescriptor (tag 0x06)
+    let mut sl_config = Vec::new();
+    sl_config.extend_from_slice(&0x06u8.to_be_bytes()); // SLConfigDescrTag
+    let sl_payload = vec![0x02]; // predefined = 2
+    sl_config.extend_from_slice(&encode_desc_len(sl_payload.len()));
+    sl_config.extend_from_slice(&sl_payload);
+
+    es_desc.extend_from_slice(&sl_config);
+    esds.extend_from_slice(&es_desc);
+
+    esds
+}
+
+/// 编码 MPEG-4 descriptor length (variable-length encoding)
+fn encode_desc_len(len: usize) -> Vec<u8> {
+    if len < 128 {
+        return vec![len as u8];
+    }
+    if len < 16384 {
+        return vec![(len >> 7) as u8 | 0x80, (len & 0x7F) as u8];
+    }
+    if len < 2097152 {
+        return vec![
+            (len >> 14) as u8 | 0x80,
+            ((len >> 7) & 0x7F) as u8 | 0x80,
+            (len & 0x7F) as u8,
+        ];
+    }
+    vec![
+        (len >> 21) as u8 | 0x80,
+        ((len >> 14) & 0x7F) as u8 | 0x80,
+        ((len >> 7) & 0x7F) as u8 | 0x80,
+        (len & 0x7F) as u8,
+    ]
 }
 
 /// MP4 视频编解码类型
@@ -2232,11 +2818,31 @@ pub struct WebmRecorder {
     video_track: u8,
     audio_track: Option<u8>,
     cluster_timestamp: u64,
+    /// 视频宽度
+    width: u32,
+    /// 视频高度
+    height: u32,
+    /// 音频采样率
+    audio_sample_rate: u32,
+    /// 音频声道数
+    audio_channels: u8,
 }
 
 impl WebmRecorder {
     /// 创建 WebM 文件并写入 EBML header + Segment + Tracks
     pub async fn create(path: &str, has_audio: bool) -> Result<Self> {
+        Self::create_with_params(path, 320, 240, has_audio, 48000, 2).await
+    }
+
+    /// 创建 WebM 文件，指定视频分辨率和音频参数
+    pub async fn create_with_params(
+        path: &str,
+        width: u32,
+        height: u32,
+        has_audio: bool,
+        audio_sample_rate: u32,
+        audio_channels: u8,
+    ) -> Result<Self> {
         if let Some(parent) = Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
                 tokio::fs::create_dir_all(parent).await?;
@@ -2252,12 +2858,22 @@ impl WebmRecorder {
             video_track: 1,
             audio_track: if has_audio { Some(2) } else { None },
             cluster_timestamp: u64::MAX,
+            width,
+            height,
+            audio_sample_rate,
+            audio_channels,
         };
 
         recorder.write_ebml_header().await?;
         recorder.write_segment_and_tracks().await?;
         recorder.file.flush().await?;
         Ok(recorder)
+    }
+
+    /// 更新视频分辨率（在收到第一帧后调用）
+    pub async fn set_video_dimensions(&mut self, width: u32, height: u32) {
+        self.width = width;
+        self.height = height;
     }
 
     async fn write_ebml_header(&mut self) -> Result<()> {
@@ -2295,7 +2911,16 @@ impl WebmRecorder {
         ));
         video_entry.extend_from_slice(&encode_ebml_uint(0x73C5, self.video_track as u64)); // TrackUID
         video_entry.extend_from_slice(&encode_ebml_uint(EBML_ID_TRACK_TYPE, 1)); // TrackType = video
-        video_entry.extend_from_slice(&encode_ebml_string(EBML_ID_CODEC_ID, "V_VP8"));
+        video_entry.extend_from_slice(&encode_ebml_string(EBML_ID_CODEC_ID, "V_VP8")); // CodecID
+
+        // Video Settings (Master element)
+        let mut video_settings = Vec::new();
+        video_settings.extend_from_slice(&encode_ebml_uint(0xB0, self.width as u64)); // PixelWidth
+        video_settings.extend_from_slice(&encode_ebml_uint(0xBA, self.height as u64)); // PixelHeight
+                                                                                       // FlagInterlaced (0x9A): 0 = progressive
+        video_settings.extend_from_slice(&encode_ebml_uint(0x9A, 0));
+        video_entry.extend_from_slice(&encode_ebml_element(0xE0, &video_settings)); // Video element
+
         tracks_body.extend_from_slice(&encode_ebml_element(EBML_ID_TRACK_ENTRY, &video_entry));
 
         // Audio track entry (optional)
@@ -2305,7 +2930,21 @@ impl WebmRecorder {
                 .extend_from_slice(&encode_ebml_uint(EBML_ID_TRACK_NUMBER, audio_track as u64));
             audio_entry.extend_from_slice(&encode_ebml_uint(0x73C5, audio_track as u64)); // TrackUID
             audio_entry.extend_from_slice(&encode_ebml_uint(EBML_ID_TRACK_TYPE, 2)); // TrackType = audio
-            audio_entry.extend_from_slice(&encode_ebml_string(EBML_ID_CODEC_ID, "A_OPUS"));
+            audio_entry.extend_from_slice(&encode_ebml_string(EBML_ID_CODEC_ID, "A_OPUS")); // CodecID
+
+            // Audio Settings (Master element)
+            let mut audio_settings = Vec::new();
+            // SamplingFrequency (0xB5): float 8 bytes (big-endian)
+            let freq_bytes = (self.audio_sample_rate as f64).to_be_bytes();
+            audio_settings.extend_from_slice(&encode_ebml_id(0xB5));
+            audio_settings.extend_from_slice(&[0x88]); // 8-byte float size
+            audio_settings.extend_from_slice(&freq_bytes);
+            // Channels (0x9F)
+            audio_settings.extend_from_slice(&encode_ebml_uint(0x9F, self.audio_channels as u64));
+            // BitDepth (0x626C): 16 bits for Opus
+            audio_settings.extend_from_slice(&encode_ebml_uint(0x626C, 16));
+            audio_entry.extend_from_slice(&encode_ebml_element(0xE1, &audio_settings)); // Audio element
+
             tracks_body.extend_from_slice(&encode_ebml_element(EBML_ID_TRACK_ENTRY, &audio_entry));
         }
 

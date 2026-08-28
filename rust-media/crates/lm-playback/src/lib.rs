@@ -787,44 +787,108 @@ async fn play_ivf_native(
     Ok(())
 }
 
-/// 纯 Rust OGG 回放 (简化: 依赖 opus 解码需要外部库, fallback 到 ffmpeg)
+/// 纯 Rust OGG 回放 (Opus 解码)
+///
+/// 解析 OGG pages, 提取 Opus 帧, 使用 audio_codec::OpusDecoder 解码为 PCM。
 async fn play_ogg_native(
     path: &std::path::Path,
     stopped: &Arc<AtomicBool>,
     position: &Arc<AtomicU64>,
-    _speed: f32,
+    speed: f32,
 ) -> Result<()> {
-    // OGG/Opus 解码需要 opus decoder 库
-    // 简化: 读取文件并解析 OGG pages, 但实际解码 fallback
     let data = tokio::fs::read(path).await?;
 
     if data.len() < 4 || &data[0..4] != b"OggS" {
         return Err(anyhow!("not an OGG file"));
     }
 
-    info!(path = %path.display(), "native OGG playback started (metadata only)");
+    info!(path = %path.display(), "native OGG playback started (Opus decode)");
 
-    // 简化: 计算总页数和时间
+    // 创建 Opus decoder (48kHz, stereo — OGG/Opus 标准配置)
+    let mut decoder = audio_codec::opus::OpusDecoder::new(48000, 2);
+
     let mut offset = 0;
     let mut elapsed_ms = 0u64;
+    let mut pcm_output = [0i16; 960 * 2]; // 20ms at 48kHz stereo
+
     while offset + 27 <= data.len() && !stopped.load(Ordering::Relaxed) {
         if &data[offset..offset + 4] != b"OggS" {
             break;
         }
-        // OGG page header: 27 bytes + segment table
+
+        // OGG page header: 27 bytes
+        let header_type = data[offset + 5];
+        let _granule = i64::from_le_bytes([
+            data[offset + 6],
+            data[offset + 7],
+            data[offset + 8],
+            data[offset + 9],
+            data[offset + 10],
+            data[offset + 11],
+            data[offset + 12],
+            data[offset + 13],
+        ]);
         let segments = data[offset + 26] as usize;
-        let page_size = 27 + segments;
-        if offset + page_size > data.len() {
+        let page_header_size = 27 + segments;
+
+        if offset + page_header_size > data.len() {
             break;
         }
-        // 跳过 segment table 和 page data
+
+        // 计算 segment data 总大小
         let mut page_data_size = 0;
         for i in 0..segments {
             page_data_size += data[offset + 27 + i] as usize;
         }
-        offset += page_size + page_data_size;
-        elapsed_ms += 20; // 估算 20ms per page
-        position.store(elapsed_ms / 1000, Ordering::Relaxed);
+
+        let page_data_offset = offset + page_header_size;
+        if page_data_offset + page_data_size > data.len() {
+            break;
+        }
+
+        // 跳过 header pages (header_type & 0x02 = BOS, first page)
+        // Opus OGG 的前两页是 OpusHead 和 OpusComments
+        let is_header_page = (header_type & 0x02) != 0 || elapsed_ms == 0;
+
+        if !is_header_page {
+            // 提取 Opus 帧数据 (可能一个 page 包含多个帧)
+            let page_data = &data[page_data_offset..page_data_offset + page_data_size];
+
+            // OGG/Opus: 每个 segment 通常是一个 Opus 帧
+            // 简化: 将整个 page data 作为一个 Opus 帧解码
+            // 实际 OGG/Opus 中帧可能跨 segment
+            let mut seg_offset = 0;
+            for i in 0..segments {
+                let seg_len = data[offset + 27 + i] as usize;
+                if seg_offset + seg_len <= page_data.len() && seg_len > 0 {
+                    let opus_frame = &page_data[seg_offset..seg_offset + seg_len];
+
+                    // 检查是否为 Opus 帧 (不是 OpusHead/OpusComments)
+                    if opus_frame.len() >= 8 && &opus_frame[0..8] == b"OpusHead" {
+                        // skip header
+                    } else if opus_frame.len() >= 8 && &opus_frame[0..8] == b"OpusTags" {
+                        // skip tags
+                    } else {
+                        // 解码 Opus 帧
+                        let samples_decoded = decoder.decode_into_raw(opus_frame, &mut pcm_output);
+                        if samples_decoded > 0 {
+                            // 实际应推入 MediaStream
+                            let _ = &pcm_output[..samples_decoded];
+                        }
+                    }
+                }
+                seg_offset += seg_len;
+            }
+
+            elapsed_ms += 20; // Opus 帧 = 20ms
+            position.store(elapsed_ms / 1000, Ordering::Relaxed);
+
+            // 按 speed 控制播放速率
+            let sleep_ms = (20.0_f32 / speed).max(1.0) as u64;
+            tokio::time::sleep(tokio::time::Duration::from_millis(sleep_ms)).await;
+        }
+
+        offset = page_data_offset + page_data_size;
     }
 
     info!("native OGG playback ended");

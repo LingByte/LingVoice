@@ -132,7 +132,9 @@ struct NvEncLockBitstream {
     outputTimeStamp: u64,
     outputDuration: u64,
     bitstreamBufferPtr: *mut c_void,
-    reserved1: [*mut c_void; 58],
+    /// NV_ENC_PIC_TYPE: 1=IDR, 2=I, 3=P, 4=B, 5=BI
+    pictureType: u32,
+    reserved1: [*mut c_void; 57],
 }
 
 #[repr(C)]
@@ -409,6 +411,65 @@ impl NvencEncoder {
 
         nv12
     }
+
+    /// 从编码后的 bitstream 中检测 keyframe (fallback 方法)
+    ///
+    /// H.264: 查找 NALU type 5 (IDR) 或 type 7 (SPS)
+    /// H.265: 查找 NALU type 19 (IDR_W_RADL) 或 type 20 (IDR_N_LP) 或 type 32 (VPS)
+    fn detect_keyframe_from_bitstream(&self, data: &[u8]) -> bool {
+        if self.is_h264 {
+            // H.264: 搜索 NALU type 5 (IDR slice) 或 type 7 (SPS)
+            let mut i = 0;
+            while i + 5 < data.len() {
+                // 查找起始码 (0x000001 或 0x00000001)
+                if (data[i..i + 4] == [0, 0, 0, 1])
+                    || (i + 3 <= data.len() && data[i..i + 3] == [0, 0, 1])
+                {
+                    let start = if data[i..i + 4] == [0, 0, 0, 1] {
+                        i + 4
+                    } else {
+                        i + 3
+                    };
+                    if start < data.len() {
+                        let nalu_type = data[start] & 0x1F;
+                        // 5 = IDR slice, 7 = SPS (keyframe indicators)
+                        if nalu_type == 5 || nalu_type == 7 {
+                            return true;
+                        }
+                    }
+                    i = start;
+                } else {
+                    i += 1;
+                }
+            }
+            false
+        } else {
+            // H.265: 搜索 NALU type 19/20 (IDR) 或 32 (VPS)
+            let mut i = 0;
+            while i + 5 < data.len() {
+                if (data[i..i + 4] == [0, 0, 0, 1])
+                    || (i + 3 <= data.len() && data[i..i + 3] == [0, 0, 1])
+                {
+                    let start = if data[i..i + 4] == [0, 0, 0, 1] {
+                        i + 4
+                    } else {
+                        i + 3
+                    };
+                    if start < data.len() {
+                        let nalu_type = (data[start] >> 1) & 0x3F;
+                        // 19 = IDR_W_RADL, 20 = IDR_N_LP, 32 = VPS
+                        if nalu_type == 19 || nalu_type == 20 || nalu_type == 32 {
+                            return true;
+                        }
+                    }
+                    i = start;
+                } else {
+                    i += 1;
+                }
+            }
+            false
+        }
+    }
 }
 
 impl VideoEncoder for NvencEncoder {
@@ -588,11 +649,18 @@ impl VideoEncoder for NvencEncoder {
 
         self.frame_count += 1;
 
+        // 从 NVENC 输出获取实际 frame type
+        // NV_ENC_PIC_TYPE: 1=IDR (keyframe), 2=I (keyframe), 3=P, 4=B, 5=BI
+        let is_keyframe = matches!(lock_bitstream_params.pictureType, 1 | 2 | 5);
+
+        // 对于 H.264/H.265, 也可以从 NALU header 检测 keyframe 作为 fallback
+        let keyframe = is_keyframe || self.detect_keyframe_from_bitstream(&data);
+
         Ok(EncodedFrame {
             data: bytes::Bytes::from(data),
             width: self.config.width,
             height: self.config.height,
-            keyframe: true, // NVENC 框架实现中标记所有帧为 keyframe (简化)
+            keyframe,
             timestamp: frame.timestamp,
             bit_depth: 8,
         })
