@@ -15,7 +15,7 @@ require (
 	github.com/alibabacloud-go/darabonba-openapi/v2 v2.2.4
 	github.com/alibabacloud-go/green-20220302/v2 v2.23.0
 	github.com/alibabacloud-go/ocr-api-20210707/v3 v3.1.3
-	github.com/alibabacloud-go/tea v1.5.2
+	github.com/alibabacloud-go/tea v1.5.3
 	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/allegro/bigcache/v3 v3.2.0
 	github.com/apache/rocketmq-client-go/v2 v2.1.2
