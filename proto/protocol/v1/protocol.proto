@@ -1,0 +1,163 @@
+syntax = "proto3";
+
+package lingvoice.protocol.v1;
+
+option go_package = "github.com/LingByte/LingVoice/proto/protocol/v1;protocolv1";
+
+// === SIP 事件与决策 ===
+
+enum SipMethod {
+  SIP_METHOD_UNSPECIFIED = 0;
+  SIP_METHOD_INVITE = 1;
+  SIP_METHOD_BYE = 2;
+  SIP_METHOD_REGISTER = 3;
+  SIP_METHOD_ACK = 4;
+  SIP_METHOD_CANCEL = 5;
+  SIP_METHOD_OPTIONS = 6;
+}
+
+enum SipAction {
+  SIP_ACTION_UNSPECIFIED = 0;
+  SIP_ACTION_SEND_401 = 1;
+  SIP_ACTION_SEND_407 = 2;
+  SIP_ACTION_SEND_180 = 3;
+  SIP_ACTION_SEND_200_OK = 4;
+  SIP_ACTION_SEND_486 = 5;
+  SIP_ACTION_SEND_603 = 6;
+  SIP_ACTION_SEND_404 = 7;
+  SIP_ACTION_ACK = 8;
+  SIP_ACTION_REJECT = 9;
+}
+
+message SipEvent {
+  string call_id = 1;
+  string from_addr = 2;
+  string to_addr = 3;
+  SipMethod method = 4;
+  string auth_header = 5;
+  bytes body = 6; // SDP body
+}
+
+message SipDecision {
+  SipAction action = 1;
+  string reason = 2;
+  string route_to = 3;
+  uint32 local_rtp_port = 4;
+  string codec = 5;
+  uint32 sample_rate = 6;
+  uint32 channels = 7;
+}
+
+message SipResponse {
+  string call_id = 1;
+  uint32 status = 2;
+  string reason = 3;
+  bytes body = 4; // SDP body
+}
+
+// === WebRTC 事件与决策 ===
+
+enum WebrtcRole {
+  WEBRTC_ROLE_UNSPECIFIED = 0;
+  WEBRTC_ROLE_PUBLISHER = 1;
+  WEBRTC_ROLE_SUBSCRIBER = 2;
+}
+
+enum WebrtcEventType {
+  WEBRTC_EVENT_UNSPECIFIED = 0;
+  WEBRTC_EVENT_OFFER = 1;
+  WEBRTC_EVENT_ANSWER = 2;
+  WEBRTC_EVENT_CANDIDATE = 3;
+  WEBRTC_EVENT_CONNECTED = 4;
+  WEBRTC_EVENT_FAILED = 5;
+  WEBRTC_EVENT_CLOSED = 6;
+  WEBRTC_EVENT_ICE_RESTART = 7;
+}
+
+enum WebrtcAction {
+  WEBRTC_ACTION_UNSPECIFIED = 0;
+  WEBRTC_ACTION_CREATE_PEER_CONNECTION = 1;
+  WEBRTC_ACTION_SET_REMOTE_DESCRIPTION = 2;
+  WEBRTC_ACTION_ADD_ICE_CANDIDATE = 3;
+  WEBRTC_ACTION_SEND_OFFER = 4;
+  WEBRTC_ACTION_SEND_ANSWER = 5;
+  WEBRTC_ACTION_CLOSE_PEER_CONNECTION = 6;
+}
+
+message SdpDescription {
+  string type = 1; // "offer" | "answer"
+  string sdp = 2;
+}
+
+message IceCandidate {
+  string candidate = 1;
+  string sdp_mid = 2;
+  int32 sdp_m_line_index = 3;
+  string username_fragment = 4;
+}
+
+message WebrtcEvent {
+  string session_id = 1;
+  string pc_id = 2;
+  WebrtcRole role = 3;
+  WebrtcEventType event_type = 4;
+  SdpDescription sdp = 5;
+  IceCandidate candidate = 6;
+  string error = 7;
+}
+
+message WebrtcDecision {
+  WebrtcAction action = 1;
+  string session_id = 2;
+  string pc_id = 3;
+  SdpDescription sdp = 4;
+  IceCandidate candidate = 5;
+}
+
+// === 通用 ===
+
+message Ack {
+  bool ok = 1;
+  string error = 2;
+}
+
+message PeerConnectionId {
+  string pc_id = 1;
+}
+
+message CreatePeerConnectionRequest {
+  string session_id = 1;
+  repeated string ice_servers = 2;
+  bool enable_simulcast = 3;
+}
+
+message SetRemoteDescriptionRequest {
+  string pc_id = 1;
+  SdpDescription sdp = 2;
+}
+
+message AddIceCandidateRequest {
+  string pc_id = 1;
+  IceCandidate candidate = 2;
+}
+
+message ClosePeerConnectionRequest {
+  string pc_id = 1;
+}
+
+// === gRPC 服务 ===
+
+// Rust 媒体面 → Go 控制面：协议事件上报，Go 返回决策
+service ProtocolEventSink {
+  rpc OnSipEvent(SipEvent) returns (SipDecision);
+  rpc OnWebrtcEvent(WebrtcEvent) returns (WebrtcDecision);
+}
+
+// Go 控制面 → Rust 媒体面：协议指令下发
+service ProtocolCommand {
+  rpc SendSipResponse(SipResponse) returns (Ack);
+  rpc CreatePeerConnection(CreatePeerConnectionRequest) returns (PeerConnectionId);
+  rpc SetRemoteDescription(SetRemoteDescriptionRequest) returns (Ack);
+  rpc AddIceCandidate(AddIceCandidateRequest) returns (Ack);
+  rpc ClosePeerConnection(ClosePeerConnectionRequest) returns (Ack);
+}
