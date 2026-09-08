@@ -1,0 +1,298 @@
+// Copyright (c) 2026 heathcetide. All rights reserved.
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/LingByte/LingVoice/internal/configs"
+	"github.com/LingByte/LingVoice/internal/constants"
+	"github.com/LingByte/LingVoice/internal/handlers"
+	"github.com/LingByte/LingVoice/internal/listeners"
+	localmw "github.com/LingByte/LingVoice/internal/middlewares"
+	"github.com/LingByte/LingVoice/internal/models"
+	pkgcache "github.com/LingByte/LingVoice/pkg/cache"
+	pkglock "github.com/LingByte/LingVoice/pkg/lock"
+	pkgretry "github.com/LingByte/LingVoice/pkg/retry"
+	pkgfallback "github.com/LingByte/LingVoice/pkg/fallback"
+	pkgstorage "github.com/LingByte/LingVoice/pkg/storage"
+	"github.com/LingByte/LingVoice/pkg/apidocs"
+	"github.com/LingByte/LingVoice/pkg/bootstrap"
+	"github.com/LingByte/LingVoice/pkg/common/jwtutil"
+	jwtingin "github.com/LingByte/LingVoice/pkg/common/jwtutil/gin"
+	"github.com/LingByte/LingVoice/pkg/common/i18n"
+	i18ngin "github.com/LingByte/LingVoice/pkg/common/i18n/gin"
+	respgin "github.com/LingByte/LingVoice/pkg/common/response/gin"
+	"github.com/LingByte/LingVoice/pkg/common/response"
+	"github.com/LingByte/LingVoice/pkg/common/logger"
+	"github.com/LingByte/LingVoice/pkg/common/middleware"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+	"gorm.io/gorm"
+)
+
+// Build metadata (injected via ldflags).
+var (
+	Version   = "dev"
+	BuildTime = "unknown"
+	GitCommit = "none"
+)
+
+func main() {
+	info := &handlers.AppInfo{
+		Name:      "LingVoice",
+		Version:   Version,
+		BuildTime: BuildTime,
+		GitCommit: GitCommit,
+	}
+
+	// Load configuration
+	cfg, err := configs.Load("configs/config.yaml")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Initialize timezone
+	logger.InitTimezone(constants.TimezoneShanghai)
+
+	// Initialize logger (zap + lumberjack rotation + sensitive field masking)
+	if err := logger.Init(&logger.LogConfig{
+		Level:           cfg.Logging.Level,
+		Filename:        cfg.Logging.Filename,
+		MaxSize:         cfg.Logging.MaxSize,
+		MaxAge:          cfg.Logging.MaxAge,
+		MaxBackups:      cfg.Logging.MaxBackups,
+		Daily:           cfg.Logging.Daily,
+		SensitiveFields: cfg.Logging.SensitiveFields,
+	}, cfg.App.Environment); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to init logger: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Initialize i18n (multi-language translation)
+	supportedLocales := make([]i18n.Locale, len(cfg.I18n.SupportedLocales))
+	for i, loc := range cfg.I18n.SupportedLocales {
+		supportedLocales[i] = i18n.Locale(loc)
+	}
+	i18nManager := i18n.NewManager(&i18n.Config{
+		DefaultLocale:    i18n.Locale(cfg.I18n.DefaultLocale),
+		SupportedLocales: supportedLocales,
+		FallbackLocale:   i18n.Locale(cfg.I18n.FallbackLocale),
+		TranslationsPath: cfg.I18n.TranslationsPath,
+	})
+	// Wire i18n resolver into the response package for automatic message translation
+	respgin.Resolver = response.ResolverFunc(func(key string, args ...any) string {
+		return i18nManager.T(i18nManager.GetDefaultLocale(), key, args...)
+	})
+
+	// Create bootstrap application
+	appOpts := []bootstrap.Option{
+		bootstrap.WithProfile(cfg.App.Environment),
+		bootstrap.WithBannerText(info.Name),
+		bootstrap.WithShutdownTimeout(15 * time.Second),
+	}
+
+	// Database initialization + migration
+	var db *gorm.DB
+	if cfg.Database.DSN != "" {
+		db, err = configs.InitDB(cfg.Database)
+		if err != nil {
+			logger.Lg.Error("failed to init database", zap.Error(err))
+			os.Exit(1)
+		}
+		// dev/test: AutoMigrate; prod: manual SQL migrations
+		if cfg.App.Environment == "dev" || cfg.App.Environment == "test" {
+			appOpts = append(appOpts, bootstrap.WithAutoMigrate(db, &models.User{}, &models.Role{}, &models.Permission{}, &models.UserRole{}, &models.RolePermission{}, &models.Tenant{}))
+		}
+	}
+
+	// Initialize object storage (pkg/storage, default local backend)
+	if err = pkgstorage.Init(
+		cfg.Storage.Driver, cfg.Storage.Root, cfg.Storage.Region,
+		cfg.Storage.Endpoint, cfg.Storage.AccessKey, cfg.Storage.SecretKey,
+		cfg.Storage.PublicURLBase, cfg.Storage.MaxFileSize,
+	); err != nil {
+		logger.Lg.Error("failed to init storage", zap.Error(err))
+		os.Exit(1)
+	}
+
+	// Initialize cache (pkg/cache, default memory backend)
+	if err = pkgcache.Init(cfg.Cache.Driver, cfg.Cache.DefaultTTL, cfg.Cache.CleanupInterval); err != nil {
+		logger.Lg.Error("failed to init cache", zap.Error(err))
+		os.Exit(1)
+	}
+
+	// Initialize distributed lock (pkg/lock, default memory backend)
+	if err = pkglock.Init(cfg.Lock.Driver, cfg.Lock.DefaultTTL, cfg.Lock.RetryDelay); err != nil {
+		logger.Lg.Error("failed to init lock manager", zap.Error(err))
+		os.Exit(1)
+	}
+
+	// Initialize retry strategy (pkg/retry)
+	pkgretry.Init(cfg.Retry.MaxAttempts, cfg.Retry.InitialDelay, cfg.Retry.MaxDelay, cfg.Retry.Factor, cfg.Retry.Jitter)
+
+	// Initialize fallback/degradation strategy (pkg/fallback)
+	pkgfallback.Init(cfg.Fallback.Enabled, cfg.Fallback.DefaultMessage, cfg.Fallback.StatusCode)
+
+	// Initialize timeout + circuit breaker manager (ling-base/middleware)
+	recoveryTimeout, _ := time.ParseDuration(cfg.CircuitBreaker.RecoveryTimeout)
+	middleware.InitTimeoutCircuitManager(
+		middleware.TimeoutConfig{
+			DefaultTimeout:   30 * time.Second,
+			FallbackResponse: map[string]interface{}{"error": "service_unavailable", "message": "service temporarily unavailable"},
+		},
+		middleware.CircuitBreakerConfig{
+			FailureThreshold:      cfg.CircuitBreaker.FailureThreshold,
+			SuccessThreshold:      3,
+			OpenTimeout:           recoveryTimeout,
+			MaxConcurrentRequests: cfg.CircuitBreaker.MinRequests,
+		},
+		true,                        // enableTimeout
+		cfg.CircuitBreaker.Enabled,  // enableCircuitBreaker
+	)
+
+	// Initialize JWT authentication (ling-base/common/jwtutil)
+	accessTTL, _ := time.ParseDuration(cfg.JWT.AccessTTL)
+	refreshTTL, _ := time.ParseDuration(cfg.JWT.RefreshTTL)
+	jwtAuth, err := jwtutil.New(jwtutil.Config{
+		Secret:     []byte(cfg.JWT.Secret),
+		Issuer:     cfg.JWT.Issuer,
+		AccessTTL:  accessTTL,
+		RefreshTTL: refreshTTL,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to init JWT: %v\n", err)
+		os.Exit(1)
+	}
+	info.JWTAuth = jwtAuth
+
+	app := bootstrap.New(info.Name, appOpts...)
+	// Seed default RBAC data (roles, permissions, admin assignments) via init hook
+	if db != nil {
+		app.AddInitHook(constants.HookSeedRBAC, func(ctx context.Context) error {
+			return models.SeedRBACDefaults(db)
+		})
+	}
+
+	// Register event listeners (post-processing for domain events)
+	app.AddInitHook(constants.HookRegisterListeners, func(ctx context.Context) error {
+		listeners.Register(db)
+		return nil
+	})
+
+	// Register HTTP server as a lifecycle component
+	app.Register("http-server", &httpServerComponent{
+		info: info,
+		cfg:  cfg,
+		db:   db,
+		jwtAuth: jwtAuth,
+		i18nManager: i18nManager,
+	})
+	// Register cache as a lifecycle component (graceful shutdown)
+	app.Register("cache", &cacheComponent{})
+
+	// Start (blocks until a shutdown signal is received)
+	if err := app.Run(); err != nil {
+		logger.Lg.Error("application failed to start", zap.Error(err))
+		os.Exit(1)
+	}
+}
+
+// HTTP server lifecycle component
+
+type httpServerComponent struct {
+	info   *handlers.AppInfo
+	cfg    *configs.Config
+	db     *gorm.DB
+	server *http.Server
+	jwtAuth *jwtutil.Auth
+	i18nManager *i18n.Manager
+}
+
+// cacheComponent wraps the cache as a bootstrap lifecycle component.
+type cacheComponent struct{}
+
+func (c *cacheComponent) Start(ctx context.Context) error { return nil }
+func (c *cacheComponent) Stop(ctx context.Context) error {
+	return pkgcache.Close()
+}
+func (c *cacheComponent) IsRunning() bool { return true }
+
+func (c *httpServerComponent) Start(ctx context.Context) error {
+	// Use Release mode in production
+	if c.cfg.App.Environment == "prod" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
+	r := gin.New()
+
+	// Global middleware (ling-base/middleware)
+	// Order matters: RequestID → Logger → PanicRecovery → CORS
+	r.Use(middleware.RequestIDMiddleware())
+	r.Use(middleware.LoggerMiddleware(logger.Lg))
+	r.Use(middleware.PanicRecovery())
+	r.Use(middleware.CORS())
+	// i18n middleware (detects language from Accept-Language / query param / cookie)
+	r.Use(i18ngin.Middleware(c.i18nManager))
+	r.Use(localmw.RateLimit(c.cfg.RateLimit))
+	r.Use(middleware.CircuitBreakerMiddleware())
+	// JWT auth middleware (public paths are automatically skipped)
+	if c.jwtAuth != nil {
+		r.Use(jwtingin.Middleware(c.jwtAuth, jwtingin.WithPublicPaths(
+			"/health", "/live", "/ready", "/api/v1/version",
+			"/api/v1/auth/login", "/api/v1/auth/refresh",
+			"/api/v1/register",
+			"/docs", "/openapi",
+			"/api/v1/tenants",
+		)))
+	}
+	// Multi-tenant middleware: extract tenant ID from JWT or X-Tenant-ID header
+	r.Use(localmw.TenantMiddleware())
+	// Mount apidocs first to get huma.API (for registering routes with OpenAPI docs)
+	docsEnabled := c.cfg.Docs.Enabled
+	api := apidocs.Mount(r, apidocs.Options{
+		Title:       c.info.Name + " API",
+		Version:     c.info.Version,
+		Description: "LingVoice RESTful API documentation",
+		DocsPath:    c.cfg.Docs.Path,
+		DarkMode:    c.cfg.Docs.DarkMode,
+		EnabledFunc: func() bool { return docsEnabled },
+	})
+
+	// Create handlers and register routes (humax.Group: Gin + OpenAPI docs)
+	h := handlers.New(c.cfg, *c.info, c.db)
+	h.Register(r, api)
+
+	c.server = &http.Server{
+		Addr:         fmt.Sprintf(":%d", c.cfg.Server.Port),
+		Handler:      r,
+		ReadTimeout:  c.cfg.Server.ReadTimeout,
+		WriteTimeout: c.cfg.Server.WriteTimeout,
+		IdleTimeout:  c.cfg.Server.IdleTimeout,
+	}
+
+	go func() {
+		logger.Lg.Info("HTTP server started",
+			zap.String("addr", c.server.Addr),
+			zap.String("version", c.info.Version))
+		if err := c.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Lg.Error("HTTP server error", zap.Error(err))
+		}
+	}()
+
+	return nil
+}
+
+func (c *httpServerComponent) Stop(ctx context.Context) error {
+	logger.Lg.Info("shutting down HTTP server...")
+	return c.server.Shutdown(ctx)
+}
+
+func (c *httpServerComponent) IsRunning() bool {
+	return c.server != nil
+}
