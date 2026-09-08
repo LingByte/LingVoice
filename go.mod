@@ -112,7 +112,7 @@ require (
 	github.com/xuri/excelize/v2 v2.11.0
 	github.com/yeqown/go-qrcode/v2 v2.3.0
 	github.com/yeqown/go-qrcode/writer/standard v1.4.0
-	github.com/yuin/goldmark v1.7.10
+	github.com/yuin/goldmark v1.8.6
 	github.com/yuin/goldmark-emoji v1.0.6
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
 	github.com/zserge/govad v0.0.0-20260330155402-74750eabf3a4
