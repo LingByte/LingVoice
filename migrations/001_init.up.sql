@@ -1,0 +1,126 @@
+-- LingVoice initial migration
+-- Create users table
+--
+-- Note: dev/test environments use GORM AutoMigrate; this file is for prod manual migrations.
+-- Usage: ./scripts/migrate.sh up
+
+CREATE TABLE IF NOT EXISTS `users` (
+    `id`            BIGINT UNSIGNED NOT NULL,           -- snowflake ID (no auto-increment)
+    `username`      VARCHAR(50)  NOT NULL DEFAULT '',
+    `email`         VARCHAR(200) NOT NULL DEFAULT '',
+    `phone`         VARCHAR(20)  NOT NULL DEFAULT '',
+    `password`      VARCHAR(255) NOT NULL DEFAULT '',   -- Argon2id/bcrypt hash
+    `avatar`        VARCHAR(500) NOT NULL DEFAULT '',
+    `role`          VARCHAR(20)  NOT NULL DEFAULT 'user',
+    `status`        TINYINT      NOT NULL DEFAULT 1,     -- 1=active, 0=disabled
+    `last_login_at` BIGINT       NULL,                   -- unix timestamp
+    `tenant_id`     BIGINT UNSIGNED NOT NULL DEFAULT 0,   -- multi-tenant: tenant scope
+    `created_at`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `deleted_at`    DATETIME     NULL,
+    `create_by`     VARCHAR(128) NOT NULL DEFAULT '',
+    `update_by`     VARCHAR(128) NOT NULL DEFAULT '',
+    `remark`        VARCHAR(128) NOT NULL DEFAULT '',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_username` (`username`),
+    UNIQUE KEY `uk_email` (`email`),
+    KEY `idx_tenant_id` (`tenant_id`),
+    KEY `idx_deleted_at` (`deleted_at`),
+    KEY `idx_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Multi-tenant: tenants table
+CREATE TABLE IF NOT EXISTS `tenants` (
+    `id`         BIGINT UNSIGNED NOT NULL,
+    `name`       VARCHAR(100) NOT NULL DEFAULT '',
+    `code`       VARCHAR(50)  NOT NULL DEFAULT '',
+    `contact`    VARCHAR(100) NOT NULL DEFAULT '',
+    `email`      VARCHAR(200) NOT NULL DEFAULT '',
+    `phone`      VARCHAR(20)  NOT NULL DEFAULT '',
+    `plan`       VARCHAR(20)  NOT NULL DEFAULT 'free',
+    `status`     TINYINT      NOT NULL DEFAULT 1,    -- 1=active, 0=disabled
+    `max_users`  INT          NOT NULL DEFAULT 0,    -- 0 = unlimited
+    `expire_at`  BIGINT       NULL,                   -- unix timestamp
+    `created_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `deleted_at` DATETIME     NULL,
+    `create_by`  VARCHAR(128) NOT NULL DEFAULT '',
+    `update_by`  VARCHAR(128) NOT NULL DEFAULT '',
+    `remark`     VARCHAR(128) NOT NULL DEFAULT '',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_name` (`name`),
+    UNIQUE KEY `uk_code` (`code`),
+    KEY `idx_deleted_at` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- RBAC: roles table
+CREATE TABLE IF NOT EXISTS `roles` (
+    `id`           BIGINT UNSIGNED NOT NULL,
+    `name`         VARCHAR(50)  NOT NULL DEFAULT '',
+    `display_name` VARCHAR(100) NOT NULL DEFAULT '',
+    `description`  VARCHAR(255) NOT NULL DEFAULT '',
+    `sort`         INT          NOT NULL DEFAULT 0,
+    `status`       TINYINT      NOT NULL DEFAULT 1,    -- 1=enabled, 0=disabled
+    `created_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `deleted_at`   DATETIME     NULL,
+    `create_by`    VARCHAR(128) NOT NULL DEFAULT '',
+    `update_by`    VARCHAR(128) NOT NULL DEFAULT '',
+    `remark`       VARCHAR(128) NOT NULL DEFAULT '',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_name` (`name`),
+    KEY `idx_deleted_at` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- RBAC: permissions table
+CREATE TABLE IF NOT EXISTS `permissions` (
+    `id`           BIGINT UNSIGNED NOT NULL,
+    `name`         VARCHAR(100) NOT NULL DEFAULT '',    -- e.g. "user:read"
+    `display_name` VARCHAR(100) NOT NULL DEFAULT '',
+    `resource`     VARCHAR(50)  NOT NULL DEFAULT '',    -- e.g. "user"
+    `action`       VARCHAR(20)  NOT NULL DEFAULT '',    -- e.g. "read"
+    `description`  VARCHAR(255) NOT NULL DEFAULT '',
+    `created_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at`   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `deleted_at`   DATETIME     NULL,
+    `create_by`    VARCHAR(128) NOT NULL DEFAULT '',
+    `update_by`    VARCHAR(128) NOT NULL DEFAULT '',
+    `remark`       VARCHAR(128) NOT NULL DEFAULT '',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_name` (`name`),
+    KEY `idx_resource` (`resource`),
+    KEY `idx_action` (`action`),
+    KEY `idx_deleted_at` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- RBAC: user_roles join table
+CREATE TABLE IF NOT EXISTS `user_roles` (
+    `id`         BIGINT UNSIGNED NOT NULL,
+    `user_id`    BIGINT UNSIGNED NOT NULL,
+    `role_id`    BIGINT UNSIGNED NOT NULL,
+    `created_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `deleted_at` DATETIME     NULL,
+    `create_by`  VARCHAR(128) NOT NULL DEFAULT '',
+    `update_by`  VARCHAR(128) NOT NULL DEFAULT '',
+    `remark`     VARCHAR(128) NOT NULL DEFAULT '',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `idx_user_role` (`user_id`, `role_id`),
+    KEY `idx_deleted_at` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- RBAC: role_permissions join table
+CREATE TABLE IF NOT EXISTS `role_permissions` (
+    `id`            BIGINT UNSIGNED NOT NULL,
+    `role_id`       BIGINT UNSIGNED NOT NULL,
+    `permission_id` BIGINT UNSIGNED NOT NULL,
+    `created_at`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at`    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `deleted_at`    DATETIME     NULL,
+    `create_by`     VARCHAR(128) NOT NULL DEFAULT '',
+    `update_by`     VARCHAR(128) NOT NULL DEFAULT '',
+    `remark`        VARCHAR(128) NOT NULL DEFAULT '',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `idx_role_perm` (`role_id`, `permission_id`),
+    KEY `idx_deleted_at` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
