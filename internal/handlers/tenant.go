@@ -1,0 +1,212 @@
+
+// Copyright (c) 2026 heathcetide. All rights reserved.
+
+package handlers
+
+import (
+	"errors"
+
+	"github.com/LingByte/LingVoice/internal/constants"
+	"github.com/LingByte/LingVoice/internal/models"
+	"github.com/LingByte/LingVoice/internal/types"
+
+	"github.com/LingByte/LingVoice/pkg/common"
+	"github.com/LingByte/LingVoice/pkg/common/response"
+	respgin "github.com/LingByte/LingVoice/pkg/common/response/gin"
+	"github.com/LingByte/LingVoice/pkg/common/validate"
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
+
+// ListTenants returns a paginated list of tenants (super-admin only).
+func (h *Handlers) ListTenants(c *gin.Context) {
+	var req types.TenantListRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		respgin.WriteError(c, response.New(response.CodeBadRequest, err.Error()))
+		return
+	}
+	page, size := req.Normalize()
+
+	if h.db == nil {
+		respgin.WriteError(c, response.Err(response.CodeServiceUnavail))
+		return
+	}
+
+	f := models.TenantListFilter{
+		Keyword: req.Keyword,
+		Status:  req.Status,
+		Plan:    req.Plan,
+	}
+	tenants, total, err := models.Tenant{}.List(h.db.WithContext(c.Request.Context()), page, size, f)
+	if err != nil {
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+
+	result := make([]types.TenantResponse, len(tenants))
+	for i := range tenants {
+		result[i] = types.ToTenantResponse(&tenants[i])
+	}
+	respgin.Success(c, response.NewPage(result, total, page, size))
+}
+
+// CreateTenant creates a new tenant.
+func (h *Handlers) CreateTenant(c *gin.Context) {
+	var req types.TenantRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respgin.WriteError(c, response.New(response.CodeBadRequest, err.Error()))
+		return
+	}
+	if err := validate.Validate(&req); err != nil {
+		respgin.WriteError(c, response.New(response.CodeBadRequest, err.Error()))
+		return
+	}
+
+	if h.db == nil {
+		respgin.WriteError(c, response.Err(response.CodeServiceUnavail))
+		return
+	}
+
+	// Check for duplicate name/code
+	exists, err := models.Tenant{}.NameOrCodeExists(h.db.WithContext(c.Request.Context()), req.Name, req.Code)
+	if err != nil {
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+	if exists {
+		respgin.WriteError(c, response.New(response.CodeConflict, "tenant name or code already exists"))
+		return
+	}
+
+	plan := req.Plan
+	if plan == "" {
+		plan = constants.TenantPlanFree
+	}
+
+	tenant := models.Tenant{
+		Name:     req.Name,
+		Code:     req.Code,
+		Contact:  req.Contact,
+		Email:    req.Email,
+		Phone:    req.Phone,
+		Plan:     plan,
+		Status:   constants.TenantStatusActive,
+		MaxUsers: req.MaxUsers,
+		ExpireAt: req.ExpireAt,
+	}
+	if req.Status != nil {
+		tenant.Status = *req.Status
+	}
+
+	if err := tenant.Create(h.db.WithContext(c.Request.Context())); err != nil {
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+	common.Sig().Emit(constants.EventTenantCreated, h, tenant.ID, tenant.Code, tenant.Name)
+	respgin.Created(c, types.ToTenantResponse(&tenant))
+}
+
+// GetTenant returns a single tenant by ID.
+func (h *Handlers) GetTenant(c *gin.Context) {
+	var idReq types.IDRequest
+	if err := c.ShouldBindUri(&idReq); err != nil {
+		respgin.WriteError(c, response.Err(response.CodeBadRequest))
+		return
+	}
+
+	if h.db == nil {
+		respgin.WriteError(c, response.Err(response.CodeServiceUnavail))
+		return
+	}
+
+	tenant, err := models.Tenant{}.FindByID(h.db.WithContext(c.Request.Context()), idReq.ID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			respgin.WriteError(c, response.Err(response.CodeNotFound))
+			return
+		}
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+	respgin.Success(c, types.ToTenantResponse(tenant))
+}
+
+// UpdateTenant updates a tenant by ID.
+func (h *Handlers) UpdateTenant(c *gin.Context) {
+	var idReq types.IDRequest
+	if err := c.ShouldBindUri(&idReq); err != nil {
+		respgin.WriteError(c, response.Err(response.CodeBadRequest))
+		return
+	}
+
+	var req types.TenantRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respgin.WriteError(c, response.New(response.CodeBadRequest, err.Error()))
+		return
+	}
+	if err := validate.Validate(&req); err != nil {
+		respgin.WriteError(c, response.New(response.CodeBadRequest, err.Error()))
+		return
+	}
+
+	if h.db == nil {
+		respgin.WriteError(c, response.Err(response.CodeServiceUnavail))
+		return
+	}
+
+	tenant, err := models.Tenant{}.FindByID(h.db.WithContext(c.Request.Context()), idReq.ID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			respgin.WriteError(c, response.Err(response.CodeNotFound))
+			return
+		}
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+
+	updates := map[string]interface{}{
+		"name":     req.Name,
+		"code":     req.Code,
+		"contact":  req.Contact,
+		"email":    req.Email,
+		"phone":    req.Phone,
+		"plan":     req.Plan,
+		"maxUsers": req.MaxUsers,
+		"expireAt": req.ExpireAt,
+	}
+	if req.Status != nil {
+		updates["status"] = *req.Status
+	}
+
+	if err := tenant.Updates(h.db.WithContext(c.Request.Context()), updates); err != nil {
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+	common.Sig().Emit(constants.EventTenantUpdated, h, tenant.ID)
+	respgin.Success(c, types.ToTenantResponse(tenant))
+}
+
+// DeleteTenant soft-deletes a tenant by ID.
+func (h *Handlers) DeleteTenant(c *gin.Context) {
+	var req types.IDRequest
+	if err := c.ShouldBindUri(&req); err != nil {
+		respgin.WriteError(c, response.Err(response.CodeBadRequest))
+		return
+	}
+
+	if h.db == nil {
+		respgin.WriteError(c, response.Err(response.CodeServiceUnavail))
+		return
+	}
+
+	if err := (models.Tenant{}).DeleteByID(h.db.WithContext(c.Request.Context()), req.ID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			respgin.WriteError(c, response.Err(response.CodeNotFound))
+			return
+		}
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+	common.Sig().Emit(constants.EventTenantDeleted, h, req.ID)
+	respgin.NoContent(c)
+}

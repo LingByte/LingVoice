@@ -1,0 +1,110 @@
+
+// Copyright (c) 2026 heathcetide. All rights reserved.
+
+package models
+
+import (
+	"errors"
+
+	"github.com/LingByte/LingVoice/internal/constants"
+
+	"github.com/LingByte/LingVoice/pkg/common"
+	"gorm.io/gorm"
+)
+
+// Tenant represents a SaaS tenant (organization/workspace).
+type Tenant struct {
+	common.BaseModel
+	Name        string `json:"name" gorm:"size:100;uniqueIndex;not null"`
+	Code        string `json:"code" gorm:"size:50;uniqueIndex;not null"` // short code for subdomain/lookup
+	Contact     string `json:"contact,omitempty" gorm:"size:100"`        // contact person
+	Email       string `json:"email,omitempty" gorm:"size:200"`          // contact email
+	Phone       string `json:"phone,omitempty" gorm:"size:20"`
+	Plan        string `json:"plan" gorm:"size:20;default:free;not null"` // free/pro/enterprise
+	Status      int    `json:"status" gorm:"default:1;not null"`          // 1=active, 0=disabled
+	MaxUsers    int    `json:"maxUsers,omitempty" gorm:"default:0"`       // 0 = unlimited
+	ExpireAt    *int64 `json:"expireAt,omitempty"`                        // unix timestamp, nil = never
+}
+
+func (Tenant) TableName() string { return constants.TableTenants }
+
+// FindByID loads a tenant by primary key.
+func (Tenant) FindByID(db *gorm.DB, id uint) (*Tenant, error) {
+	var t Tenant
+	if err := db.First(&t, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
+	}
+	return &t, nil
+}
+
+// NameOrCodeExists returns true if a tenant with the given name or code already exists.
+func (Tenant) NameOrCodeExists(db *gorm.DB, name, code string) (bool, error) {
+	var count int64
+	if err := db.Model(&Tenant{}).
+		Where("name = ? OR code = ?", name, code).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// TenantListFilter holds optional filters for paginated tenant queries.
+type TenantListFilter struct {
+	Keyword string
+	Status  *int
+	Plan    string
+}
+
+// List returns a paginated, filtered list of tenants ordered by newest first.
+// Returns (tenants, total, error).
+func (Tenant) List(db *gorm.DB, page, size int, f TenantListFilter) ([]Tenant, int64, error) {
+	q := db.Model(&Tenant{})
+	if f.Keyword != "" {
+		like := "%" + f.Keyword + "%"
+		q = q.Where("name LIKE ? OR code LIKE ?", like, like)
+	}
+	if f.Status != nil {
+		q = q.Where("status = ?", *f.Status)
+	}
+	if f.Plan != "" {
+		q = q.Where("plan = ?", f.Plan)
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var tenants []Tenant
+	offset := (page - 1) * size
+	if err := q.Order("id DESC").Offset(offset).Limit(size).Find(&tenants).Error; err != nil {
+		return nil, 0, err
+	}
+	return tenants, total, nil
+}
+
+// Create persists the tenant.
+func (t *Tenant) Create(db *gorm.DB) error {
+	return db.Create(t).Error
+}
+
+// Updates applies a partial update map to the tenant.
+func (t *Tenant) Updates(db *gorm.DB, updates map[string]interface{}) error {
+	return db.Model(t).Updates(updates).Error
+}
+
+// DeleteByID soft-deletes a tenant by ID.
+// Returns gorm.ErrRecordNotFound if the tenant does not exist.
+func (Tenant) DeleteByID(db *gorm.DB, id uint) error {
+	result := db.Delete(&Tenant{}, id)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}

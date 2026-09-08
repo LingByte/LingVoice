@@ -1,0 +1,89 @@
+
+// Copyright (c) 2026 heathcetide. All rights reserved.
+
+package middlewares
+
+import (
+	"net/http"
+	"strconv"
+
+	"github.com/LingByte/LingVoice/internal/constants"
+	"github.com/LingByte/LingVoice/pkg/common/jwtutil"
+
+	"github.com/gin-gonic/gin"
+)
+
+// TenantMiddleware extracts the tenant ID from the JWT claims (if available)
+// or from the X-Tenant-ID header, and stores it in the gin.Context.
+//
+// Routes that don't have a tenant ID in context will be rejected with 400
+// if the handler requires a tenant scope (use TenantRequired middleware).
+//
+// Usage:
+//
+//	r.Use(middlewares.TenantMiddleware())
+//	// tenant-scoped routes
+//	tenantGroup := r.Group("/api/v1/users", middlewares.TenantRequired())
+func TenantMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var tenantID uint
+		// Try JWT claims first (set by jwtingin.Middleware)
+		if claimsVal, exists := c.Get("jwt_claims"); exists {
+			if claims, ok := claimsVal.(*jwtutil.Claims); ok && claims.Extra != nil {
+				if v, ok := claims.Extra["tenant_id"]; ok {
+					switch val := v.(type) {
+					case float64:
+						tenantID = uint(val)
+					case uint:
+						tenantID = val
+					case int:
+						tenantID = uint(val)
+					case int64:
+						tenantID = uint(val)
+					}
+				}
+			}
+		}
+
+		// Fallback: X-Tenant-ID header
+		if tenantID == 0 {
+			if h := c.GetHeader(constants.HeaderTenantID); h != "" {
+				if id, err := strconv.ParseUint(h, 10, 64); err == nil {
+					tenantID = uint(id)
+				}
+			}
+		}
+
+		if tenantID > 0 {
+			c.Set(constants.ContextKeyTenantID, tenantID)
+		}
+		c.Next()
+	}
+}
+
+// TenantRequired rejects requests without a tenant ID in context.
+// Must be used after TenantMiddleware.
+func TenantRequired() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tenantID, exists := c.Get(constants.ContextKeyTenantID)
+		if !exists || tenantID.(uint) == 0 {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+				"error":   "bad_request",
+				"message": "tenant ID is required",
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
+// TenantIDFromContext extracts the tenant ID from the gin.Context.
+// Returns 0 if no tenant ID is set.
+func TenantIDFromContext(c *gin.Context) uint {
+	if v, exists := c.Get(constants.ContextKeyTenantID); exists {
+		if id, ok := v.(uint); ok {
+			return id
+		}
+	}
+	return 0
+}

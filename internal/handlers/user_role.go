@@ -1,0 +1,134 @@
+
+// Copyright (c) 2026 heathcetide. All rights reserved.
+
+package handlers
+
+import (
+	"errors"
+
+	"github.com/LingByte/LingVoice/internal/constants"
+	"github.com/LingByte/LingVoice/internal/models"
+	"github.com/LingByte/LingVoice/internal/types"
+
+	"github.com/LingByte/LingVoice/pkg/common"
+	"github.com/LingByte/LingVoice/pkg/common/response"
+	respgin "github.com/LingByte/LingVoice/pkg/common/response/gin"
+	"github.com/LingByte/LingVoice/pkg/common/validate"
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
+
+// AssignRoleToUser assigns a role to a user.
+func (h *Handlers) AssignRoleToUser(c *gin.Context) {
+	var req types.AssignRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respgin.WriteError(c, response.New(response.CodeBadRequest, err.Error()))
+		return
+	}
+	if err := validate.Validate(&req); err != nil {
+		respgin.WriteError(c, response.New(response.CodeBadRequest, err.Error()))
+		return
+	}
+
+	if h.db == nil {
+		respgin.WriteError(c, response.Err(response.CodeServiceUnavail))
+		return
+	}
+
+	// Check for duplicate
+	exists, err := models.UserRole{}.Exists(h.db.WithContext(c.Request.Context()), req.UserID, req.RoleID)
+	if err != nil {
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+	if exists {
+		respgin.WriteError(c, response.New(response.CodeConflict, "role already assigned to user"))
+		return
+	}
+
+	ur := models.UserRole{UserID: req.UserID, RoleID: req.RoleID}
+	if err := ur.Create(h.db.WithContext(c.Request.Context())); err != nil {
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+	common.Sig().Emit(constants.EventRoleAssignedToUser, h, req.UserID, req.RoleID)
+	respgin.Success(c, gin.H{"message": "role assigned"})
+}
+
+// RevokeRoleFromUser removes a role from a user.
+func (h *Handlers) RevokeRoleFromUser(c *gin.Context) {
+	var req types.AssignRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respgin.WriteError(c, response.New(response.CodeBadRequest, err.Error()))
+		return
+	}
+
+	if h.db == nil {
+		respgin.WriteError(c, response.Err(response.CodeServiceUnavail))
+		return
+	}
+
+	if err := (models.UserRole{}).Delete(h.db.WithContext(c.Request.Context()), req.UserID, req.RoleID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			respgin.WriteError(c, response.Err(response.CodeNotFound))
+			return
+		}
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+	common.Sig().Emit(constants.EventRoleRevokedFromUser, h, req.UserID, req.RoleID)
+	respgin.NoContent(c)
+}
+
+// GetUserRoles returns all roles assigned to a user.
+func (h *Handlers) GetUserRoles(c *gin.Context) {
+	var idReq types.IDRequest
+	if err := c.ShouldBindUri(&idReq); err != nil {
+		respgin.WriteError(c, response.Err(response.CodeBadRequest))
+		return
+	}
+
+	if h.db == nil {
+		respgin.WriteError(c, response.Err(response.CodeServiceUnavail))
+		return
+	}
+
+	roles, err := models.UserRole{}.ListRolesByUserID(h.db.WithContext(c.Request.Context()), idReq.ID)
+	if err != nil {
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+	result := make([]types.RoleResponse, len(roles))
+	for i := range roles {
+		result[i] = types.ToRoleResponse(&roles[i])
+	}
+	respgin.Success(c, types.UserRoleResponse{
+		UserID: idReq.ID,
+		Roles:  result,
+	})
+}
+
+// GetUserPermissions returns all permissions granted to a user (through all their roles).
+func (h *Handlers) GetUserPermissions(c *gin.Context) {
+	var idReq types.IDRequest
+	if err := c.ShouldBindUri(&idReq); err != nil {
+		respgin.WriteError(c, response.Err(response.CodeBadRequest))
+		return
+	}
+
+	if h.db == nil {
+		respgin.WriteError(c, response.Err(response.CodeServiceUnavail))
+		return
+	}
+
+	perms, err := models.Permission{}.ListByUserID(h.db.WithContext(c.Request.Context()), idReq.ID)
+	if err != nil {
+		respgin.WriteError(c, response.Err(response.CodeInternal))
+		return
+	}
+	result := make([]types.PermissionResponse, len(perms))
+	for i := range perms {
+		result[i] = types.ToPermissionResponse(&perms[i])
+	}
+	respgin.Success(c, result)
+}
