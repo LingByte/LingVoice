@@ -10,7 +10,7 @@
 #   docker run --rm ling-base-dev go test ./...
 #   docker run --rm ling-base-dev make check
 
-FROM golang:1.26-bookworm AS base
+FROM golang:1.27-bookworm AS base
 
 WORKDIR /app
 
