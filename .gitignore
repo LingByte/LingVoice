@@ -1,19 +1,58 @@
-# macOS
-.DS_Store
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
 
-# Logs
-logs/
-
-# Go
+# Test
 *.test
 *.out
-webrtc-demo
-/webrtc-rust-demo
-/protocol-server
-/sip-rust-demo
+coverage.txt
+coverage.html
 
-# Rust
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+*.pem
+*.key
+# 保留 configs/ 下的模板 .env 文件
+!configs/.env
+!configs/.env.prod
+!configs/.env.example
+
+# Build
+/tmp/
+vendor/
+data/
+logs/
+
+# Uploads (local storage backend) — 目录由 stores/local 自动创建
+/uploads/
+
+# Rust build artifacts
 rust-media/target/
-**/*.rs.bk
-/ws-rust-demo
+rust-media/logs/
+rust-media/recordings/
+
+# Go compiled binary (root level)
+/server
+
+# Dev certificates (contains private keys)
 certs/
+
+# Devin skills (tool-specific, not project code)
+skills/
