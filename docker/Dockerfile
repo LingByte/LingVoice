@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /app ./cmd/...
 
 # ---- 运行阶段 ----
-FROM alpine:3.20
+FROM alpine:3.24
 
 # OCI 标准 LABEL
 LABEL org.opencontainers.image.title="LingVoice" \
